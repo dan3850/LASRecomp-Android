@@ -162,11 +162,22 @@ jobs:
           "$RUNNER_TEMP/las-fonttools/bin/pip" install --disable-pip-version-check -q "fonttools==4.60.1"
           export FONTTOOLS_PYTHON="$RUNNER_TEMP/las-fonttools/bin/python"
           bash tools/build-android-termux.sh
+          # The existing com.retroaura.lasrecomp.bootdiag install uses a
+          # different CI-generated test signing key. Never tell users to
+          # uninstall it (their imported Zelda data belongs to that app).
+          # Build a parallel debug package from exactly the same engine.
+          sed -e 's/package="com.retroaura.lasrecomp.bootdiag"/package="com.retroaura.lasrecomp.bootdiag.controls"/' \
+              -e 's/LASRecomp Boot TESTE/LASRecomp Controles/g' \
+              android/bootstrap/AndroidManifest.xml > "$RUNNER_TEMP/las-controls-manifest.xml"
+          ANDROID_MANIFEST_OVERRIDE="$RUNNER_TEMP/las-controls-manifest.xml" \
+            bash tools/build-android-termux.sh
+          mv build/android-bootstrap/LASRecomp-Android.apk \
+            build/android-bootstrap/LASRecomp-Android-Controles-Paralelo.apk
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: LASRecomp-Android-ARM64-APK
-          path: build/android-bootstrap/LASRecomp-Android.apk
+          name: LASRecomp-Android-Controles-ARM64-Paralelo
+          path: build/android-bootstrap/LASRecomp-Android-Controles-Paralelo.apk
           if-no-files-found: error
           retention-days: 14
