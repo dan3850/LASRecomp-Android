@@ -106,6 +106,17 @@ jobs:
           git clone --depth 1 --branch v2024.4 https://github.com/google/shaderc.git "$SHADERC_SRC"
           git clone --depth 1 --branch v3.1.0 https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git "$VMA_SRC"
           bash tools/build-android-renderer.sh
+      # Compile the FFmpeg dependency used by runtime/hle/movie.c for
+      # decoding the game's actual videos. No user game files are included.
+      - name: Build Android FFmpeg and original movie HLE ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+          export FFMPEG_SRC="$RUNNER_TEMP/las-ffmpeg"
+          git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_SRC"
+          bash tools/build-android-ffmpeg.sh
+
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
