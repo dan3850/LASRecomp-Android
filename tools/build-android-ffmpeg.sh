@@ -54,7 +54,7 @@ done
     -c "$ROOT/runtime/hle/movie.c" -o "$OBJDIR/movie.o"
 
 # Require the real Android output, not just a header-only build.
-for lib in avcodec avformat avutil swscale; do
+for lib in avcodec avformat avutil swscale swresample; do
     [[ -s "$DEST/lib/lib${lib}.so" ]] || {
         echo "Missing Android FFmpeg shared library: lib${lib}.so" >&2
         exit 1
