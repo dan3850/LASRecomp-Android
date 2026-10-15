@@ -111,7 +111,7 @@ Java_com_retroaura_lasrecomp_GameImportActivity_nativeProbeLocalCode(
             unlink(path);
         } else if (result[0] != 'F') {
             char reason[600];
-            snprintf(reason, sizeof reason, "%s", result);
+            snprintf(reason, sizeof reason, "%.590s", result);
             snprintf(result, sizeof result, "FALHOU: %.570s", reason);
         }
     }
