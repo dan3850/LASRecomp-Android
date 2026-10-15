@@ -35,6 +35,7 @@ public final class GameImportActivity extends Activity {
     private static native String nativePrepareGame(String stageDirectory);
     // Feasibility test: loads ONLY a harmless probe library, not game code.
     private static native String nativeProbeLocalCode(String libraryPath, String cacheDirectory);
+    private static native String nativeCheckGameCode(String libraryPath);
 
     private static final int PICK_GAME_FOLDER = 101;
     private static final int PICK_GAME_CODE = 102;
@@ -43,6 +44,7 @@ public final class GameImportActivity extends Activity {
     private TextView status;
     private Button importButton;
     private Button libraryButton;
+    private Button verifyButton;
     private Button playButton;
     private boolean importing;
 
@@ -89,6 +91,30 @@ public final class GameImportActivity extends Activity {
         libraryButton.setText("TESTE: IMPORTAR MINHA LIBLASGAME.SO");
         libraryButton.setOnClickListener(v -> selectGameCodeFile());
         layout.addView(libraryButton);
+
+        verifyButton = new Button(this);
+        verifyButton.setText("TESTE: VERIFICAR BIBLIOTECA DO ZELDA");
+        verifyButton.setOnClickListener(v -> {
+            if (importing) return;
+            verifyButton.setEnabled(false);
+            new Thread(() -> {
+                String result;
+                try {
+                    result = nativeCheckGameCode(privateGameCodeFile().getAbsolutePath());
+                } catch (Throwable error) {
+                    result = "FALHOU: " + error;
+                }
+                final String message = result;
+                runOnUiThread(() -> {
+                    verifyButton.setEnabled(true);
+                    new AlertDialog.Builder(this)
+                        .setTitle("Compatibilidade com o motor")
+                        .setMessage(message)
+                        .setPositiveButton("OK", null).show();
+                });
+            }, "LASRecompVerifyRealGame").start();
+        });
+        layout.addView(verifyButton);
 
         // Separate diagnostic on the experimental branch. No game files are
         // compiled or loaded by this test; it only checks Android linker policy.
@@ -262,6 +288,8 @@ public final class GameImportActivity extends Activity {
         boolean files = hasGameFiles(extractedDir());
         boolean code = hasGameCode();
         playButton.setVisibility(files && code && !importing ? View.VISIBLE : View.GONE);
+        verifyButton.setVisibility(privateGameCodeFile().isFile() ? View.VISIBLE : View.GONE);
+        verifyButton.setEnabled(!importing);
         if (files && code) {
             status.setText("Arquivos e código recompilado disponíveis.\nPronto para tentar iniciar o jogo.");
         } else if (files) {
@@ -288,6 +316,7 @@ public final class GameImportActivity extends Activity {
                 importing = true;
                 importButton.setEnabled(false);
                 libraryButton.setEnabled(false);
+                verifyButton.setEnabled(false);
                 playButton.setVisibility(View.GONE);
                 status.setText("Preparando biblioteca privada...");
                 Uri gameCode = data.getData();
@@ -306,6 +335,7 @@ public final class GameImportActivity extends Activity {
         importing = true;
         importButton.setEnabled(false);
         libraryButton.setEnabled(false);
+        verifyButton.setEnabled(false);
         playButton.setVisibility(View.GONE);
         status.setText("Copiando e preparando os arquivos do jogo...");
         new Thread(() -> importTree(tree), "LASRecompImport").start();
