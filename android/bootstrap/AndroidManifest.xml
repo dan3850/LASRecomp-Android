@@ -18,15 +18,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <!-- Native runtime will replace the previous Vulkan diagnostic; keep
-             unexported until SDL3 and the recompiler are linked. -->
+        <!-- Official SDL3 Android lifecycle for the REAL game runtime.
+             Deliberately not exposed until the runtime and recompiler link. -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name=".GameSDLActivity"
             android:label="LASRecomp Game"
             android:exported="false"
-            android:screenOrientation="landscape">
-            <meta-data android:name="android.app.lib_name"
-                android:value="lasrecomp_bootstrap" />
-        </activity>
+            android:hardwareAccelerated="true"
+            android:screenOrientation="landscape"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|layoutDirection|locale|fontScale" />
     </application>
 </manifest>
