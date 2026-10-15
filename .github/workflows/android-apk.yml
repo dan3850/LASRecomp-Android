@@ -117,6 +117,17 @@ jobs:
           git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_SRC"
           bash tools/build-android-ffmpeg.sh
 
+      # The actual GLSL->SPIR-V compiler used by runtime/nvn/vulkan/shaders.c,
+      # pinned to the upstream shaderc compatibility revisions.
+      - name: Build real shaderc compiler Android ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+          export SHADERC_SRC="$RUNNER_TEMP/las-shaderc"
+          export SHADERC_OUTPUT_DIR="$RUNNER_TEMP/las-shaderc-arm64"
+          bash tools/build-android-shaderc.sh
+
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
