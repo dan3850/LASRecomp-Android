@@ -2,6 +2,9 @@ package com.retroaura.lasrecomp;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
@@ -12,12 +15,14 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.FileInputStream;
 import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -64,7 +69,7 @@ public final class GameImportActivity extends Activity {
         super.onCreate(savedInstanceState);
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setGravity(Gravity.CENTER);
+        layout.setGravity(Gravity.CENTER_HORIZONTAL);
         int pad = (int) (24 * getResources().getDisplayMetrics().density);
         layout.setPadding(pad, pad, pad, pad);
 
@@ -144,6 +149,10 @@ public final class GameImportActivity extends Activity {
             }, "LASRecompLocalLoaderProbe").start();
         });
         layout.addView(probeButton);
+        Button bootLogButton = new Button(this);
+        bootLogButton.setText("VER REGISTRO DO BOOT");
+        bootLogButton.setOnClickListener(v -> showBootLog());
+        layout.addView(bootLogButton);
         playButton = new Button(this);
         playButton.setText("JOGAR");
         playButton.setVisibility(View.GONE);
@@ -155,8 +164,45 @@ public final class GameImportActivity extends Activity {
             }
         });
         layout.addView(playButton);
-        setContentView(layout);
+        ScrollView scroller = new ScrollView(this);
+        scroller.setFillViewport(true);
+        scroller.addView(layout);
+        setContentView(scroller);
         showGameFilesState();
+    }
+
+    // Read only a bounded tail of the app's own diagnostic files. The runtime
+    // writes these before/after the guest memory reservation and during boot.
+    private static String readLogTail(File file, int maxBytes) {
+        if (!file.isFile()) return "(arquivo ainda nao criado)";
+        try (RandomAccessFile stream = new RandomAccessFile(file, "r")) {
+            long size = stream.length();
+            int bytes = (int) Math.min(size, maxBytes);
+            byte[] content = new byte[bytes];
+            stream.seek(size - bytes);
+            stream.readFully(content);
+            return (size > bytes ? "(ultimos " + bytes + " bytes)\n" : "")
+                 + new String(content, StandardCharsets.UTF_8);
+        } catch (Exception error) {
+            return "(erro ao ler: " + error.getMessage() + ")";
+        }
+    }
+
+    private void showBootLog() {
+        String boot = readLogTail(new File(getFilesDir(), "lasrecomp_boot.txt"), 10000);
+        String runtime = readLogTail(new File(getFilesDir(), "lasrecomp.log"), 16000);
+        String output = "=== INICIO / SDL ===\n" + boot
+                      + "\n\n=== MOTOR NATIVO ===\n" + runtime;
+        new AlertDialog.Builder(this)
+            .setTitle("Diagnostico do boot")
+            .setMessage(output)
+            .setNegativeButton("FECHAR", null)
+            .setPositiveButton("COPIAR REGISTRO", (dialog, which) -> {
+                ClipboardManager clipboard =
+                    (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (clipboard != null)
+                    clipboard.setPrimaryClip(ClipData.newPlainText("LASRecomp boot", output));
+            }).show();
     }
 
     private File extractedDir() {

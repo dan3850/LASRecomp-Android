@@ -127,6 +127,9 @@ static void teardown(void) {
 }
 
 static void boot(const char *root) {
+#ifdef __ANDROID__
+    fprintf(stderr, "[boot] begin root=%s\n", root);
+#endif
     char exefs[1024], romfs[1024], npdm_path[1024];
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
     snprintf(romfs, sizeof romfs, "%s/romfs", root);
@@ -135,11 +138,20 @@ static void boot(const char *root) {
 
     char why[512];
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
+#ifdef __ANDROID__
+    fprintf(stderr, "[boot] game library loaded\n");
+#endif
     loader_load(exefs);
+#ifdef __ANDROID__
+    fprintf(stderr, "[boot] NSO modules loaded\n");
+#endif
     rando_boot();  // the chosen seed's data patches go into the freshly loaded module
     { extern void settings_load(void); settings_load(); }
     kernel_init();
     dispatch_init();
+#ifdef __ANDROID__
+    fprintf(stderr, "[boot] kernel and dispatch initialized\n");
+#endif
 
     uint32_t stack_size = 0x100000;
     int prio = 44;
@@ -159,6 +171,9 @@ static void boot(const char *root) {
     uint64_t init_fn = hle_register("<rtld_init_sdk>", rtld_init_sdk);
     uint64_t fini_fn = hle_register("<rtld_init_main>", rtld_init_main);
     KThread *t = kernel_create_main_thread(start, stack_size, prio);
+#ifdef __ANDROID__
+    fprintf(stderr, "[boot] executing first guest function\n");
+#endif
     kernel_run_main(t, t->handle, 0, init_fn, fini_fn);  // nn::init::Start(thread_handle, args_region, init, fini)
 }
 
@@ -192,6 +207,14 @@ static int lasrecomp_run(int argc, char **argv) {
 
 
 #if defined(__ANDROID__)
+static void android_boot_mark(const char *files, const char *stage) {
+    if (!files || files[0] != '/') return;
+    char path[2048];
+    if (snprintf(path, sizeof path, "%s/lasrecomp_boot.txt", files) >= (int)sizeof path)
+        return;
+    FILE *f = fopen(path, "a");
+    if (f) { fprintf(f, "[engine] %s\n", stage); fclose(f); }
+}
 // Entry for the actual Android game runtime. The app must supply getFilesDir();
 // this library does not read Termux paths or execute a standalone binary.
 // Linking the Activity and SDL3 window lifecycle is a separate remaining step.
@@ -201,16 +224,20 @@ int lasrecomp_android_start(const char *files_dir) {
         fprintf(stderr, "[android] invalid app-private data directory\n");
         return -1;
     }
+    android_boot_mark(files_dir, "runtime entered, attempting guest reservation");
     // Android app_process64 must never be re-executed to retry an ASLR mapping.
     if (!plat_reserve_guest(GUEST_LO, GUEST_HI)) {
+        android_boot_mark(files_dir, "guest virtual memory reservation FAILED");
         fprintf(stderr, "[android] cannot reserve guest memory %llx-%llx\n",
                 (unsigned long long)GUEST_LO, (unsigned long long)GUEST_HI);
         return -2;
     }
+    android_boot_mark(files_dir, "guest virtual memory reserved OK");
     // Bypass the desktop launcher: the Android Activity already imports the
     // game into <filesDir>/extracted. This must reach boot() directly once
     // SDL3, the graphics backend and the generated game code are packaged.
     char *args[] = { (char *)"lasrecomp", (char *)"--play", NULL };
+    android_boot_mark(files_dir, "entering native game bootstrap");
     return lasrecomp_run(2, args);
 }
 #else
