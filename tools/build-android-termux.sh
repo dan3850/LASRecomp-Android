@@ -116,7 +116,16 @@ if [[ -n "${LASRECOMP_RUNTIME_SO:-}" ]]; then
             exit 1
         }
         NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
-        "$NM" -D --defined-only "$LASRECOMP_GAME_SO" | grep -Eq '[[:space:]]lasgame_tables with a versioned desktop SONAME (e.g. .so.61)
+        "$NM" -D --defined-only "$LASRECOMP_GAME_SO" | grep -Eq '[[:space:]]lasgame_tables$' || {
+            echo "ERRO: liblasgame.so nao exporta lasgame_tables" >&2
+            exit 1
+        }
+        cp -L "$LASRECOMP_GAME_SO" "$LIBOUT/liblasgame.so"
+        NATIVE_LIBS+=(lib/arm64-v8a/liblasgame.so)
+        echo "Codigo recompilado do usuario incluído neste APK privado."
+    fi
+
+    # A generated library with a versioned desktop SONAME (e.g. .so.61)
     # cannot be extracted as an Android lib*.so entry; reject it here.
     for soname in "${NATIVE_LIBS[@]}"; do
         so="$OUT/$soname"
