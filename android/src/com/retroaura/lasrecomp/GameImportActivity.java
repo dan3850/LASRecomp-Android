@@ -70,22 +70,30 @@ public final class GameImportActivity extends Activity {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setGravity(Gravity.CENTER_HORIZONTAL);
-        int pad = (int) (24 * getResources().getDisplayMetrics().density);
+        // Keep the primary action visible even on short landscape screens.
+        int pad = (int) (12 * getResources().getDisplayMetrics().density);
         layout.setPadding(pad, pad, pad, pad);
-
-        TextView title = new TextView(this);
-        title.setText("LASRecomp Android");
-        title.setTextSize(24);
-        title.setGravity(Gravity.CENTER);
-        layout.addView(title);
 
         status = new TextView(this);
         status.setTextSize(16);
         status.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-1, -2);
-        statusParams.topMargin = pad;
+        statusParams.topMargin = pad / 2;
         statusParams.bottomMargin = pad;
         layout.addView(status, statusParams);
+
+        // Never silently hide Play below a diagnostic area.
+        // Disabled until the real game's code and files are available.
+        playButton = new Button(this);
+        playButton.setText("JOGAR");
+        playButton.setOnClickListener(v -> {
+            if (!importing && hasGameFiles(extractedDir()) && hasGameCode()) {
+                Intent game = new Intent();
+                game.setClassName(this, "com.retroaura.lasrecomp.GameSDLActivity");
+                startActivity(game);
+            }
+        });
+        layout.addView(playButton);
 
         importButton = new Button(this);
         importButton.setText("IMPORTAR ARQUIVOS DO JOGO");
@@ -153,20 +161,12 @@ public final class GameImportActivity extends Activity {
         bootLogButton.setText("VER REGISTRO DO BOOT");
         bootLogButton.setOnClickListener(v -> showBootLog());
         layout.addView(bootLogButton);
-        playButton = new Button(this);
-        playButton.setText("JOGAR");
-        playButton.setVisibility(View.GONE);
-        playButton.setOnClickListener(v -> {
-            if (!importing && hasGameFiles(extractedDir()) && hasGameCode()) {
-                Intent game = new Intent();
-                game.setClassName(this, "com.retroaura.lasrecomp.GameSDLActivity");
-                startActivity(game);
-            }
-        });
-        layout.addView(playButton);
         ScrollView scroller = new ScrollView(this);
-        scroller.setFillViewport(true);
-        scroller.addView(layout);
+        scroller.setFillViewport(false);
+        scroller.setVerticalScrollBarEnabled(true);
+        scroller.setScrollbarFadingEnabled(false);
+        scroller.addView(layout, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
         setContentView(scroller);
         showGameFilesState();
     }
@@ -333,7 +333,9 @@ public final class GameImportActivity extends Activity {
     private void showGameFilesState() {
         boolean files = hasGameFiles(extractedDir());
         boolean code = hasGameCode();
-        playButton.setVisibility(files && code && !importing ? View.VISIBLE : View.GONE);
+        playButton.setVisibility(View.VISIBLE);
+        playButton.setEnabled(files && code && !importing);
+        playButton.setText(files && code ? "JOGAR" : "JOGAR — AGUARDANDO ARQUIVOS E BIBLIOTECA");
         verifyButton.setVisibility(privateGameCodeFile().isFile() ? View.VISIBLE : View.GONE);
         verifyButton.setEnabled(!importing);
         if (files && code) {
@@ -363,7 +365,7 @@ public final class GameImportActivity extends Activity {
                 importButton.setEnabled(false);
                 libraryButton.setEnabled(false);
                 verifyButton.setEnabled(false);
-                playButton.setVisibility(View.GONE);
+                playButton.setEnabled(false);
                 status.setText("Preparando biblioteca privada...");
                 Uri gameCode = data.getData();
                 new Thread(() -> importGameCode(gameCode), "LASRecompPrivateCodeImport").start();
@@ -382,7 +384,7 @@ public final class GameImportActivity extends Activity {
         importButton.setEnabled(false);
         libraryButton.setEnabled(false);
         verifyButton.setEnabled(false);
-        playButton.setVisibility(View.GONE);
+        playButton.setEnabled(false);
         status.setText("Copiando e preparando os arquivos do jogo...");
         new Thread(() -> importTree(tree), "LASRecompImport").start();
     }
