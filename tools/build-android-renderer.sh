@@ -9,6 +9,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${SDL3_ANDROID_HEADERS:?Set SDL3_ANDROID_HEADERS to the official SDL3 include directory}"
 : "${SHADERC_SRC:?Set SHADERC_SRC to the official shaderc source checkout}"
 : "${VMA_SRC:?Set VMA_SRC to the VulkanMemoryAllocator source checkout}"
+: "${VOLK_SRC:?Set VOLK_SRC to the pinned volk source checkout}"
+[[ -s "$VOLK_SRC/volk.h" && -s "$VOLK_SRC/volk.c" ]] || { echo "volk sources missing" >&2; exit 1; }
 
 if [[ -x "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang" ]]; then
     TOOLS="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -32,6 +34,7 @@ INC=(
     "-I$SDL3_ANDROID_HEADERS"
     "-I$SHADERC_SRC/libshaderc/include"
     "-I$VMA_SRC/include"
+    "-I$VOLK_SRC"
 )
 
 # Reproduce the source-to-C-string transformation the upstream Makefile uses.
@@ -54,6 +57,7 @@ mapfile -t SOURCES < <(
     done
     printf '%s\n' "$ROOT/runtime/nvn/smaa_data.c"
     printf '%s\n' "$ROOT/android/game/png_writer.c"
+    printf '%s\n' "$VOLK_SRC/volk.c"
 )
 
 for src in "${SOURCES[@]}"; do
@@ -67,7 +71,7 @@ for src in "${SOURCES[@]}"; do
         flags=(-std=c++17)
     fi
     if "$compiler" "${flags[@]}" -O2 -fPIC -fno-strict-aliasing \
-            -D_FILE_OFFSET_BITS=64 -Wno-nullability-completeness -Werror=implicit-function-declaration \
+            -D_FILE_OFFSET_BITS=64 -DVK_NO_PROTOTYPES -DIMGUI_IMPL_VULKAN_USE_VOLK -Wno-nullability-completeness -Werror=implicit-function-declaration \
             "${INC[@]}" -c "$src" -o "$obj"; then
         OBJECTS+=("$obj")
     else
