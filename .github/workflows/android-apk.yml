@@ -46,17 +46,6 @@ jobs:
           echo "SDL3_ANDROID_SO=$SDL3_SO" >> "$GITHUB_ENV"
           echo "SDL3_ANDROID_HEADERS=$RUNNER_TEMP/SDL3/include" >> "$GITHUB_ENV"
           echo "SDL3_ANDROID_JAVA_ROOT=$RUNNER_TEMP/SDL3/android-project/app/src/main/java" >> "$GITHUB_ENV"
-      - name: Compile and sign Android APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:?SDK missing}}"
-          export ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
-          export ANDROID_CC="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-          export ANDROID_AAPT2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
-          export ANDROID_ZIPALIGN="$ANDROID_HOME/build-tools/35.0.0/zipalign"
-          export ANDROID_APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          bash tools/build-android-termux.sh
       # Cross-compile all available real C engine modules (not synthetic
       # rendering smoke tests). FFmpeg movie, shaderc and the generated SMAA
       # HLSL include need dedicated Android dependency targets afterwards.
@@ -142,6 +131,24 @@ jobs:
           export FFMPEG_INSTALL_DIR="$GITHUB_WORKSPACE/build/android-ffmpeg"
           export VMA_SRC="$RUNNER_TEMP/las-vma"
           bash tools/build-android-runtime.sh
+
+      # Build the APK ONLY after its complete Android runtime has linked.
+      # The final signed artifact includes all dynamic FFmpeg/Shaderc libraries.
+      - name: Package and sign APK with the real game engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:?SDK missing}}"
+          export ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+          export ANDROID_CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          export ANDROID_AAPT2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          export ANDROID_ZIPALIGN="$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          export ANDROID_APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          export LASRECOMP_RUNTIME_SO="$GITHUB_WORKSPACE/build/android-linked-runtime/lib/arm64-v8a/liblasrecomp_runtime.so"
+          export SHADERC_SO="$RUNNER_TEMP/las-shaderc-arm64/libshaderc_shared.so"
+          export FFMPEG_INSTALL_DIR="$GITHUB_WORKSPACE/build/android-ffmpeg"
+          bash tools/build-android-termux.sh
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
