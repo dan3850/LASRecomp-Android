@@ -48,6 +48,11 @@ echo "[1/5] Compilando biblioteca Android ARM64 para o APK"
 "$CC_BIN" -fPIC -shared -O2 -g -fvisibility=hidden \
     -Wl,-z,max-page-size=16384 -Wl,-soname,liblasrecomp_bootstrap.so \
     -o "$LIB" "$APP/bootstrap.c" -landroid -llog -ldl
+echo "[1/5] Compilando o preparador real de RomFS dentro do APK"
+"$CC_BIN" -fPIC -shared -O2 -fvisibility=hidden \
+    -Wl,-z,max-page-size=16384 -Wl,-soname,liblasrecomp_prepare.so \
+    -o "$OUT/lib/arm64-v8a/liblasrecomp_prepare.so" \
+    "$ROOT/android/prepare/game_prepare.c" "$ROOT/runtime/romfs_build.c" -llog
 
 echo "[2/5] Compilando Activity real de importacao do jogo"
 mkdir -p "$OUT/java-classes" "$OUT/dex"
@@ -61,7 +66,7 @@ echo "[2/5] Montando APK com Activity, AndroidManifest e biblioteca nativa"
 rm -f "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 "$AAPT2_BIN" link -I "$ANDROID_JAR" --manifest "$APP/AndroidManifest.xml" \
     -o "$OUT/unsigned.apk"
-(cd "$OUT" && zip -q unsigned.apk lib/arm64-v8a/liblasrecomp_bootstrap.so)
+(cd "$OUT" && zip -q unsigned.apk lib/arm64-v8a/liblasrecomp_bootstrap.so lib/arm64-v8a/liblasrecomp_prepare.so)
 (cd "$OUT/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
 "$ZIPALIGN_BIN" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
@@ -83,4 +88,4 @@ echo "[4/5] Assinando APK Android"
 echo "[5/5] Verificando APK assinado"
 "$APKSIGNER_BIN" verify "$APK"
 echo "APK INSTALAVEL: $APK"
-echo "OBS: Activity nativa de importacao de arquivos do jogo; runtime ainda nao habilitado."
+echo "OBS: importacao exefs/romfs, validacao v1.0.0 e preparo de romfs.bin no APK. Jogo ainda nao habilitado."
