@@ -146,43 +146,95 @@ static void create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+    bool swapchain = has_ext(ep, ne, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    bool has_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+    bool has_divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+    bool has_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    bool has_fault = has_ext(ep, ne, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    free(ep);
+    if (!swapchain) FATAL("[vk] VK_KHR_swapchain unavailable\n");
+
+    // An extension's presence does not guarantee all its feature bits are supported.
+    // Vulkan 1.1/1.2/1.3 feature bits must also be queried, not assumed from the API version.
+    VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT supported_div = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
+    VkPhysicalDeviceCustomBorderColorFeaturesEXT supported_border = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT,
+        .pNext = has_divisor ? (void *)&supported_div : NULL};
+    VkPhysicalDeviceVulkan13Features supported13 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = has_border ? (void *)&supported_border : has_divisor ? (void *)&supported_div : NULL};
+    VkPhysicalDeviceVulkan12Features supported12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &supported13};
+    VkPhysicalDeviceVulkan11Features supported11 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &supported12};
+    VkPhysicalDeviceFaultFeaturesEXT supported_fault = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .pNext = &supported11};
+    VkPhysicalDeviceFeatures2 have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = has_fault ? (void *)&supported_fault : (void *)&supported11};
+    vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
+
+    g_vk.custom_border = has_border && supported_border.customBorderColors;
+    g_vk.divisor = has_divisor && supported_div.vertexAttributeInstanceRateDivisor;
+    g_vk.host_import = has_import;  // guest heap as a GPU buffer (exec.c)
+    bool fault = has_fault && supported_fault.deviceFault;
+    g_fault_ext = fault;
+    if (has_border && !g_vk.custom_border) LOG("[vk] optional customBorderColors unsupported; disabling extension\n");
+    if (has_divisor && !g_vk.divisor) LOG("[vk] optional vertexAttributeInstanceRateDivisor unsupported; disabling extension\n");
+    if (has_fault && !fault) LOG("[vk] optional deviceFault unsupported; disabling extension\n");
+
     const char *ext[8];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     if (g_vk.custom_border) ext[n_ext++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
-    g_vk.divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
-    g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
-    bool fault = has_ext(ep, ne, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);  // device-lost diagnostics (vk_device_fault_report)
     if (fault) ext[n_ext++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
-    g_fault_ext = fault;
-    free(ep);
 
-    // features the backend relies on (all present on current desktop drivers)
-    VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
         .vertexAttributeInstanceRateDivisor = VK_TRUE, .vertexAttributeInstanceRateZeroDivisor = VK_FALSE};
     VkPhysicalDeviceCustomBorderColorFeaturesEXT cbc = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .customBorderColors = VK_TRUE,
-        .customBorderColorWithoutFormat = VK_TRUE, .pNext = g_vk.divisor ? &div : NULL};
-    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                            .dynamicRendering = VK_TRUE, .synchronization2 = VK_TRUE,
-                                            .shaderDemoteToHelperInvocation = VK_TRUE, .shaderTerminateInvocation = VK_TRUE,
-                                            .maintenance4 = VK_TRUE,
-                                            .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : NULL};
-    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .timelineSemaphore = VK_TRUE, .shaderInt8 = VK_TRUE, .samplerMirrorClampToEdge = VK_TRUE,
-                                            .uniformAndStorageBuffer8BitAccess = VK_TRUE, .storageBuffer8BitAccess = VK_TRUE,
-                                            .scalarBlockLayout = VK_TRUE, .pNext = &f13};
-    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-                                            .storageBuffer16BitAccess = VK_TRUE, .pNext = &f12};
-    VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE,
-                                           .pNext = &f11};
-    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = fault ? (void *)&ff : (void *)&f11};
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT,
+        .customBorderColors = VK_TRUE, .customBorderColorWithoutFormat = supported_border.customBorderColorWithoutFormat,
+        .pNext = g_vk.divisor ? (void *)&div : NULL};
+    VkPhysicalDeviceVulkan13Features f13 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : NULL};
+    VkPhysicalDeviceVulkan12Features f12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13};
+    VkPhysicalDeviceVulkan11Features f11 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &f12};
+    VkPhysicalDeviceFaultFeaturesEXT ff = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE, .pNext = &f11};
+    VkPhysicalDeviceFeatures2 f = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = fault ? (void *)&ff : (void *)&f11};
+
+    // Only request the bits reported by vkGetPhysicalDeviceFeatures2.
+    // Log absent capabilities so the Android boot diagnostic identifies a driver limitation.
+#define VK_ENABLE_FEATURE(dst, src, field) do { \
+        (dst).field = (src).field; \
+        if (!(src).field) LOG("[vk] unsupported feature: %s\n", #field); \
+    } while (0)
+    VK_ENABLE_FEATURE(f11, supported11, storageBuffer16BitAccess);
+    VK_ENABLE_FEATURE(f12, supported12, timelineSemaphore);
+    VK_ENABLE_FEATURE(f12, supported12, shaderInt8);
+    VK_ENABLE_FEATURE(f12, supported12, samplerMirrorClampToEdge);
+    VK_ENABLE_FEATURE(f12, supported12, uniformAndStorageBuffer8BitAccess);
+    VK_ENABLE_FEATURE(f12, supported12, storageBuffer8BitAccess);
+    VK_ENABLE_FEATURE(f12, supported12, scalarBlockLayout);
+    VK_ENABLE_FEATURE(f13, supported13, dynamicRendering);
+    VK_ENABLE_FEATURE(f13, supported13, synchronization2);
+    VK_ENABLE_FEATURE(f13, supported13, shaderDemoteToHelperInvocation);
+    VK_ENABLE_FEATURE(f13, supported13, shaderTerminateInvocation);
+    VK_ENABLE_FEATURE(f13, supported13, maintenance4);
+#undef VK_ENABLE_FEATURE
+    // These are needed by the existing renderer and its timeline-backed submission.
+    if (!f12.timelineSemaphore || !f13.dynamicRendering || !f13.synchronization2)
+        FATAL("[vk] Vulkan driver lacks required timelineSemaphore/dynamicRendering/synchronization2\n");
+
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
