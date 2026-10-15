@@ -34,7 +34,7 @@ for folder in main sdk; do
 done
 
 # Do not start an expensive build with critically low remaining storage.
-free_mb="$(df -Pm "$ROOT" | awk 'NR == 2 {print $4}')"
+free_mb="$(python3 -c 'import os, sys; v = os.statvfs(sys.argv[1]); print(v.f_bavail * v.f_frsize // 1048576)' "$ROOT")"
 if [[ ! "$free_mb" =~ ^[0-9]+$ || "$free_mb" -lt 3072 ]]; then
     echo "ERRO: menos de 3 GB disponiveis; libere espaco antes de compilar." >&2
     exit 1
