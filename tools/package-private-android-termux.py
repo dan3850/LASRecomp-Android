@@ -171,7 +171,24 @@ def main():
         with zipfile.ZipFile(signed) as apk:
             if APK_ENTRY not in apk.namelist() or not set(REQUIRED_APK).issubset(apk.namelist()):
                 fail("Verificacao final: faltam bibliotecas no APK assinado")
-        os.replace(signed, output)
+        # Download/ is emulated shared storage (a different mount from Termux).
+        # os.replace(signed, output) raises EXDEV across those mounts.
+        # Copy to a temporary sibling, then atomically rename inside Download/.
+        output_tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".lasrecomp-private-",
+                                             suffix=".apk.partial",
+                                             dir=output.parent,
+                                             delete=False) as staged:
+                output_tmp = Path(staged.name)
+                with signed.open("rb") as source:
+                    shutil.copyfileobj(source, staged, 1024 * 1024)
+            run(apksigner, "verify", "--verbose", str(output_tmp))
+            os.replace(output_tmp, output)
+            output_tmp = None
+        finally:
+            if output_tmp is not None:
+                output_tmp.unlink(missing_ok=True)
     print("APK PRIVADO PRONTO:", output, flush=True)
     print("Este APK inclui codigo do seu jogo: NAO envie/publice no GitHub.")
     print("Se ja instalou outro APK com assinatura diferente, o Android exigira desinstala-lo primeiro.")
