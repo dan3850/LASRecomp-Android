@@ -70,16 +70,26 @@ jobs:
           mapfile -t SOURCES < <(find runtime -maxdepth 1 -name '*.c'; find runtime/hle runtime/services runtime/nvn runtime/nvn/maxwell -maxdepth 1 -name '*.c')
           SOURCES+=(runtime/platform/android.c)
           OBJECTS=()
+          FAILED=()
           for src in "${SOURCES[@]}"; do
             case "$src" in
               runtime/hle/movie.c|runtime/nvn/smaa_data.c) continue ;;
             esac
             obj="build/android-runtime-objects/${src#runtime/}.o"
             mkdir -p "$(dirname "$obj")"
-            "$CC" -std=gnu11 -O2 -fPIC -fno-strict-aliasing -Wno-format -Werror=implicit-function-declaration \
-              -Iruntime -Iruntime/nvn -I"$SDL3_ANDROID_HEADERS" -c "$src" -o "$obj"
-            OBJECTS+=("$obj")
+            if "$CC" -std=gnu11 -O2 -fPIC -fno-strict-aliasing -Wno-format -Werror=implicit-function-declaration \
+              -Iruntime -Iruntime/nvn -I"$SDL3_ANDROID_HEADERS" -c "$src" -o "$obj"; then
+              OBJECTS+=("$obj")
+            else
+              FAILED+=("$src")
+              echo "::warning file=$src::Android ARM64 compiler failed for this original engine module"
+            fi
           done
+          if (( ${#FAILED[@]} )); then
+            printf 'Failed Android C files (%d):\n' "${#FAILED[@]}"
+            printf '  %s\n' "${FAILED[@]}"
+            exit 1
+          fi
           "$AR" rcs build/android-runtime-objects/liblasrecomp-core.a "${OBJECTS[@]}"
           echo "Compiled ${#OBJECTS[@]} actual LASRecomp engine units for Android ARM64"
 
