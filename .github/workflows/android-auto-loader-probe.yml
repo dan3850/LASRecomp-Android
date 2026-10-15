@@ -29,6 +29,12 @@ jobs:
             -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
             -o "$RUNNER_TEMP/liblocal_code_probe.so" \
             android/prepare/local_code_probe.c -ldl
+          cc -std=gnu11 -fPIC -shared -Wall -Wextra -Werror \
+            -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+            -o "$RUNNER_TEMP/libprivate_game_code.so" \
+            android/prepare/private_game_code.c -ldl
+          nm -D --defined-only "$RUNNER_TEMP/libprivate_game_code.so" \
+            | grep -q 'Java_com_retroaura_lasrecomp_GameImportActivity_nativeValidateGameCode'
           nm -D --defined-only "$RUNNER_TEMP/liblasrecomp_probe.so" \
             | grep -q 'lasrecomp_loader_probe'
           nm -D --defined-only "$RUNNER_TEMP/liblocal_code_probe.so" \
