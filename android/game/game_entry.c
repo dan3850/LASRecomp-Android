@@ -15,7 +15,7 @@ int SDL_main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 
-    const char *files = SDL_AndroidGetInternalStoragePath();
+    const char *files = SDL_GetAndroidInternalStoragePath();
     if (!files || files[0] != '/') {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      "LASRecomp: Android private files directory is unavailable");
