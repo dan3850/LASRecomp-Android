@@ -110,7 +110,7 @@ if [[ -n "${LASRECOMP_RUNTIME_SO:-}" ]]; then
             echo "ERRO: biblioteca com ABI diferente de ARM64: $so" >&2
             exit 1
         }
-        declared=$("$READELF" -d "$so" | sed -n 's/.*(SONAME).*\\[\\([^]]*\\)\\].*/\\1/p' | head -n 1)
+        declared=$("$READELF" -d "$so" | sed -n 's/.*(SONAME).*\[\([^]]*\)\].*/\1/p' | head -n 1)
         [[ -z "$declared" || "$declared" == "${soname##*/}" ]] || {
             echo "ERRO: SONAME Android invalido em $so: $declared" >&2
             exit 1
