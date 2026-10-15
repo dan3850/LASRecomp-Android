@@ -36,6 +36,7 @@ static void rtld_init_main(Cpu *c) { module_init(c, &g_modules[0]); }
 
 // Claim the guest address range before anything else can map there. The host allocator places
 // regions at random addresses in the same window; on a collision, re-exec for a fresh layout.
+#if !defined(__ANDROID__)
 __attribute__((constructor(101))) static void reserve_guest_space(void) {
     if (plat_reserve_guest(GUEST_LO, GUEST_HI)) return;
     const char *tries = getenv("LARECOMP_REEXEC");
@@ -51,6 +52,8 @@ __attribute__((constructor(101))) static void reserve_guest_space(void) {
     perror("re-exec");
     exit(1);
 }
+
+#endif // Android reserves guest memory at startup, not when the library loads.
 
 // ------------------------------------------------------------------ boot / in-place reboot
 // Switching seeds (or vanilla) and going back to the start screen reboot the game inside this process: the window,
@@ -159,7 +162,7 @@ static void boot(const char *root) {
     kernel_run_main(t, t->handle, 0, init_fn, fini_fn);  // nn::init::Start(thread_handle, args_region, init, fini)
 }
 
-int main(int argc, char **argv) {
+static int lasrecomp_run(int argc, char **argv) {
     plat_init();
 #ifdef _WIN32
     setvbuf(stderr, NULL, _IONBF, 0);  // the Windows CRT treats _IOLBF as full buffering
@@ -186,3 +189,30 @@ int main(int argc, char **argv) {
         title = kind == RT_REBOOT_TITLE;
     }
 }
+
+
+#if defined(__ANDROID__)
+// Entry for the actual Android game runtime. The app must supply getFilesDir();
+// this library does not read Termux paths or execute a standalone binary.
+// Linking the Activity and SDL3 window lifecycle is a separate remaining step.
+__attribute__((visibility("default")))
+int lasrecomp_android_start(const char *files_dir) {
+    if (!files_dir || files_dir[0] != '/' || setenv("LARECOMP_DATA_ROOT", files_dir, 1) != 0) {
+        fprintf(stderr, "[android] invalid app-private data directory\n");
+        return -1;
+    }
+    // Android app_process64 must never be re-executed to retry an ASLR mapping.
+    if (!plat_reserve_guest(GUEST_LO, GUEST_HI)) {
+        fprintf(stderr, "[android] cannot reserve guest memory %llx-%llx\n",
+                (unsigned long long)GUEST_LO, (unsigned long long)GUEST_HI);
+        return -2;
+    }
+    // Bypass the desktop launcher: the Android Activity already imports the
+    // game into <filesDir>/extracted. This must reach boot() directly once
+    // SDL3, the graphics backend and the generated game code are packaged.
+    char *args[] = { (char *)"lasrecomp", (char *)"--play", NULL };
+    return lasrecomp_run(2, args);
+}
+#else
+int main(int argc, char **argv) { return lasrecomp_run(argc, argv); }
+#endif

@@ -48,11 +48,24 @@ static int candidates(const char *game_dir, char out[3][1100]) {
 
 bool gamelib_present(const char *game_dir) {
     if (g_tables) return true;
+#ifdef __ANDROID__
+    // Android only loads generated machine code from the installed APK.
+    // Never dlopen an executable .so from the app's writable files folder.
+    // The loader verifies the table ABI and build ID, not a sidecar .id file.
+    void *lib = dlopen("liblasgame.so", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) return false;
+    GameLibEntry entry = (GameLibEntry)(void *)dlsym(lib, GAMELIB_ENTRY);
+    const GameLibTables *t = entry ? entry() : NULL;
+    bool valid = t && t->abi == GAMELIB_ABI && t->id && !strcmp(t->id, GAMELIB_ID);
+    dlclose(lib);
+    return valid;
+#else
     char c[3][1100];
     int n = candidates(game_dir, c);
     for (int i = 0; i < n; i++)
         if (exists(c[i]) && id_matches(c[i])) return true;
     return false;
+#endif
 }
 
 static const GameLibTables *open_lib(const char *path) {
@@ -79,6 +92,16 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
     if (!tried) {
         tried = true;
         snprintf(g_error, sizeof g_error, "the game code hasn't been built: set up the game files on the start screen");
+#ifdef __ANDROID__
+        // Android's executable-code W^X policy prevents loading a compiled
+        // .so from private writable data. This MUST be lib/arm64-v8a/liblasgame.so
+        // packaged and signed inside the installed APK itself.
+        g_tables = open_lib("liblasgame.so");
+        if (!g_tables && !strstr(g_error, "was built for another version")) {
+            snprintf(g_error, sizeof g_error,
+                     "No compatible liblasgame.so in the installed APK (private game recompilation required)");
+        }
+#else
         char c[3][1100];
         int n = candidates(game_dir, c);
         const char *env = getenv("LARECOMP_GAME_LIB");
@@ -93,6 +116,7 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
             if (g_tables) LOG("[gamelib] %s (%llu + %llu functions)\n", c[i], (unsigned long long)*g_tables->main_count,
                               (unsigned long long)*g_tables->sdk_count);
         }
+#endif
     }
     if (!g_tables && why) snprintf(why, why_size, "%s", g_error);
     return g_tables != NULL;

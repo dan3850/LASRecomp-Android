@@ -7,6 +7,8 @@
 
 #ifdef _WIN32
 #include "platform/win_compat.h"
+#elif defined(__ANDROID__)
+// Bionic, not glibc: do not include the Linux glibc compatibility shims.
 #elif defined(__linux__)
 #include "platform/linux_compat.h"
 #endif

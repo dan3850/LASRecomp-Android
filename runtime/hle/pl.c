@@ -115,6 +115,11 @@ static void load_fonts(void) {
                          "/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc", "C:/Windows/Fonts/YuGothR.ttc",
                          "C:/Windows/Fonts/YuGothM.ttc", "/System/Library/Fonts/Supplemental/Arial.ttf",
                          "C:/Windows/Fonts/arial.ttf",
+                         // Android: system TrueType fonts work without shipping Nintendo font data.
+                         // Keep the explicit override and user's own Switch font dump first.
+                         "/system/fonts/Roboto-Regular.ttf", "/system/fonts/RobotoStatic-Regular.ttf",
+                         "/system/fonts/NotoSans-Regular.ttf", "/system/fonts/DroidSans.ttf",
+                         "/product/fonts/Roboto-Regular.ttf",
                          // Linux: DejaVu Sans (Debian / Ubuntu, Arch, Fedora). Not Noto Sans CJK: CFF outlines,
                          // which the game's font engine crashes on (it wants TrueType)
                          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",

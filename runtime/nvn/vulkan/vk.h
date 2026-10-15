@@ -9,7 +9,13 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#ifdef __ANDROID__
+// The NDK Vulkan link stub doesn't export the Vulkan 1.3 calls used here.
+// Volk resolves them from the device loader at runtime.
+#include <volk.h>
+#else
 #include <vulkan/vulkan.h>
+#endif
 #if __has_include(<vma/vk_mem_alloc.h>)
 #include <vma/vk_mem_alloc.h>
 #else

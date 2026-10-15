@@ -1,4 +1,7 @@
 // Vulkan Memory Allocator implementation (header-only library, MSYS2 package vulkan-memory-allocator).
+#ifdef __ANDROID__
+#include <volk.h>
+#endif
 #define VMA_IMPLEMENTATION
 #define VMA_STATIC_VULKAN_FUNCTIONS 1
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
