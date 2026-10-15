@@ -74,6 +74,51 @@ if [[ -n "${SDL3_ANDROID_SO:-}" || -n "${SDL3_ANDROID_HEADERS:-}" || -n "${SDL3_
     NATIVE_LIBS+=(lib/arm64-v8a/libSDL3.so lib/arm64-v8a/libmain.so)
 fi
 
+# Only include the real engine when it was compiled and strictly linked.
+# An NDK .so is not a Termux executable: all of these run inside the APK.
+if [[ -n "${LASRECOMP_RUNTIME_SO:-}" ]]; then
+    [[ -s "$LASRECOMP_RUNTIME_SO" ]] || {
+        echo "ERRO: motor LASRecomp Android nao encontrado: $LASRECOMP_RUNTIME_SO" >&2
+        exit 1
+    }
+    [[ -s "${SHADERC_SO:-}" && -d "${FFMPEG_INSTALL_DIR:-}/lib" && -d "${ANDROID_NDK_HOME:-}" ]] || {
+        echo "ERRO: dependencias ARM64 de shaderc/FFmpeg/NDK ausentes" >&2
+        exit 1
+    }
+    LIBOUT="$OUT/lib/arm64-v8a"
+    READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+    [[ -x "$READELF" ]] || { echo "ERRO: llvm-readelf ausente" >&2; exit 1; }
+    cp -L "$LASRECOMP_RUNTIME_SO" "$LIBOUT/liblasrecomp_runtime.so"
+    cp -L "$SHADERC_SO" "$LIBOUT/libshaderc_shared.so"
+    NATIVE_LIBS+=(lib/arm64-v8a/liblasrecomp_runtime.so lib/arm64-v8a/libshaderc_shared.so)
+    for lib in avformat avcodec avutil swscale; do
+        file="$FFMPEG_INSTALL_DIR/lib/lib${lib}.so"
+        [[ -s "$file" ]] || { echo "ERRO: FFmpeg nao encontrado: $file" >&2; exit 1; }
+        cp -L "$file" "$LIBOUT/lib${lib}.so"
+        NATIVE_LIBS+=("lib/arm64-v8a/lib${lib}.so")
+    done
+    CXX_SHARED="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+    [[ -s "$CXX_SHARED" ]] || { echo "ERRO: libc++_shared.so nao encontrada" >&2; exit 1; }
+    cp -L "$CXX_SHARED" "$LIBOUT/libc++_shared.so"
+    NATIVE_LIBS+=(lib/arm64-v8a/libc++_shared.so)
+
+    # A generated library with a versioned desktop SONAME (e.g. .so.61)
+    # cannot be extracted as an Android lib*.so entry; reject it here.
+    for soname in "${NATIVE_LIBS[@]}"; do
+        so="$OUT/$soname"
+        "$READELF" -h "$so" | grep -q "AArch64" || {
+            echo "ERRO: biblioteca com ABI diferente de ARM64: $so" >&2
+            exit 1
+        }
+        declared=$("$READELF" -d "$so" | sed -n 's/.*(SONAME).*\\[\\([^]]*\\)\\].*/\\1/p' | head -n 1)
+        [[ -z "$declared" || "$declared" == "${soname##*/}" ]] || {
+            echo "ERRO: SONAME Android invalido em $so: $declared" >&2
+            exit 1
+        }
+    done
+    echo "Biblioteca real LASRecomp e dependencias ARM64 incluidas no APK."
+fi
+
 javac -source 8 -target 8 -encoding UTF-8 -classpath "$ANDROID_JAR" \
     -d "$OUT/java-classes" "${JAVA_SOURCES[@]}"
 jar cf "$OUT/app-classes.jar" -C "$OUT/java-classes" .
