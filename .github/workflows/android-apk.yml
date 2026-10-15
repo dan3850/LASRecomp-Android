@@ -45,6 +45,7 @@ jobs:
           test -s "$SDL3_SO"
           echo "SDL3_ANDROID_SO=$SDL3_SO" >> "$GITHUB_ENV"
           echo "SDL3_ANDROID_HEADERS=$RUNNER_TEMP/SDL3/include" >> "$GITHUB_ENV"
+          echo "SDL3_ANDROID_JAVA_ROOT=$RUNNER_TEMP/SDL3/android-project/app/src/main/java" >> "$GITHUB_ENV"
       - name: Compile and sign Android APK
         shell: bash
         run: |
