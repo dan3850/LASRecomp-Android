@@ -38,6 +38,10 @@ int SDL_main(int argc, char **argv) {
     }
 
     boot_mark(files, "SDL_main entered", 0);
+#ifdef __ANDROID__
+    // Optional modest Android-only output gain, leaving stream timing untouched.
+    if (!getenv("LARECOMP_AUDIO_GAIN")) setenv("LARECOMP_AUDIO_GAIN", "1.35", 0);
+#endif
 
     /*
      * The full C/C++ runtime (with SDL3, Vulkan, FFmpeg and the generated
