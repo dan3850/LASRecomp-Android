@@ -19,6 +19,15 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # Validate the private game-code path without using or uploading any
+      # Nintendo game files. Game recompilation itself requires the user's NSOs.
+      - name: Verify Android game library build scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n tools/build-android-lasgame.sh
+          bash -n tools/build-android-termux.sh
+          python3 -m py_compile tools/gen.py
       # GitHub's Ubuntu runner already includes Android sdkmanager.
       - name: Install SDK platform, build tools, and NDK
         run: |
