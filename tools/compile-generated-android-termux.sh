@@ -10,14 +10,14 @@
 # The .so contains owner-derived Zelda game code. Do not publish it.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/build/gamecode"
 OBJ="$ROOT/build/private-android-lasgame-termux/objects"
 OUT="$ROOT/build/private-android-lasgame-termux"
 LIB="$OUT/liblasgame.so"
 ENTRY="$ROOT/tools/gamelib_entry.c"
 
-if [[ "$(uname -m)" != "aarch64" || "\${PREFIX:-}" != /data/data/com.termux/files/usr ]]; then
+if [[ "$(uname -m)" != "aarch64" || "${PREFIX:-}" != /data/data/com.termux/files/usr ]]; then
     echo "ERRO: rode diretamente no Termux ARM64, fora do proot Ubuntu." >&2
     exit 1
 fi
@@ -27,7 +27,7 @@ for file in "$SRC/main/main_table.c" "$SRC/sdk/sdk_table.c" "$ENTRY"; do
     [[ -s "$file" ]] || { echo "ERRO: codigo C incompleto: $file" >&2; exit 1; }
 done
 for folder in main sdk; do
-    [[ -s "$SRC/$folder/\${folder}_000.c" ]] || {
+    [[ -s "$SRC/$folder/${folder}_000.c" ]] || {
         echo "ERRO: faltam os fragmentos do modulo $folder" >&2
         exit 1
     }
@@ -42,7 +42,7 @@ fi
 mkdir -p "$OBJ"
 mapfile -d '' -t SOURCES < <(find "$SRC/main" "$SRC/sdk" -maxdepth 1 -type f -name '*.c' -print0 | sort -z)
 SOURCES+=("$ENTRY")
-TOTAL="\${#SOURCES[@]}"
+TOTAL="${#SOURCES[@]}"
 if (( TOTAL < 700 )); then
     echo "ERRO: a geracao completa parece ausente ($TOTAL arquivos; esperado >700)." >&2
     exit 1
@@ -63,19 +63,19 @@ CFLAGS=(-std=gnu11 -O1 -g0 -fPIC -fno-strict-aliasing
 OBJECTS=()
 N=0
 BUILT=0
-for src in "\${SOURCES[@]}"; do
+for src in "${SOURCES[@]}"; do
     N=$((N+1))
     if [[ "$src" == "$ENTRY" ]]; then
         rel="gamelib_entry.c"
     else
-        rel="\${src#"$SRC"/}"
+        rel="${src#"$SRC"/}"
     fi
-    obj="$OBJ/\${rel%.c}.o"
+    obj="$OBJ/${rel%.c}.o"
     mkdir -p "$(dirname "$obj")"
     if [[ ! -s "$obj" || "$src" -nt "$obj" || "$ROOT/runtime/cpu.h" -nt "$obj" || "$ROOT/runtime/simd.h" -nt "$obj" || "$ROOT/runtime/gamelib.h" -nt "$obj" ]]; then
         echo "[$N/$TOTAL] Compilando $rel"
         # Only replace a completed object; Ctrl+C leaves all prior objects safe.
-        clang "\${CFLAGS[@]}" -c "$src" -o "$obj.partial"
+        clang "${CFLAGS[@]}" -c "$src" -o "$obj.partial"
         mv -f "$obj.partial" "$obj"
         BUILT=$((BUILT+1))
     elif (( N % 40 == 0 || N == TOTAL )); then
@@ -90,7 +90,7 @@ TMP="$OUT/liblasgame.so.partial"
 # RTLD_GLOBAL liblasrecomp_runtime.so when installed and started. The final
 # Android APK loader, ABI and actual boot must still be verified.
 clang -shared -Wl,-z,max-page-size=16384 -Wl,-soname,liblasgame.so \
-    -Wl,--build-id=sha1 -o "$TMP" "\${OBJECTS[@]}" \
+    -Wl,--build-id=sha1 -o "$TMP" "${OBJECTS[@]}" \
     -llog -landroid -ldl -lm
 llvm-nm -D --defined-only "$TMP" | grep -Eq '[[:space:]]lasgame_tables$' || {
     echo "ERRO: biblioteca nao exportou lasgame_tables" >&2
