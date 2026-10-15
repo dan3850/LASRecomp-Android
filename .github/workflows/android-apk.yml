@@ -57,18 +57,32 @@ jobs:
           export ANDROID_ZIPALIGN="$ANDROID_HOME/build-tools/35.0.0/zipalign"
           export ANDROID_APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           bash tools/build-android-termux.sh
-      # Compile original runtime modules, not another standalone Vulkan test.
-      - name: Compile original LASRecomp core for Android ARM64
+      # Cross-compile all available real C engine modules (not synthetic
+      # rendering smoke tests). FFmpeg movie, shaderc and the generated SMAA
+      # HLSL include need dedicated Android dependency targets afterwards.
+      - name: Compile expanded LASRecomp engine ARM64 objects
         shell: bash
         run: |
           set -euo pipefail
           CC="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          AR="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           mkdir -p build/android-runtime-objects
-          # Include the real Android start routine; this is not a mock boot.
-          for src in runtime/platform/android.c runtime/loader.c runtime/gamelib.c runtime/dispatch.c runtime/main.c; do
-            obj="build/android-runtime-objects/$(basename "${src%.c}").o"
-            "$CC" -std=gnu11 -O2 -fPIC -Werror=implicit-function-declaration -Iruntime -I"$SDL3_ANDROID_HEADERS" -c "$src" -o "$obj"
+          mapfile -t SOURCES < <(find runtime -maxdepth 1 -name '*.c'; find runtime/hle runtime/services runtime/nvn runtime/nvn/maxwell -maxdepth 1 -name '*.c')
+          SOURCES+=(runtime/platform/android.c)
+          OBJECTS=()
+          for src in "${SOURCES[@]}"; do
+            case "$src" in
+              runtime/hle/movie.c|runtime/nvn/smaa_data.c) continue ;;
+            esac
+            obj="build/android-runtime-objects/${src#runtime/}.o"
+            mkdir -p "$(dirname "$obj")"
+            "$CC" -std=gnu11 -O2 -fPIC -fno-strict-aliasing -Wno-format -Werror=implicit-function-declaration \
+              -Iruntime -Iruntime/nvn -I"$SDL3_ANDROID_HEADERS" -c "$src" -o "$obj"
+            OBJECTS+=("$obj")
           done
+          "$AR" rcs build/android-runtime-objects/liblasrecomp-core.a "${OBJECTS[@]}"
+          echo "Compiled ${#OBJECTS[@]} actual LASRecomp engine units for Android ARM64"
+
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
