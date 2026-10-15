@@ -350,12 +350,25 @@ static void create_swapchain(void) {
     uint32_t count = caps.minImageCount + 1;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
+    // The game and ImGui draw in unrotated SDL window coordinates. Claiming
+    // currentTransform here tells Android we have already pre-rotated the
+    // pixels, which rotates / distorts the game on landscape phone surfaces.
+    // For Android, let the compositor rotate the image until our renderer
+    // supports Vulkan native pre-rotation (including 90/270 extent swaps).
+    VkSurfaceTransformFlagBitsKHR pre_transform = caps.currentTransform;
+#ifdef __ANDROID__
+    if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+        pre_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+#endif
+    LOG("[vk] surface SDL=%dx%d extent=%ux%u currentTransform=%#x supportedTransforms=%#x preTransform=%#x\n",
+        w, h, ext.width, ext.height, (unsigned)caps.currentTransform,
+        (unsigned)caps.supportedTransforms, (unsigned)pre_transform);
     VkSwapchainKHR old = g_vk.swapchain;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = pre_transform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
