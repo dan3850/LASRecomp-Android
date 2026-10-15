@@ -1,0 +1,46 @@
+name: Android APK (arm64-v8a)
+
+on:
+  push:
+    branches:
+      - android/phase1-termux-bootstrap
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Compile installable APK
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # GitHub's Ubuntu runner already includes Android sdkmanager.
+      - name: Install SDK platform, build tools, and NDK
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+      - name: Compile and sign Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:?SDK missing}}"
+          export ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
+          export ANDROID_CC="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          export ANDROID_AAPT2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          export ANDROID_ZIPALIGN="$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          export ANDROID_APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          bash tools/build-android-termux.sh
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LASRecomp-Android-ARM64-APK
+          path: build/android-bootstrap/LASRecomp-Android.apk
+          if-no-files-found: error
+          retention-days: 14
