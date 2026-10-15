@@ -207,8 +207,11 @@ int lasrecomp_android_start(const char *files_dir) {
                 (unsigned long long)GUEST_LO, (unsigned long long)GUEST_HI);
         return -2;
     }
-    char *args[] = { (char *)"lasrecomp", NULL };
-    return lasrecomp_run(1, args);
+    // Bypass the desktop launcher: the Android Activity already imports the
+    // game into <filesDir>/extracted. This must reach boot() directly once
+    // SDL3, the graphics backend and the generated game code are packaged.
+    char *args[] = { (char *)"lasrecomp", (char *)"--play", NULL };
+    return lasrecomp_run(2, args);
 }
 #else
 int main(int argc, char **argv) { return lasrecomp_run(argc, argv); }
