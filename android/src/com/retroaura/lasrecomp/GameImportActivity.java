@@ -44,11 +44,13 @@ public final class GameImportActivity extends Activity {
 
     private static final int PICK_GAME_FOLDER = 101;
     private static final int PICK_GAME_CODE = 102;
+    private static final int PICK_SYSTEM_FONT = 103;
     // Test route only: the final release will compile this file inside the app.
     private static final long MAX_LIBRARY_BYTES = 1024L * 1024L * 1024L;
     private TextView status;
     private Button importButton;
     private Button libraryButton;
+    private Button fontButton;
     private Button verifyButton;
     private Button playButton;
     private boolean importing;
@@ -104,6 +106,13 @@ public final class GameImportActivity extends Activity {
         libraryButton.setText("TESTE: IMPORTAR MINHA LIBLASGAME.SO");
         libraryButton.setOnClickListener(v -> selectGameCodeFile());
         layout.addView(libraryButton);
+
+        // System fonts are console-owned, not stored in Zelda's NSP or our APK.
+        // Users may import their own legitimate Switch Standard/NintendoExt font.
+        fontButton = new Button(this);
+        fontButton.setText("IMPORTAR FONTE DO MEU SWITCH (OPCIONAL)");
+        fontButton.setOnClickListener(v -> selectSystemFont());
+        layout.addView(fontButton);
 
         verifyButton = new Button(this);
         verifyButton.setText("TESTE: VERIFICAR BIBLIOTECA DO ZELDA");
@@ -211,6 +220,108 @@ public final class GameImportActivity extends Activity {
 
     private File privateGameCodeFile() {
         return new File(getCodeCacheDir(), "liblasgame.so");
+    }
+
+    private void selectSystemFont() {
+        if (importing) return;
+        new AlertDialog.Builder(this)
+            .setTitle("Fonte de sistema do seu Switch")
+            .setMessage("A fonte padrão do APK é apenas uma substituta. Se você extraiu legalmente de seu próprio Switch os arquivos nintendo_udsg-r_std_003.bfttf ou nintendo_ext_003.bfttf (ou versões .ttf), pode importar um por vez. Esses arquivos não fazem parte do Zelda NSP, não são enviados e não serão incluídos no APK. Reinicie o jogo após importar.")
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Selecionar fonte", (dialog, which) -> {
+                Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                picker.addCategory(Intent.CATEGORY_OPENABLE);
+                picker.setType("*/*");
+                picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivityForResult(picker, PICK_SYSTEM_FONT);
+            }).show();
+    }
+
+    private static int le32(byte[] b, int o) {
+        return (b[o] & 255) | ((b[o + 1] & 255) << 8)
+            | ((b[o + 2] & 255) << 16) | ((b[o + 3] & 255) << 24);
+    }
+
+    private void importSystemFont(Uri source) {
+        String error = null;
+        String installed = null;
+        File temporary = null;
+        try {
+            String sourceName = null;
+            try (Cursor c = getContentResolver().query(source,
+                    new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null)) {
+                if (c != null && c.moveToFirst()) sourceName = c.getString(0);
+            }
+            if (sourceName == null) throw new IllegalStateException("Arquivo sem nome");
+            String n = sourceName.toLowerCase(java.util.Locale.ROOT);
+            boolean standard = n.startsWith("nintendo_udsg-r_std_003.")
+                || n.startsWith("nintendo_udsgr_std_003.");
+            boolean ext = n.startsWith("nintendo_ext_003.");
+            boolean bfttf = n.endsWith(".bfttf");
+            boolean ttf = n.endsWith(".ttf");
+            if ((!standard && !ext) || (!bfttf && !ttf))
+                throw new IllegalStateException("Selecione nintendo_udsg-r_std_003 ou nintendo_ext_003, em .bfttf ou .ttf");
+            String targetName = (standard ? "nintendo_udsg-r_std_003" : "nintendo_ext_003")
+                + (bfttf ? ".bfttf" : ".ttf");
+            File dir = new File(getFilesDir(), "fonts");
+            if (!dir.isDirectory() && !dir.mkdirs())
+                throw new IllegalStateException("Não foi possível criar a pasta das fontes");
+            temporary = File.createTempFile(".lasrecomp-font-", ".tmp", dir);
+            long copied = 0;
+            try (InputStream in = getContentResolver().openInputStream(source);
+                 FileOutputStream out = new FileOutputStream(temporary)) {
+                if (in == null) throw new IllegalStateException("Não foi possível abrir o arquivo");
+                byte[] buffer = new byte[65536];
+                int count;
+                while ((count = in.read(buffer)) != -1) {
+                    copied += count;
+                    if (copied > 64L * 1024L * 1024L)
+                        throw new IllegalStateException("Fonte maior que 64 MB");
+                    out.write(buffer, 0, count);
+                }
+                out.getFD().sync();
+            }
+            if (copied < 1024) throw new IllegalStateException("Fonte pequena ou vazia");
+            byte[] h = new byte[12];
+            try (FileInputStream in = new FileInputStream(temporary)) {
+                if (in.read(h) < h.length) throw new IllegalStateException("Cabeçalho incompleto");
+            }
+            int sfnt = le32(h, 0);
+            if (bfttf) {
+                int ver = le32(h, 8);
+                int key = 0x49621806;
+                if (!((ver ^ key) == 0x00000100 || (ver ^ key) == 0x4F54544F
+                    || (ver ^ Integer.reverseBytes(key)) == 0x00000100
+                    || (ver ^ Integer.reverseBytes(key)) == 0x4F54544F))
+                    throw new IllegalStateException("Arquivo .bfttf inválido");
+            } else if (!(sfnt == 0x00000100 || sfnt == 0x4F54544F || sfnt == 0x66637474)) {
+                // sfnt 1.0, OpenType (OTTO) or TTC (ttcf) in little endian.
+                throw new IllegalStateException("Arquivo .ttf não reconhecido");
+            }
+            File destination = new File(dir, targetName);
+            java.nio.file.Files.move(temporary.toPath(), destination.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            temporary = null;
+            installed = targetName;
+        } catch (Exception e) {
+            error = e.getMessage() == null ? e.toString() : e.getMessage();
+        } finally {
+            if (temporary != null) temporary.delete();
+        }
+        final String failure = error, success = installed;
+        runOnUiThread(() -> {
+            importing = false;
+            importButton.setEnabled(true);
+            libraryButton.setEnabled(true);
+            fontButton.setEnabled(true);
+            showGameFilesState();
+            new AlertDialog.Builder(this)
+                .setTitle(failure == null ? "Fonte importada" : "Falha ao importar fonte")
+                .setMessage(failure == null
+                    ? success + " instalado na pasta privada. Feche o Zelda e abra novamente para testar os textos e símbolos."
+                    : failure)
+                .setPositiveButton("OK", null).show();
+        });
     }
 
     private void selectGameCodeFile() {
@@ -338,6 +449,7 @@ public final class GameImportActivity extends Activity {
         playButton.setText(files && code ? "JOGAR" : "JOGAR — AGUARDANDO ARQUIVOS E BIBLIOTECA");
         verifyButton.setVisibility(privateGameCodeFile().isFile() ? View.VISIBLE : View.GONE);
         verifyButton.setEnabled(!importing);
+        fontButton.setEnabled(!importing);
         if (files && code) {
             status.setText("Arquivos e código recompilado disponíveis.\nPronto para tentar iniciar o jogo.");
         } else if (files) {
@@ -359,6 +471,19 @@ public final class GameImportActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PICK_SYSTEM_FONT) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                importing = true;
+                importButton.setEnabled(false);
+                libraryButton.setEnabled(false);
+                fontButton.setEnabled(false);
+                playButton.setEnabled(false);
+                status.setText("Importando fonte do próprio console...");
+                Uri source = data.getData();
+                new Thread(() -> importSystemFont(source), "LASRecompFontImport").start();
+            }
+            return;
+        }
         if (requestCode == PICK_GAME_CODE) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 importing = true;
