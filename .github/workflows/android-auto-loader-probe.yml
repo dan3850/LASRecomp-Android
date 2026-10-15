@@ -1,0 +1,48 @@
+name: Android Local Loader Probe (source checks)
+
+on:
+  push:
+    branches: [android/on-device-auto-build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash build script syntax
+        run: bash -n tools/build-android-termux.sh
+      - name: Compile harmless probe and JNI bridge (host syntax)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -fPIC -shared -Wall -Wextra -Werror \
+            -o "$RUNNER_TEMP/liblasrecomp_probe.so" \
+            android/prepare/loader_probe_module.c
+          # Compile JNI bridge using host JDK headers, without game files.
+          # This verifies the C source only; Android's dlopen permissions
+          # must still be checked on a real device.
+          cc -std=gnu11 -fPIC -shared -Wall -Wextra -Werror \
+            -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+            -o "$RUNNER_TEMP/liblocal_code_probe.so" \
+            android/prepare/local_code_probe.c -ldl
+          nm -D --defined-only "$RUNNER_TEMP/liblasrecomp_probe.so" \
+            | grep -q 'lasrecomp_loader_probe'
+          nm -D --defined-only "$RUNNER_TEMP/liblocal_code_probe.so" \
+            | grep -q 'Java_com_retroaura_lasrecomp_GameImportActivity_nativeProbeLocalCode'
+      - name: Compile Android Activity against SDK (no game data)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-35"
+          mkdir -p "$RUNNER_TEMP/classes"
+          javac -source 8 -target 8 -encoding UTF-8 \
+            -classpath "$ANDROID_HOME/platforms/android-35/android.jar" \
+            -d "$RUNNER_TEMP/classes" \
+            android/src/com/retroaura/lasrecomp/GameImportActivity.java
