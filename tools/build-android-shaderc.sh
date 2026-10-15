@@ -44,6 +44,19 @@ assert old in s, "shaderc third_party CMake logic changed; inspect before patchi
 p.write_text(s.replace(old, 'set(GLSLANG_ENABLE_INSTALL OFF)'))
 PY
 
+# Android's APK native-library extraction recognizes lib*.so entries, not
+# libshaderc_shared.so.1. Keep the upstream library ABI, but avoid the
+# desktop-only versioned SONAME in our private Android build.
+python3 - "$SHADERC_SRC/libshaderc/CMakeLists.txt" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+old = 'set_target_properties(shaderc_shared PROPERTIES SOVERSION 1)'
+assert old in s, "shaderc shared library version settings changed"
+p.write_text(s.replace(old, ''))
+PY
+
 cmake -S "$SHADERC_SRC" -B "$SHADERC_OUTPUT_DIR/build" \
     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
