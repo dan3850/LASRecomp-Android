@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: android-actions/setup-android@v3
+      # GitHub's Ubuntu runner already includes Android sdkmanager.
       - name: Install SDK platform, build tools, and NDK
         run: |
           sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
