@@ -19,6 +19,14 @@ VkG g_vk;
 static SDL_Window *window;
 static atomic_bool ui_ready;
 static VkDebugUtilsMessengerEXT messenger;
+// Android may replace its native window without changing SDL's reported pixel size.
+// A lost VkSurfaceKHR needs a new SDL/Vulkan surface, not just a new swapchain.
+static bool surface_rebuild_needed;
+static Uint64 last_surface_rebuild_attempt_ns;
+static void mark_surface_lost(const char *op) {
+    if (!surface_rebuild_needed) LOG("[vk] surface lost at %s; will rebuild surface and swapchain\n", op);
+    surface_rebuild_needed = true;
+}
 
 // ================================================================== instance / device
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
@@ -333,7 +341,9 @@ static VkPresentModeKHR present_mode(void) {
 
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
-    VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
+    VkResult cap_r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
+    if (cap_r == VK_ERROR_SURFACE_LOST_KHR) { mark_surface_lost("surface capabilities"); return; }
+    VK_CHECK(cap_r);
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
@@ -371,7 +381,11 @@ static void create_swapchain(void) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = pre_transform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
-    VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+    VkSwapchainKHR next = VK_NULL_HANDLE;
+    VkResult create_r = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &next);
+    if (create_r == VK_ERROR_SURFACE_LOST_KHR) { mark_surface_lost("swapchain create"); return; }
+    VK_CHECK(create_r);
+    g_vk.swapchain = next;
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
     g_vk.sc_format = sf.format;
@@ -389,6 +403,41 @@ static void create_swapchain(void) {
 static void recreate_swapchain(void) {
     vkDeviceWaitIdle(g_vk.dev);
     create_swapchain();
+}
+
+// Only the SDL window can provide the current Android native surface. Retrying
+// the old swapchain on VK_ERROR_SURFACE_LOST_KHR loops forever after resume.
+static bool recover_lost_surface(void) {
+#ifdef __ANDROID__
+    Uint64 now = SDL_GetTicksNS();
+    if (last_surface_rebuild_attempt_ns && now - last_surface_rebuild_attempt_ns < 500000000ULL) return false;
+    last_surface_rebuild_attempt_ns = now;
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w <= 0 || h <= 0) return false;
+    VkResult idle = vkDeviceWaitIdle(g_vk.dev);
+    if (idle != VK_SUCCESS) { LOG("[vk] surface recovery device wait failed: %d\n", idle); return false; }
+    for (uint32_t i = 0; i < g_vk.sc_count; ++i) {
+        if (g_vk.sc_views[i]) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+        g_vk.sc_views[i] = VK_NULL_HANDLE;
+    }
+    g_vk.sc_count = 0;
+    if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    g_vk.swapchain = VK_NULL_HANDLE;
+    if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
+    g_vk.surface = VK_NULL_HANDLE;
+    if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) {
+        LOG("[vk] SDL surface not ready for recovery: %s\n", SDL_GetError());
+        return false;
+    }
+    create_swapchain();
+    if (!g_vk.swapchain) { LOG("[vk] new surface not yet ready for swapchain\n"); return false; }
+    surface_rebuild_needed = false;
+    LOG("[vk] Android Vulkan surface and swapchain recovered\n");
+    return true;
+#else
+    return false;
+#endif
 }
 
 // ================================================================== frames (start screen and game)
@@ -427,8 +476,9 @@ bool vk_frame_begin(const float clear[4]) {
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     if (!w || !h) return false;  // minimised
+    if (surface_rebuild_needed && !recover_lost_surface()) { SDL_Delay(16); return false; }
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
-    if (!g_vk.swapchain) return false;
+    if (surface_rebuild_needed || !g_vk.swapchain) return false;
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
     if (trace) LOG("[vk] frame begin %dx%d (swapchain %ux%u)\n", w, h, g_vk.sc_extent.width, g_vk.sc_extent.height);
@@ -440,6 +490,7 @@ bool vk_frame_begin(const float clear[4]) {
         recreate_swapchain();
         r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
     }
+    if (r == VK_ERROR_SURFACE_LOST_KHR) { mark_surface_lost("acquire"); return false; }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { LOG("[vk] acquire failed: %d\n", r); return false; }
     cur_frame.acquired = acquire_sem[slot];
     slot_seq[slot] = vk_pending_seq();
@@ -508,7 +559,12 @@ void vk_frame_end(const char *shot_path) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
+    // Android may legitimately report SUBOPTIMAL every frame when the compositor
+    // rotates an identity-preTransform swapchain; recreating on every present
+    // forces vkDeviceWaitIdle and causes severe FPS drops.
+    if (r == VK_ERROR_SURFACE_LOST_KHR) mark_surface_lost("present");
+    else if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();
+    else if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) LOG("[vk] present failed: %d\n", r);
     cur_frame.ok = false;
     if (shot_path) {
         vk_wait_seq(seq);
