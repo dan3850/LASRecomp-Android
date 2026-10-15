@@ -4,19 +4,29 @@
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <application
         android:label="LASRecomp Android"
-        android:hasCode="false"
+        android:hasCode="true"
+        android:allowBackup="false"
         android:extractNativeLibs="true">
+        <!-- App-owned game file import: no Termux at runtime. -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name=".GameImportActivity"
             android:label="LASRecomp Android"
             android:exported="true"
             android:screenOrientation="landscape">
-            <meta-data android:name="android.app.lib_name"
-                android:value="lasrecomp_bootstrap" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+        <!-- Native runtime will replace the previous Vulkan diagnostic; keep
+             unexported until SDL3 and the recompiler are linked. -->
+        <activity
+            android:name="android.app.NativeActivity"
+            android:label="LASRecomp Game"
+            android:exported="false"
+            android:screenOrientation="landscape">
+            <meta-data android:name="android.app.lib_name"
+                android:value="lasrecomp_bootstrap" />
         </activity>
     </application>
 </manifest>
