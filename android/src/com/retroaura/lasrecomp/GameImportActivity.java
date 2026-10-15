@@ -23,8 +23,8 @@ import java.util.List;
  * Link's Awakening 1.0.0 game files directly into app-private storage.
  * No shell, Termux, or external executable is invoked.
  *
- * The native game entry remains disabled until the upstream runtime, graphics
- * and recompiler are linked. Do not offer a misleading "Play" button yet.
+ * Only offer a game launch when both the real imported files and a privately
+ * installed ARM64 game-code library are present; no diagnostic boot screen.
  */
 public final class GameImportActivity extends Activity {
     // Real LASRecomp RomFS builder, packaged inside this APK (no Termux).
@@ -34,6 +34,7 @@ public final class GameImportActivity extends Activity {
     private static final int PICK_GAME_FOLDER = 101;
     private TextView status;
     private Button importButton;
+    private Button playButton;
     private boolean importing;
 
     private static final class Entry {
@@ -74,6 +75,17 @@ public final class GameImportActivity extends Activity {
         importButton.setText("IMPORTAR ARQUIVOS DO JOGO");
         importButton.setOnClickListener(v -> pickGameFolder());
         layout.addView(importButton);
+        playButton = new Button(this);
+        playButton.setText("JOGAR");
+        playButton.setVisibility(View.GONE);
+        playButton.setOnClickListener(v -> {
+            if (!importing && hasGameFiles(extractedDir()) && hasGameCode()) {
+                Intent game = new Intent();
+                game.setClassName(this, "com.retroaura.lasrecomp.GameSDLActivity");
+                startActivity(game);
+            }
+        });
+        layout.addView(playButton);
         setContentView(layout);
         showGameFilesState();
     }
@@ -90,12 +102,26 @@ public final class GameImportActivity extends Activity {
             && new File(root, "romfs.bin").isFile();
     }
 
+    private boolean hasGameCode() {
+        // android:extractNativeLibs=true; code must come from the signed APK,
+        // never from app-private writable game data or a Termux filesystem.
+        String dir = getApplicationInfo().nativeLibraryDir;
+        return dir != null && new File(dir, "liblasgame.so").isFile()
+            && new File(dir, "liblasrecomp_runtime.so").isFile();
+    }
+
     private void showGameFilesState() {
-        if (hasGameFiles(extractedDir())) {
-            status.setText("Arquivos do jogo importados.\nA inicialização nativa está em integração.\nO jogo ainda não está habilitado.");
+        boolean files = hasGameFiles(extractedDir());
+        boolean code = hasGameCode();
+        playButton.setVisibility(files && code && !importing ? View.VISIBLE : View.GONE);
+        if (files && code) {
+            status.setText("Arquivos e código recompilado disponíveis.\nPronto para tentar iniciar o jogo.");
+        } else if (files) {
+            status.setText("Arquivos do jogo importados.\nAinda falta o código recompilado dentro deste APK.");
         } else {
             status.setText("Selecione a pasta com exefs e romfs da sua cópia do jogo v1.0.0.\n"
-                + "Os arquivos serão guardados apenas neste aplicativo.");
+                + "Os arquivos serão guardados apenas neste aplicativo."
+                + (code ? "\nO código do jogo já está instalado neste APK." : ""));
         }
     }
 
@@ -119,6 +145,7 @@ public final class GameImportActivity extends Activity {
         }
         importing = true;
         importButton.setEnabled(false);
+        playButton.setVisibility(View.GONE);
         status.setText("Copiando e preparando os arquivos do jogo...");
         new Thread(() -> importTree(tree), "LASRecompImport").start();
     }
