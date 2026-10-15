@@ -24,14 +24,15 @@ public final class GameTouchControls extends View {
     private static final String[] LABELS = {
         "▲","▼","◀","▶", "A","B","X","Y", "L","R","ZL","ZR","+","−"
     };
-    // The left stick uses WASD; double-send arrows for SDL menus/d-pad.
-    // Face buttons are the original LASRecomp keyboard defaults.
+    // The guest left stick uses WASD; do not also send D-pad shortcuts.
+    // Face buttons use the LASRecomp keyboard bindings (K/J/L/I).
+    // Enter is exclusively PLUS: sending it with A would pause the game.
     private static final int[][] KEYS = {
-        {KeyEvent.KEYCODE_W,KeyEvent.KEYCODE_DPAD_UP},
-        {KeyEvent.KEYCODE_S,KeyEvent.KEYCODE_DPAD_DOWN},
-        {KeyEvent.KEYCODE_A,KeyEvent.KEYCODE_DPAD_LEFT},
-        {KeyEvent.KEYCODE_D,KeyEvent.KEYCODE_DPAD_RIGHT},
-        {KeyEvent.KEYCODE_K,KeyEvent.KEYCODE_ENTER},
+        {KeyEvent.KEYCODE_W},
+        {KeyEvent.KEYCODE_S},
+        {KeyEvent.KEYCODE_A},
+        {KeyEvent.KEYCODE_D},
+        {KeyEvent.KEYCODE_K},
         {KeyEvent.KEYCODE_J},
         {KeyEvent.KEYCODE_L},
         {KeyEvent.KEYCODE_I},
