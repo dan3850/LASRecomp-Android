@@ -103,6 +103,9 @@ jobs:
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
           export SHADERC_SRC="$RUNNER_TEMP/las-shaderc"
           export VMA_SRC="$RUNNER_TEMP/las-vma"
+          export VOLK_SRC="$RUNNER_TEMP/las-volk"
+          git clone --depth 1 --branch 1.3.295 https://github.com/zeux/volk.git "$VOLK_SRC"
+          echo "VOLK_SRC=$VOLK_SRC" >> "$GITHUB_ENV"
           git clone --depth 1 --branch v2024.4 https://github.com/google/shaderc.git "$SHADERC_SRC"
           git clone --depth 1 --branch v3.1.0 https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git "$VMA_SRC"
           bash tools/build-android-renderer.sh
