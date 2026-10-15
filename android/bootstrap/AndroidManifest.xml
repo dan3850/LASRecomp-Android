@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.retroaura.lasrecomp.autotest">
+    package="com.retroaura.lasrecomp.bootdiag">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <application
-        android:label="LASRecomp Local TESTE"
+        android:label="LASRecomp Boot TESTE"
         android:hasCode="true"
         android:allowBackup="false"
         android:extractNativeLibs="true">
         <!-- App-owned game file import: no Termux at runtime. -->
         <activity
             android:name="com.retroaura.lasrecomp.GameImportActivity"
-            android:label="LASRecomp Local TESTE"
+            android:label="LASRecomp Boot TESTE"
             android:exported="true"
             android:screenOrientation="landscape">
             <intent-filter>
