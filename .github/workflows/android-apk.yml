@@ -158,6 +158,9 @@ jobs:
           export LASRECOMP_RUNTIME_SO="$GITHUB_WORKSPACE/build/android-linked-runtime/lib/arm64-v8a/liblasrecomp_runtime.so"
           export SHADERC_SO="$RUNNER_TEMP/las-shaderc-arm64/libshaderc_shared.so"
           export FFMPEG_INSTALL_DIR="$GITHUB_WORKSPACE/build/android-ffmpeg"
+          python3 -m venv "$RUNNER_TEMP/las-fonttools"
+          "$RUNNER_TEMP/las-fonttools/bin/pip" install --disable-pip-version-check -q "fonttools==4.60.1"
+          export FONTTOOLS_PYTHON="$RUNNER_TEMP/las-fonttools/bin/python"
           bash tools/build-android-termux.sh
 
       - name: Upload installable APK

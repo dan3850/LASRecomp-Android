@@ -182,7 +182,11 @@ rm -f "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 # Package a known static TrueType font so the native guest font parser does
 # not depend on an OEM's possibly-variable Roboto font.
 mkdir -p "$OUT/assets"
-cp "$ROOT/third_party/imgui/misc/fonts/Roboto-Medium.ttf" "$OUT/assets/lasrecomp_font.ttf"
+# Add U+25A1 to the existing Apache-2.0 Roboto fallback.
+# CI provides FONTTOOLS_PYTHON; native builders need python-fonttools.
+"${FONTTOOLS_PYTHON:-python3}" "$ROOT/tools/android-font-fallback.py" \
+    "$ROOT/third_party/imgui/misc/fonts/Roboto-Medium.ttf" \
+    "$OUT/assets/lasrecomp_font.ttf"
 (cd "$OUT" && zip -q unsigned.apk assets/lasrecomp_font.ttf)
 "$ZIPALIGN_BIN" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
