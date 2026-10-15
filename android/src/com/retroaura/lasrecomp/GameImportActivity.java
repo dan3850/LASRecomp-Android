@@ -7,6 +7,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
+import android.provider.OpenableColumns;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -15,6 +16,8 @@ import android.widget.TextView;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.FileInputStream;
+import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -34,8 +37,12 @@ public final class GameImportActivity extends Activity {
     private static native String nativeProbeLocalCode(String libraryPath, String cacheDirectory);
 
     private static final int PICK_GAME_FOLDER = 101;
+    private static final int PICK_GAME_CODE = 102;
+    // Test route only: the final release will compile this file inside the app.
+    private static final long MAX_LIBRARY_BYTES = 1024L * 1024L * 1024L;
     private TextView status;
     private Button importButton;
+    private Button libraryButton;
     private Button playButton;
     private boolean importing;
 
@@ -77,6 +84,11 @@ public final class GameImportActivity extends Activity {
         importButton.setText("IMPORTAR ARQUIVOS DO JOGO");
         importButton.setOnClickListener(v -> pickGameFolder());
         layout.addView(importButton);
+
+        libraryButton = new Button(this);
+        libraryButton.setText("TESTE: IMPORTAR MINHA LIBLASGAME.SO");
+        libraryButton.setOnClickListener(v -> selectGameCodeFile());
+        layout.addView(libraryButton);
 
         // Separate diagnostic on the experimental branch. No game files are
         // compiled or loaded by this test; it only checks Android linker policy.
@@ -125,6 +137,111 @@ public final class GameImportActivity extends Activity {
         return new File(getFilesDir(), "extracted");
     }
 
+    private File privateGameCodeFile() {
+        return new File(getCodeCacheDir(), "liblasgame.so");
+    }
+
+    private void selectGameCodeFile() {
+        if (importing) return;
+        new AlertDialog.Builder(this)
+            .setTitle("Importar biblioteca do próprio jogo")
+            .setMessage("A biblioteca .so contém código executável derivado do Zelda. " +
+                "Selecione somente a que você mesmo compilou. Ela será copiada " +
+                "para o armazenamento privado do aplicativo e não será enviada à internet.")
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Selecionar arquivo", (dialog, which) -> {
+                Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                picker.addCategory(Intent.CATEGORY_OPENABLE);
+                picker.setType("*/*");
+                picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivityForResult(picker, PICK_GAME_CODE);
+            }).show();
+    }
+
+    private void importGameCode(Uri source) {
+        String error = null;
+        File temporary = null;
+        try {
+            // Limit the filename to our expected output: no arbitrary native plugin.
+            String sourceName = null;
+            try (Cursor c = getContentResolver().query(source,
+                    new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null)) {
+                if (c != null && c.moveToFirst()) sourceName = c.getString(0);
+            }
+            if (!"liblasgame.so".equals(sourceName))
+                throw new IllegalStateException("Selecione somente o arquivo liblasgame.so");
+
+            File cache = getCodeCacheDir();
+            if (!cache.isDirectory()) throw new IllegalStateException("Cache privado inacessível");
+            temporary = File.createTempFile(".liblasgame-", ".partial", cache);
+            long copied = 0L;
+            try (InputStream in = getContentResolver().openInputStream(source);
+                 FileOutputStream out = new FileOutputStream(temporary)) {
+                if (in == null) throw new IllegalStateException("Não foi possível ler o arquivo");
+                byte[] data = new byte[262144];
+                int n;
+                long previousProgress = 0;
+                while ((n = in.read(data)) != -1) {
+                    copied += n;
+                    if (copied > MAX_LIBRARY_BYTES)
+                        throw new IllegalStateException("Biblioteca maior que 1 GB");
+                    out.write(data, 0, n);
+                    if (copied - previousProgress >= 8 * 1024 * 1024) {
+                        previousProgress = copied;
+                        final long sizeMb = copied / (1024 * 1024);
+                        runOnUiThread(() -> status.setText(
+                            "Copiando biblioteca privada: " + sizeMb + " MB"));
+                    }
+                }
+                out.getFD().sync();
+            }
+            if (copied < 1024) throw new IllegalStateException("Biblioteca incompleta");
+
+            // Check ELF64 little-endian ET_DYN/AArch64; prevent wrong-architecture files.
+            try (RandomAccessFile elf = new RandomAccessFile(temporary, "r")) {
+                byte[] hdr = new byte[20];
+                elf.readFully(hdr);
+                if ((hdr[0] & 255) != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' ||
+                    hdr[3] != 'F' || hdr[4] != 2 || hdr[5] != 1 ||
+                    hdr[16] != 3 || hdr[17] != 0 || (hdr[18] & 255) != 183 || hdr[19] != 0)
+                    throw new IllegalStateException("Não é uma biblioteca ELF ARM64 compartilhada");
+            }
+            // Android 14+ prohibits dlopen of an app-writable executable.
+            if (!temporary.setReadable(true, true) || !temporary.setWritable(false, false) ||
+                temporary.canWrite()) {
+                throw new IllegalStateException("Não consegui tornar a biblioteca somente leitura");
+            }
+            File destination = privateGameCodeFile();
+            if (!temporary.renameTo(destination))
+                throw new IllegalStateException("Falha ao instalar biblioteca privada");
+            temporary = null;
+        } catch (Exception e) {
+            error = e.getMessage() == null ? e.toString() : e.getMessage();
+        } finally {
+            if (temporary != null) temporary.delete();
+        }
+        final String failure = error;
+        runOnUiThread(() -> {
+            importing = false;
+            importButton.setEnabled(true);
+            libraryButton.setEnabled(true);
+            if (failure == null) {
+                new AlertDialog.Builder(this)
+                    .setTitle("Biblioteca importada")
+                    .setMessage("A liblasgame.so está no cache privado. O próximo teste " +
+                                "é abrir o jogo para verificar compatibilidade com o motor. " +
+                                "Ainda não está confirmado que o Zelda inicia.")
+                    .setPositiveButton("OK", null).show();
+            } else {
+                new AlertDialog.Builder(this)
+                    .setTitle("Biblioteca não importada")
+                    .setMessage(failure).setPositiveButton("OK", null).show();
+            }
+            showGameFilesState();
+        });
+    }
+
+
     private boolean hasGameFiles(File root) {
         return new File(root, "exefs/main").isFile()
             && new File(root, "exefs/sdk").isFile()
@@ -134,11 +251,11 @@ public final class GameImportActivity extends Activity {
     }
 
     private boolean hasGameCode() {
-        // android:extractNativeLibs=true; code must come from the signed APK,
-        // never from app-private writable game data or a Termux filesystem.
+        File privateCode = privateGameCodeFile();
         String dir = getApplicationInfo().nativeLibraryDir;
-        return dir != null && new File(dir, "liblasgame.so").isFile()
-            && new File(dir, "liblasrecomp_runtime.so").isFile();
+        return dir != null && new File(dir, "liblasrecomp_runtime.so").isFile()
+            && ((privateCode.isFile() && privateCode.length() > 1024 && !privateCode.canWrite())
+                || new File(dir, "liblasgame.so").isFile());
     }
 
     private void showGameFilesState() {
@@ -148,7 +265,7 @@ public final class GameImportActivity extends Activity {
         if (files && code) {
             status.setText("Arquivos e código recompilado disponíveis.\nPronto para tentar iniciar o jogo.");
         } else if (files) {
-            status.setText("Arquivos do jogo importados.\nAinda falta o código recompilado dentro deste APK.");
+            status.setText("Arquivos do jogo importados.\nImporte sua liblasgame.so de teste para tentar iniciar o jogo.");
         } else {
             status.setText("Selecione a pasta com exefs e romfs da sua cópia do jogo v1.0.0.\n"
                 + "Os arquivos serão guardados apenas neste aplicativo."
@@ -166,6 +283,18 @@ public final class GameImportActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PICK_GAME_CODE) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                importing = true;
+                importButton.setEnabled(false);
+                libraryButton.setEnabled(false);
+                playButton.setVisibility(View.GONE);
+                status.setText("Preparando biblioteca privada...");
+                Uri gameCode = data.getData();
+                new Thread(() -> importGameCode(gameCode), "LASRecompPrivateCodeImport").start();
+            }
+            return;
+        }
         if (requestCode != PICK_GAME_FOLDER || resultCode != RESULT_OK ||
             data == null || data.getData() == null) return;
         Uri tree = data.getData();
@@ -176,6 +305,7 @@ public final class GameImportActivity extends Activity {
         }
         importing = true;
         importButton.setEnabled(false);
+        libraryButton.setEnabled(false);
         playButton.setVisibility(View.GONE);
         status.setText("Copiando e preparando os arquivos do jogo...");
         new Thread(() -> importTree(tree), "LASRecompImport").start();
@@ -289,6 +419,7 @@ public final class GameImportActivity extends Activity {
         runOnUiThread(() -> {
             importing = false;
             importButton.setEnabled(true);
+            libraryButton.setEnabled(true);
             if (result != null) {
                 new AlertDialog.Builder(this).setTitle("Importação não concluída")
                     .setMessage(result).setPositiveButton("OK", null).show();
