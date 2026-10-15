@@ -47,12 +47,20 @@ echo "[1/5] Compilando preparacao real de RomFS dentro do APK"
 "$CC_BIN" -fPIC -shared -O2 -fvisibility=hidden \
     -Wl,-z,max-page-size=16384 -Wl,-soname,liblasrecomp_prepare.so \
     -o "$OUT/lib/arm64-v8a/liblasrecomp_prepare.so" \
-    "$ROOT/android/prepare/game_prepare.c" "$ROOT/runtime/romfs_build.c" -llog
+    "$ROOT/android/prepare/game_prepare.c" "$ROOT/android/prepare/local_code_probe.c" \
+    "$ROOT/runtime/romfs_build.c" -llog -ldl
+
+# Tiny, harmless module packaged with the APK. The diagnostic copies it to
+# app-private read-only storage to check if on-device .so loading is allowed.
+"$CC_BIN" -fPIC -shared -O2 -fvisibility=hidden \
+    -Wl,-z,max-page-size=16384 -Wl,-soname,liblasrecomp_probe.so \
+    -o "$OUT/lib/arm64-v8a/liblasrecomp_probe.so" \
+    "$ROOT/android/prepare/loader_probe_module.c"
 
 echo "[2/5] Preparando Activity Android e ciclo de vida SDL3"
 mkdir -p "$OUT/java-classes" "$OUT/dex"
 JAVA_SOURCES=("$ROOT/android/src/com/retroaura/lasrecomp/GameImportActivity.java")
-NATIVE_LIBS=(lib/arm64-v8a/liblasrecomp_prepare.so)
+NATIVE_LIBS=(lib/arm64-v8a/liblasrecomp_prepare.so lib/arm64-v8a/liblasrecomp_probe.so)
 
 # The SDL3 .so, its official Java integration and the game's SDL_main bridge
 # are one inseparable target. We never package an unlaunchable SDLActivity.
