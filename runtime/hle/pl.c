@@ -113,6 +113,11 @@ static void load_fonts(void) {
     const char *std[] = {env, "fonts/nintendo_udsg-r_std_003.bfttf", "fonts/nintendo_udsg-r_std_003.ttf",
                          "fonts/nintendo_udsgr_std_003.ttf", "fonts/nintendo_udsgr_std_003.bfttf",
 #ifdef __ANDROID__
+                         // APK-owned classic/static TrueType fallback, already in the
+                         // open-source project (Apache-2.0). The Android system
+                         // Roboto-Regular can be a variable font; the guest font
+                         // parser was never designed for arbitrary Android fonts.
+                         "fonts/android_fallback.ttf",
                          // Android exposes system TrueType fonts to regular applications.
                          // Prefer Roboto/Droid Sans (glyf outlines); Noto CJK fonts can
                          // contain CFF outlines unsupported by the guest font engine.

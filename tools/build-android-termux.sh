@@ -177,7 +177,13 @@ rm -f "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
     -o "$OUT/unsigned.apk"
 # Bundle the native game entry and SDL3 Java lifecycle in the SAME APK.
 (cd "$OUT" && zip -q unsigned.apk "${NATIVE_LIBS[@]}")
-(cd "$OUT/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
+ (cd "$OUT/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
+# License: Apache-2.0 (bundled by Dear ImGui). This is NOT a Nintendo asset.
+# Package a known static TrueType font so the native guest font parser does
+# not depend on an OEM's possibly-variable Roboto font.
+mkdir -p "$OUT/assets"
+cp "$ROOT/third_party/imgui/misc/fonts/Roboto-Medium.ttf" "$OUT/assets/lasrecomp_font.ttf"
+(cd "$OUT" && zip -q unsigned.apk assets/lasrecomp_font.ttf)
 "$ZIPALIGN_BIN" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
 echo "[3/5] Preparando assinatura debug local"
