@@ -48,6 +48,7 @@ echo "[1/5] Compilando preparacao real de RomFS dentro do APK"
     -Wl,-z,max-page-size=16384 -Wl,-soname,liblasrecomp_prepare.so \
     -o "$OUT/lib/arm64-v8a/liblasrecomp_prepare.so" \
     "$ROOT/android/prepare/game_prepare.c" "$ROOT/android/prepare/local_code_probe.c" \
+    "$ROOT/android/prepare/private_game_code.c" \
     "$ROOT/runtime/romfs_build.c" -llog -ldl
 
 # Tiny, harmless module packaged with the APK. The diagnostic copies it to
