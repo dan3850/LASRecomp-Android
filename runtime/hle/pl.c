@@ -112,6 +112,18 @@ static void load_fonts(void) {
     const char *env = getenv("LARECOMP_FONT");
     const char *std[] = {env, "fonts/nintendo_udsg-r_std_003.bfttf", "fonts/nintendo_udsg-r_std_003.ttf",
                          "fonts/nintendo_udsgr_std_003.ttf", "fonts/nintendo_udsgr_std_003.bfttf",
+#ifdef __ANDROID__
+                         // Android exposes system TrueType fonts to regular applications.
+                         // Prefer Roboto/Droid Sans (glyf outlines); Noto CJK fonts can
+                         // contain CFF outlines unsupported by the guest font engine.
+                         // Do not bundle or download any Nintendo system font.
+                         "/system/fonts/Roboto-Regular.ttf",
+                         "/system/fonts/RobotoStatic-Regular.ttf",
+                         "/system/fonts/RobotoFlex-Regular.ttf",
+                         "/system/fonts/NotoSans-Regular.ttf",
+                         "/system/fonts/DroidSans.ttf",
+                         "/product/fonts/Roboto-Regular.ttf",
+#endif
                          "/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc", "C:/Windows/Fonts/YuGothR.ttc",
                          "C:/Windows/Fonts/YuGothM.ttc", "/System/Library/Fonts/Supplemental/Arial.ttf",
                          "C:/Windows/Fonts/arial.ttf",
