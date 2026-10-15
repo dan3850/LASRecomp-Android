@@ -9,6 +9,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${SHADERC_OUTPUT_DIR:?SHADERC_OUTPUT_DIR required}"
 : "${FFMPEG_INSTALL_DIR:?FFMPEG_INSTALL_DIR required}"
 : "${VMA_SRC:?VMA_SRC required}"
+: "${VOLK_SRC:?VOLK_SRC required}"
 TOOL="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
 CXX="$TOOL/aarch64-linux-android26-clang++"
 READELF="$TOOL/llvm-readelf"
@@ -23,9 +24,10 @@ for f in "$CXX" "$CORE" "$RENDER" "$SDL3_ANDROID_SO" "$SHADER"; do
 done
 
 CFLAGS=(-O2 -g -fPIC -fno-strict-aliasing -std=c++17
+    -DVK_NO_PROTOTYPES -DIMGUI_IMPL_VULKAN_USE_VOLK
     -I"$ROOT/runtime" -I"$ROOT/runtime/nvn" -I"$ROOT/runtime/ui"
     -I"$ROOT/third_party/imgui" -I"$ROOT/third_party/imgui/backends"
-    -I"$SDL3_ANDROID_HEADERS" -I"$FFMPEG_INSTALL_DIR/include" -I"$VMA_SRC/include")
+    -I"$SDL3_ANDROID_HEADERS" -I"$FFMPEG_INSTALL_DIR/include" -I"$VMA_SRC/include" -I"$VOLK_SRC")
 
 # .mm is used as a filename by upstream, but the Linux/Android implementation
 # is C++ (Objective-C frameworks are guarded by __APPLE__).
@@ -57,6 +59,6 @@ LIB="$BUILDDIR/lib/arm64-v8a/liblasrecomp_runtime.so"
     -Wl,--whole-archive "$CORE" "$RENDER" -Wl,--no-whole-archive \
     -L"$(dirname "$SDL3_ANDROID_SO")" -L"$FFDIR" -L"$SHADERC_OUTPUT_DIR" \
     -lSDL3 -lshaderc_shared -lavformat -lavcodec -lavutil -lswscale \
-    -lvulkan -llog -landroid -ldl -lz -lm
+    -llog -landroid -ldl -lz -lm
 "$READELF" -h "$LIB" | grep -q 'AArch64'
 echo "FULL_RUNTIME_LINKED=$LIB"
