@@ -53,6 +53,7 @@ mapfile -t SOURCES < <(
         printf '%s\n' "$ROOT/third_party/imgui/backends/$src"
     done
     printf '%s\n' "$ROOT/runtime/nvn/smaa_data.c"
+    printf '%s\n' "$ROOT/android/game/png_writer.c"
 )
 
 for src in "${SOURCES[@]}"; do
@@ -66,7 +67,7 @@ for src in "${SOURCES[@]}"; do
         flags=(-std=c++17)
     fi
     if "$compiler" "${flags[@]}" -O2 -fPIC -fno-strict-aliasing \
-            -D_FILE_OFFSET_BITS=64 -Werror=implicit-function-declaration \
+            -D_FILE_OFFSET_BITS=64 -Wno-nullability-completeness -Werror=implicit-function-declaration \
             "${INC[@]}" -c "$src" -o "$obj"; then
         OBJECTS+=("$obj")
     else
