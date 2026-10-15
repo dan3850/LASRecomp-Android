@@ -79,6 +79,7 @@ if [[ -n "${SDL3_ANDROID_SO:-}" || -n "${SDL3_ANDROID_HEADERS:-}" || -n "${SDL3_
     mapfile -d '' -t SDL_JAVA_SOURCES < <(find "$SDL3_ANDROID_JAVA_ROOT" -name '*.java' -print0)
     (( ${#SDL_JAVA_SOURCES[@]} > 0 )) || { echo "ERRO: fontes Java SDL3 ausentes" >&2; exit 1; }
     JAVA_SOURCES+=("$ROOT/android/src/com/retroaura/lasrecomp/GameSDLActivity.java")
+    JAVA_SOURCES+=("$ROOT/android/src/com/retroaura/lasrecomp/GameTouchControls.java")
     JAVA_SOURCES+=("${SDL_JAVA_SOURCES[@]}")
     NATIVE_LIBS+=(lib/arm64-v8a/libSDL3.so lib/arm64-v8a/libmain.so)
 fi
