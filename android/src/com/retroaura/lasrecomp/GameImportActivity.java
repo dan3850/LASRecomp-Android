@@ -30,6 +30,8 @@ public final class GameImportActivity extends Activity {
     // Real LASRecomp RomFS builder, packaged inside this APK (no Termux).
     static { System.loadLibrary("lasrecomp_prepare"); }
     private static native String nativePrepareGame(String stageDirectory);
+    // Feasibility test: loads ONLY a harmless probe library, not game code.
+    private static native String nativeProbeLocalCode(String libraryPath, String cacheDirectory);
 
     private static final int PICK_GAME_FOLDER = 101;
     private TextView status;
@@ -75,6 +77,35 @@ public final class GameImportActivity extends Activity {
         importButton.setText("IMPORTAR ARQUIVOS DO JOGO");
         importButton.setOnClickListener(v -> pickGameFolder());
         layout.addView(importButton);
+
+        // Separate diagnostic on the experimental branch. No game files are
+        // compiled or loaded by this test; it only checks Android linker policy.
+        Button probeButton = new Button(this);
+        probeButton.setText("DIAGNÓSTICO: TESTAR BIBLIOTECA LOCAL");
+        probeButton.setOnClickListener(v -> {
+            probeButton.setEnabled(false);
+            new Thread(() -> {
+                String result;
+                try {
+                    File source = new File(getApplicationInfo().nativeLibraryDir,
+                                           "liblasrecomp_probe.so");
+                    result = nativeProbeLocalCode(source.getAbsolutePath(),
+                                                  getCodeCacheDir().getAbsolutePath());
+                } catch (Throwable error) {
+                    result = "FALHOU: " + error;
+                }
+                final String diagnostic = result;
+                runOnUiThread(() -> {
+                    probeButton.setEnabled(true);
+                    new AlertDialog.Builder(this)
+                        .setTitle("Teste do carregamento nativo")
+                        .setMessage(diagnostic)
+                        .setPositiveButton("OK", null)
+                        .show();
+                });
+            }, "LASRecompLocalLoaderProbe").start();
+        });
+        layout.addView(probeButton);
         playButton = new Button(this);
         playButton.setText("JOGAR");
         playButton.setVisibility(View.GONE);
