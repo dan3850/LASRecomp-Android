@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -118,4 +119,71 @@ Java_com_retroaura_lasrecomp_GameImportActivity_nativeProbeLocalCode(
     (*env)->ReleaseStringUTFChars(env, cacheDirectory, cache);
     (*env)->ReleaseStringUTFChars(env, source, src);
     return (*env)->NewStringUTF(env, result);
+}
+
+// Test the user's PRIVATE, already recompiled game code. This stage ONLY
+// tests dynamic linking, ABI and table identities; it does not run gameplay.
+// The user has to import their own compiled library explicitly first.
+typedef struct {
+    uint32_t abi;
+    const char *id;
+    const uint64_t *main_addrs, *sdk_addrs;
+    const void *main_fns, *sdk_fns;
+    const uint64_t *main_count, *sdk_count;
+} LocalGameTables;
+
+JNIEXPORT jstring JNICALL
+Java_com_retroaura_lasrecomp_GameImportActivity_nativeCheckGameCode(
+    JNIEnv *env, jclass cls, jstring filename) {
+    (void)cls;
+    if (!filename) return (*env)->NewStringUTF(env, "FALHOU: arquivo nao informado");
+    const char *path = (*env)->GetStringUTFChars(env, filename, NULL);
+    if (!path) return NULL;
+    char msg[700] = "";
+    size_t n = strlen(path);
+    struct stat st;
+    // This is the canonical private code-cache name created by our importer.
+    if (n < sizeof("/code_cache/liblasgame.so") - 1 ||
+        strcmp(path + n - (sizeof("/code_cache/liblasgame.so") - 1),
+               "/code_cache/liblasgame.so") != 0 ||
+        lstat(path, &st) || !S_ISREG(st.st_mode) ||
+        st.st_uid != getuid() || (st.st_mode & 0222)) {
+        snprintf(msg, sizeof msg, "FALHOU: biblioteca nao e arquivo privado somente leitura");
+    } else {
+        // The big game module references HLE functions in the runtime.
+        // Match the SDL_main loader: expose the engine's symbols globally.
+        void *engine = dlopen("liblasrecomp_runtime.so", RTLD_NOW | RTLD_GLOBAL);
+        if (!engine) {
+            const char *reason = dlerror();
+            snprintf(msg, sizeof msg, "FALHOU MOTOR: %.610s",
+                     reason ? reason : "liblasrecomp_runtime.so nao carregou");
+        } else {
+            void *game = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+            if (!game) {
+                const char *reason = dlerror();
+                snprintf(msg, sizeof msg, "FALHOU LIB DO JOGO: %.610s",
+                         reason ? reason : "liblasgame.so nao carregou");
+            } else {
+                const LocalGameTables *(*entry)(void) =
+                    (const LocalGameTables *(*)(void))dlsym(game, "lasgame_tables");
+                const LocalGameTables *t = entry ? entry() : NULL;
+                if (!t || t->abi != 1 || !t->id || strcmp(t->id, "dev") ||
+                    !t->main_count || !t->sdk_count ||
+                    !*t->main_count || !*t->sdk_count) {
+                    snprintf(msg, sizeof msg,
+                             "FALHOU: ABI, versao ou tabelas main/sdk incompativeis");
+                } else {
+                    snprintf(msg, sizeof msg,
+                             "OK: liblasgame.so vinculada ao motor ARM64. "
+                             "main=%llu sdk=%llu. A execucao do jogo ainda precisa ser testada.",
+                             (unsigned long long)*t->main_count,
+                             (unsigned long long)*t->sdk_count);
+                }
+                dlclose(game);
+            }
+            dlclose(engine);
+        }
+    }
+    (*env)->ReleaseStringUTFChars(env, filename, path);
+    return (*env)->NewStringUTF(env, msg);
 }
