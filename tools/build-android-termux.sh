@@ -66,7 +66,15 @@ echo "[2/5] Montando APK com Activity, AndroidManifest e biblioteca nativa"
 rm -f "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 "$AAPT2_BIN" link -I "$ANDROID_JAR" --manifest "$APP/AndroidManifest.xml" \
     -o "$OUT/unsigned.apk"
-(cd "$OUT" && zip -q unsigned.apk lib/arm64-v8a/liblasrecomp_bootstrap.so lib/arm64-v8a/liblasrecomp_prepare.so)
+# SDL3 is a real dependency of the game runtime, not a Vulkan diagnostic.
+# CI builds it with the Android NDK; local packaging can supply the same ARM64 .so.
+NATIVE_LIBS=(lib/arm64-v8a/liblasrecomp_bootstrap.so lib/arm64-v8a/liblasrecomp_prepare.so)
+if [[ -n "${SDL3_ANDROID_SO:-}" ]]; then
+    [[ -s "$SDL3_ANDROID_SO" ]] || { echo "ERRO: SDL3_ANDROID_SO invalido" >&2; exit 1; }
+    cp "$SDL3_ANDROID_SO" "$OUT/lib/arm64-v8a/libSDL3.so"
+    NATIVE_LIBS+=(lib/arm64-v8a/libSDL3.so)
+fi
+(cd "$OUT" && zip -q unsigned.apk "${NATIVE_LIBS[@]}")
 (cd "$OUT/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
 "$ZIPALIGN_BIN" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
