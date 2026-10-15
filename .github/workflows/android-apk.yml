@@ -128,6 +128,18 @@ jobs:
           export SHADERC_OUTPUT_DIR="$RUNNER_TEMP/las-shaderc-arm64"
           bash tools/build-android-shaderc.sh
 
+      # First real link of the complete game runtime; the resulting .so
+      # is not packaged until the link is proven successful.
+      - name: Compile C++ UI and link complete LASRecomp runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+          export SHADERC_OUTPUT_DIR="$RUNNER_TEMP/las-shaderc-arm64"
+          export FFMPEG_INSTALL_DIR="$GITHUB_WORKSPACE/build/android-ffmpeg"
+          export VMA_SRC="$RUNNER_TEMP/las-vma"
+          bash tools/build-android-runtime.sh
+
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
