@@ -42,23 +42,40 @@ if [[ ! -f "${ANDROID_JAR:-}" ]]; then
 fi
 
 mkdir -p "$OUT/lib/arm64-v8a"
-LIB="$OUT/lib/arm64-v8a/liblasrecomp_bootstrap.so"
 APK="$OUT/LASRecomp-Android.apk"
-echo "[1/5] Compilando biblioteca Android ARM64 para o APK"
-"$CC_BIN" -fPIC -shared -O2 -g -fvisibility=hidden \
-    -Wl,-z,max-page-size=16384 -Wl,-soname,liblasrecomp_bootstrap.so \
-    -o "$LIB" "$APP/bootstrap.c" -landroid -llog -ldl
-echo "[1/5] Compilando o preparador real de RomFS dentro do APK"
+echo "[1/5] Compilando preparacao real de RomFS dentro do APK"
 "$CC_BIN" -fPIC -shared -O2 -fvisibility=hidden \
     -Wl,-z,max-page-size=16384 -Wl,-soname,liblasrecomp_prepare.so \
     -o "$OUT/lib/arm64-v8a/liblasrecomp_prepare.so" \
     "$ROOT/android/prepare/game_prepare.c" "$ROOT/runtime/romfs_build.c" -llog
 
-echo "[2/5] Compilando Activity real de importacao do jogo"
+echo "[2/5] Preparando Activity Android e ciclo de vida SDL3"
 mkdir -p "$OUT/java-classes" "$OUT/dex"
+JAVA_SOURCES=("$ROOT/android/src/com/retroaura/lasrecomp/GameImportActivity.java")
+NATIVE_LIBS=(lib/arm64-v8a/liblasrecomp_prepare.so)
+
+# The SDL3 .so, its official Java integration and the game's SDL_main bridge
+# are one inseparable target. We never package an unlaunchable SDLActivity.
+if [[ -n "${SDL3_ANDROID_SO:-}" || -n "${SDL3_ANDROID_HEADERS:-}" || -n "${SDL3_ANDROID_JAVA_ROOT:-}" ]]; then
+    [[ -s "${SDL3_ANDROID_SO:-}" && -d "${SDL3_ANDROID_HEADERS:-}" && -d "${SDL3_ANDROID_JAVA_ROOT:-}" ]] || {
+        echo "ERRO: configure SDL3_ANDROID_SO, SDL3_ANDROID_HEADERS e SDL3_ANDROID_JAVA_ROOT juntos" >&2
+        exit 1
+    }
+    cp "$SDL3_ANDROID_SO" "$OUT/lib/arm64-v8a/libSDL3.so"
+    "$CC_BIN" -fPIC -shared -O2 -fvisibility=hidden \
+        -Wl,-z,max-page-size=16384 -Wl,-soname,libmain.so \
+        -I"$SDL3_ANDROID_HEADERS" -L"$(dirname "$SDL3_ANDROID_SO")" \
+        -o "$OUT/lib/arm64-v8a/libmain.so" \
+        "$ROOT/android/game/game_entry.c" -lSDL3 -ldl -llog
+    mapfile -d '' -t SDL_JAVA_SOURCES < <(find "$SDL3_ANDROID_JAVA_ROOT" -name '*.java' -print0)
+    (( ${#SDL_JAVA_SOURCES[@]} > 0 )) || { echo "ERRO: fontes Java SDL3 ausentes" >&2; exit 1; }
+    JAVA_SOURCES+=("$ROOT/android/src/com/retroaura/lasrecomp/GameSDLActivity.java")
+    JAVA_SOURCES+=("${SDL_JAVA_SOURCES[@]}")
+    NATIVE_LIBS+=(lib/arm64-v8a/libSDL3.so lib/arm64-v8a/libmain.so)
+fi
+
 javac -source 8 -target 8 -encoding UTF-8 -classpath "$ANDROID_JAR" \
-    -d "$OUT/java-classes" \
-    "$ROOT/android/src/com/retroaura/lasrecomp/GameImportActivity.java"
+    -d "$OUT/java-classes" "${JAVA_SOURCES[@]}"
 jar cf "$OUT/app-classes.jar" -C "$OUT/java-classes" .
 "$D8_BIN" --min-api 26 --lib "$ANDROID_JAR" --output "$OUT/dex" "$OUT/app-classes.jar"
 test -s "$OUT/dex/classes.dex"
@@ -66,14 +83,7 @@ echo "[2/5] Montando APK com Activity, AndroidManifest e biblioteca nativa"
 rm -f "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 "$AAPT2_BIN" link -I "$ANDROID_JAR" --manifest "$APP/AndroidManifest.xml" \
     -o "$OUT/unsigned.apk"
-# SDL3 is a real dependency of the game runtime, not a Vulkan diagnostic.
-# CI builds it with the Android NDK; local packaging can supply the same ARM64 .so.
-NATIVE_LIBS=(lib/arm64-v8a/liblasrecomp_bootstrap.so lib/arm64-v8a/liblasrecomp_prepare.so)
-if [[ -n "${SDL3_ANDROID_SO:-}" ]]; then
-    [[ -s "$SDL3_ANDROID_SO" ]] || { echo "ERRO: SDL3_ANDROID_SO invalido" >&2; exit 1; }
-    cp "$SDL3_ANDROID_SO" "$OUT/lib/arm64-v8a/libSDL3.so"
-    NATIVE_LIBS+=(lib/arm64-v8a/libSDL3.so)
-fi
+# Bundle the native game entry and SDL3 Java lifecycle in the SAME APK.
 (cd "$OUT" && zip -q unsigned.apk "${NATIVE_LIBS[@]}")
 (cd "$OUT/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
 "$ZIPALIGN_BIN" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
@@ -96,4 +106,5 @@ echo "[4/5] Assinando APK Android"
 echo "[5/5] Verificando APK assinado"
 "$APKSIGNER_BIN" verify "$APK"
 echo "APK INSTALAVEL: $APK"
-echo "OBS: importacao exefs/romfs, validacao v1.0.0 e preparo de romfs.bin no APK. Jogo ainda nao habilitado."
+echo "OBS: SDL3 Activity e SDL_main empacotados quando suas dependencias estao disponiveis."
+echo "Ainda falta liblasrecomp_runtime.so + geracao do codigo do jogo; boot nao e jogavel."
