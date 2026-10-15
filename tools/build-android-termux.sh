@@ -14,13 +14,15 @@ CC_BIN="${ANDROID_CC:-clang}"
 AAPT2_BIN="${ANDROID_AAPT2:-aapt2}"
 ZIPALIGN_BIN="${ANDROID_ZIPALIGN:-zipalign}"
 APKSIGNER_BIN="${ANDROID_APKSIGNER:-apksigner}"
+D8_BIN="${ANDROID_D8:-$(dirname "$(command -v "$AAPT2_BIN" 2>/dev/null || echo "$AAPT2_BIN")")/d8}"
+if [[ ! -x "$D8_BIN" ]] && command -v d8 >/dev/null 2>&1; then D8_BIN=d8; fi
 
 if [[ "$(uname -m)" != "aarch64" && -z "${ANDROID_CC:-}" ]]; then
     echo "ERRO: em hosts nao-ARM64 configure ANDROID_CC com o compilador do Android NDK" >&2
     exit 1
 fi
 
-for cmd in "$CC_BIN" "$AAPT2_BIN" "$ZIPALIGN_BIN" "$APKSIGNER_BIN" zip keytool; do
+for cmd in "$CC_BIN" "$AAPT2_BIN" "$ZIPALIGN_BIN" "$APKSIGNER_BIN" "$D8_BIN" zip javac jar keytool; do
     if ! command -v "$cmd" >/dev/null 2>&1 && [[ ! -x "$cmd" ]]; then
         echo "ERRO: ferramenta de build nao encontrada: $cmd" >&2
         exit 1
@@ -47,11 +49,20 @@ echo "[1/5] Compilando biblioteca Android ARM64 para o APK"
     -Wl,-z,max-page-size=16384 -Wl,-soname,liblasrecomp_bootstrap.so \
     -o "$LIB" "$APP/bootstrap.c" -landroid -llog -ldl
 
-echo "[2/5] Montando APK com AndroidManifest e biblioteca nativa"
+echo "[2/5] Compilando Activity real de importacao do jogo"
+mkdir -p "$OUT/java-classes" "$OUT/dex"
+javac -source 8 -target 8 -encoding UTF-8 -classpath "$ANDROID_JAR" \
+    -d "$OUT/java-classes" \
+    "$ROOT/android/src/com/retroaura/lasrecomp/GameImportActivity.java"
+jar cf "$OUT/app-classes.jar" -C "$OUT/java-classes" .
+"$D8_BIN" --min-api 26 --lib "$ANDROID_JAR" --output "$OUT/dex" "$OUT/app-classes.jar"
+test -s "$OUT/dex/classes.dex"
+echo "[2/5] Montando APK com Activity, AndroidManifest e biblioteca nativa"
 rm -f "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 "$AAPT2_BIN" link -I "$ANDROID_JAR" --manifest "$APP/AndroidManifest.xml" \
     -o "$OUT/unsigned.apk"
 (cd "$OUT" && zip -q unsigned.apk lib/arm64-v8a/liblasrecomp_bootstrap.so)
+(cd "$OUT/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
 "$ZIPALIGN_BIN" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
 echo "[3/5] Preparando assinatura debug local"
@@ -72,4 +83,4 @@ echo "[4/5] Assinando APK Android"
 echo "[5/5] Verificando APK assinado"
 "$APKSIGNER_BIN" verify "$APK"
 echo "APK INSTALAVEL: $APK"
-echo "OBS: versao inicial com NativeActivity e diagnostico; jogo ainda nao integrado."
+echo "OBS: Activity nativa de importacao de arquivos do jogo; runtime ainda nao habilitado."
