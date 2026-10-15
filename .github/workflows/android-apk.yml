@@ -21,7 +21,11 @@ jobs:
       # GitHub's Ubuntu runner already includes Android sdkmanager.
       - name: Install SDK platform, build tools, and NDK
         run: |
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
       - name: Compile and sign Android APK
         shell: bash
         run: |
