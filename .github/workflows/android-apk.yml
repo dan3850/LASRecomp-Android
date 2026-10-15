@@ -5,6 +5,7 @@ on:
     branches:
       - android/phase1-termux-bootstrap
       - android/runtime-integration
+      - android/on-device-auto-build
   pull_request:
     branches:
       - main
