@@ -27,6 +27,24 @@ jobs:
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
           test -x "$SDKMANAGER"
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+      # SDL3 is part of the actual LASRecomp UI/render runtime. Build for the
+      # same Android ABI as the APK rather than relying on the host's SDL3.
+      - name: Build SDL3 for Android ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch release-3.2.22 https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL3"
+          NDK="$ANDROID_HOME/ndk/28.2.13676358"
+          cmake -S "$RUNNER_TEMP/SDL3" -B "$RUNNER_TEMP/sdl3-arm64" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF \
+            -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/sdl3-arm64" --parallel 4
+          SDL3_SO="$(find "$RUNNER_TEMP/sdl3-arm64" -type f -name libSDL3.so -print -quit)"
+          test -s "$SDL3_SO"
+          echo "SDL3_ANDROID_SO=$SDL3_SO" >> "$GITHUB_ENV"
+          echo "SDL3_ANDROID_HEADERS=$RUNNER_TEMP/SDL3/include" >> "$GITHUB_ENV"
       - name: Compile and sign Android APK
         shell: bash
         run: |
@@ -45,9 +63,10 @@ jobs:
           set -euo pipefail
           CC="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
           mkdir -p build/android-runtime-objects
-          for src in runtime/platform/android.c runtime/loader.c runtime/gamelib.c runtime/dispatch.c; do
+          # Include the real Android start routine; this is not a mock boot.
+          for src in runtime/platform/android.c runtime/loader.c runtime/gamelib.c runtime/dispatch.c runtime/main.c; do
             obj="build/android-runtime-objects/$(basename "${src%.c}").o"
-            "$CC" -std=gnu11 -O2 -fPIC -Werror=implicit-function-declaration -Iruntime -c "$src" -o "$obj"
+            "$CC" -std=gnu11 -O2 -fPIC -Werror=implicit-function-declaration -Iruntime -I"$SDL3_ANDROID_HEADERS" -c "$src" -o "$obj"
           done
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
