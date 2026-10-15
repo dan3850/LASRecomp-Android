@@ -29,6 +29,21 @@ checkout_dep https://github.com/KhronosGroup/SPIRV-Headers.git \
 checkout_dep https://github.com/KhronosGroup/SPIRV-Tools.git \
     4d2f0b40bfe290dea6c6904dafdf7fd8328ba346 "$SHADERC_SRC/third_party/spirv-tools"
 
+# shaderc v2024.4's third_party CMake sets GLSLANG_ENABLE_INSTALL to
+# a generator expression ($<NOT:ON>) instead of a boolean. With Android
+# SPIRV-Tools this erroneously generates glslang install(EXPORT) rules for
+# SPIRV-Tools-opt, a target which isn't exported. We are building an app
+# dependency and do NOT install glslang; disable those rules explicitly.
+python3 - "$SHADERC_SRC/third_party/CMakeLists.txt" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+old = 'set(GLSLANG_ENABLE_INSTALL $<NOT:${SKIP_GLSLANG_INSTALL}>)'
+assert old in s, "shaderc third_party CMake logic changed; inspect before patching"
+p.write_text(s.replace(old, 'set(GLSLANG_ENABLE_INSTALL OFF)'))
+PY
+
 cmake -S "$SHADERC_SRC" -B "$SHADERC_OUTPUT_DIR/build" \
     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
