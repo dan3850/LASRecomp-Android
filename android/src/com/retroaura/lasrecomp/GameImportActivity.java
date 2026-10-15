@@ -27,6 +27,10 @@ import java.util.List;
  * and recompiler are linked. Do not offer a misleading "Play" button yet.
  */
 public final class GameImportActivity extends Activity {
+    // Real LASRecomp RomFS builder, packaged inside this APK (no Termux).
+    static { System.loadLibrary("lasrecomp_prepare"); }
+    private static native String nativePrepareGame(String stageDirectory);
+
     private static final int PICK_GAME_FOLDER = 101;
     private TextView status;
     private Button importButton;
@@ -81,7 +85,9 @@ public final class GameImportActivity extends Activity {
     private boolean hasGameFiles(File root) {
         return new File(root, "exefs/main").isFile()
             && new File(root, "exefs/sdk").isFile()
-            && new File(root, "romfs").isDirectory();
+            && new File(root, "exefs/main.npdm").isFile()
+            && new File(root, "romfs/region_common").isDirectory()
+            && new File(root, "romfs.bin").isFile();
     }
 
     private void showGameFilesState() {
@@ -113,7 +119,7 @@ public final class GameImportActivity extends Activity {
         }
         importing = true;
         importButton.setEnabled(false);
-        status.setText("Importando arquivos do jogo...");
+        status.setText("Copiando e preparando os arquivos do jogo...");
         new Thread(() -> importTree(tree), "LASRecompImport").start();
     }
 
@@ -198,8 +204,13 @@ public final class GameImportActivity extends Activity {
                 throw new IllegalStateException("Escolha a pasta que contém exefs e romfs");
             copyTree(tree, exefs, new File(stage, "exefs"), 0);
             copyTree(tree, romfs, new File(stage, "romfs"), 0);
+            // Prepare the actual binary RomFS image the guest reads. The bridge
+            // also validates the exact v1.0.0 build ID before accepting the game.
+            runOnUiThread(() -> status.setText("Criando romfs.bin a partir da ROMFS..."));
+            String prepareError = nativePrepareGame(stage.getAbsolutePath());
+            if (prepareError != null) throw new IllegalStateException(prepareError);
             if (!hasGameFiles(stage))
-                throw new IllegalStateException("Não encontrei exefs/main, exefs/sdk ou romfs");
+                throw new IllegalStateException("Não foi possível preparar todos os arquivos do jogo");
 
             // Do not erase a previous valid game until the new import is complete.
             File previous = new File(getFilesDir(), "extracted.previous");
