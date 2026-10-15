@@ -91,7 +91,7 @@ if [[ -n "${LASRECOMP_RUNTIME_SO:-}" ]]; then
     cp -L "$LASRECOMP_RUNTIME_SO" "$LIBOUT/liblasrecomp_runtime.so"
     cp -L "$SHADERC_SO" "$LIBOUT/libshaderc_shared.so"
     NATIVE_LIBS+=(lib/arm64-v8a/liblasrecomp_runtime.so lib/arm64-v8a/libshaderc_shared.so)
-    for lib in avformat avcodec avutil swscale; do
+    for lib in avformat avcodec avutil swscale swresample; do
         file="$FFMPEG_INSTALL_DIR/lib/lib${lib}.so"
         [[ -s "$file" ]] || { echo "ERRO: FFmpeg nao encontrado: $file" >&2; exit 1; }
         cp -L "$file" "$LIBOUT/lib${lib}.so"
@@ -115,6 +115,21 @@ if [[ -n "${LASRECOMP_RUNTIME_SO:-}" ]]; then
             echo "ERRO: SONAME Android invalido em $so: $declared" >&2
             exit 1
         }
+    done
+    # No Android JNI library may refer to a non-system lib that the APK
+    # doesn't contain. This guards FFmpeg's transitive dependencies too.
+    for soname in "${NATIVE_LIBS[@]}"; do
+        so="$OUT/$soname"
+        while IFS= read -r dep; do
+            [[ -n "$dep" ]] || continue
+            if [[ -s "$LIBOUT/$dep" ]]; then continue; fi
+            case "$dep" in
+                libc.so|libm.so|libdl.so|liblog.so|libandroid.so|libz.so|libOpenSLES.so|libGLESv1_CM.so|libGLESv2.so)
+                    continue ;;
+            esac
+            echo "ERRO: dependencia nativa ausente no APK: $soname -> $dep" >&2
+            exit 1
+        done < <("$READELF" -d "$so" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
     done
     echo "Biblioteca real LASRecomp e dependencias ARM64 incluidas no APK."
 fi
