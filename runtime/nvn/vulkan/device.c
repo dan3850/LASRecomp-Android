@@ -710,6 +710,12 @@ void ui_window_init(void) {
     atexit(quick_exit_handler);
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     settings_load();
+#ifdef __ANDROID__
+    // The 16:9 Switch image must never be horizontally stretched to 20:9.
+    // Keep its aspect while the fullscreen Android window uses the full display.
+    g_settings.aspect = ASPECT_ORIGINAL;
+    g_settings.fullscreen = true;
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     int win_w = 1280, win_h = 720;
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
