@@ -415,6 +415,10 @@ static bool recover_lost_surface(void) {
     int w = 0, h = 0;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     if (w <= 0 || h <= 0) return false;
+    // Some SDL3 Android builds crash when creating a Vulkan surface while
+    // the Android native window is NULL (e.g. app still in background).
+    if (!SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL))
+        return false;
     VkResult idle = vkDeviceWaitIdle(g_vk.dev);
     if (idle != VK_SUCCESS) { LOG("[vk] surface recovery device wait failed: %d\n", idle); return false; }
     for (uint32_t i = 0; i < g_vk.sc_count; ++i) {
@@ -488,6 +492,7 @@ bool vk_frame_begin(const float clear[4]) {
     VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
+        if (surface_rebuild_needed || !g_vk.swapchain) return false;
         r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
     }
     if (r == VK_ERROR_SURFACE_LOST_KHR) { mark_surface_lost("acquire"); return false; }
