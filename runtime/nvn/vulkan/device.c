@@ -446,11 +446,20 @@ void vk_frame_end(const char *shot_path) {
     }
 }
 
+#ifdef __ANDROID__
+extern bool las_android_save_png_rgba(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
+#endif
+
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) {
+#ifdef __ANDROID__
+    if (!las_android_save_png_rgba(path, rgba, w, h)) LOG("[vk] saving %s failed (Android PNG writer)\n", path);
+    else LOG("[vk] saved %s (%ux%u)\n", path, w, h);
+#else
     SDL_Surface *s = SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888, (void *)rgba, (int)w * 4);
     if (!s || !SDL_SavePNG(s, path)) LOG("[vk] saving %s failed: %s\n", path, SDL_GetError());
     else LOG("[vk] saved %s (%ux%u)\n", path, w, h);
     SDL_DestroySurface(s);
+#endif
 }
 
 // ================================================================== game presentation (metal.m backend_present)
