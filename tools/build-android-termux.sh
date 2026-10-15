@@ -107,6 +107,10 @@ if [[ -n "${LASRECOMP_RUNTIME_SO:-}" ]]; then
     # On Android native code must be in the signed APK, not a writable
     # files/extracted/lasgame.so path.
     if [[ -n "${LASRECOMP_GAME_SO:-}" ]]; then
+        [[ "${LASRECOMP_PRIVATE_BUILD:-}" == "1" ]] || {
+            echo "ERRO: biblioteca do jogo so pode entrar em APK privado (LASRECOMP_PRIVATE_BUILD=1)" >&2
+            exit 1
+        }
         [[ -s "$LASRECOMP_GAME_SO" ]] || {
             echo "ERRO: biblioteca recompilada do jogo ausente: $LASRECOMP_GAME_SO" >&2
             exit 1
@@ -176,8 +180,13 @@ echo "[4/5] Assinando APK Android"
 echo "[5/5] Verificando APK assinado"
 "$APKSIGNER_BIN" verify "$APK"
 echo "APK INSTALAVEL: $APK"
-echo "OBS: SDL3 Activity e SDL_main empacotados quando suas dependencias estao disponiveis."
-echo "Ainda falta liblasrecomp_runtime.so + geracao do codigo do jogo; boot nao e jogavel."
+if [[ -n "${LASRECOMP_GAME_SO:-}" ]]; then
+    echo "APK PRIVADO com motor e codigo recompilado do jogo. Boot real ainda precisa ser validado."
+elif [[ -n "${LASRECOMP_RUNTIME_SO:-}" ]]; then
+    echo "APK com motor completo, mas sem liblasgame.so. Zelda ainda nao inicia."
+else
+    echo "APK preliminar sem motor de execucao integrado."
+fi
  || {
             echo "ERRO: liblasgame.so nao exporta lasgame_tables" >&2
             exit 1
