@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - android/phase1-termux-bootstrap
+      - android/runtime-integration
   pull_request:
     branches:
       - main
@@ -37,6 +38,17 @@ jobs:
           export ANDROID_ZIPALIGN="$ANDROID_HOME/build-tools/35.0.0/zipalign"
           export ANDROID_APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           bash tools/build-android-termux.sh
+      # Compile original runtime modules, not another standalone Vulkan test.
+      - name: Compile original LASRecomp core for Android ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          CC="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          mkdir -p build/android-runtime-objects
+          for src in runtime/platform/android.c runtime/loader.c runtime/gamelib.c runtime/dispatch.c; do
+            obj="build/android-runtime-objects/$(basename "${src%.c}").o"
+            "$CC" -std=gnu11 -O2 -fPIC -Werror=implicit-function-declaration -Iruntime -c "$src" -o "$obj"
+          done
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
