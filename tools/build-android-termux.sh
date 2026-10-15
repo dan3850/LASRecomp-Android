@@ -174,7 +174,7 @@ jar cf "$OUT/app-classes.jar" -C "$OUT/java-classes" .
 test -s "$OUT/dex/classes.dex"
 echo "[2/5] Montando APK com Activity, AndroidManifest e biblioteca nativa"
 rm -f "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
-"$AAPT2_BIN" link -I "$ANDROID_JAR" --manifest "$APP/AndroidManifest.xml" \
+"$AAPT2_BIN" link -I "$ANDROID_JAR" --manifest "${ANDROID_MANIFEST_OVERRIDE:-$APP/AndroidManifest.xml}" \
     -o "$OUT/unsigned.apk"
 # Bundle the native game entry and SDL3 Java lifecycle in the SAME APK.
 (cd "$OUT" && zip -q unsigned.apk "${NATIVE_LIBS[@]}")
