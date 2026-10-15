@@ -12,7 +12,7 @@
             android:name="com.retroaura.lasrecomp.GameImportActivity"
             android:label="LASRecomp Boot TESTE"
             android:exported="true"
-            android:screenOrientation="landscape">
+            android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -25,7 +25,7 @@
             android:label="LASRecomp Game"
             android:exported="false"
             android:hardwareAccelerated="true"
-            android:screenOrientation="landscape"
+            android:screenOrientation="sensorLandscape"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|layoutDirection|locale|fontScale" />
     </application>
 </manifest>
