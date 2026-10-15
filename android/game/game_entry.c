@@ -27,7 +27,9 @@ int SDL_main(int argc, char **argv) {
      * game code interface) is a separate build target. Don't pretend that
      * compiling runtime object files into CI produces a runnable library.
      */
-    void *engine = dlopen("liblasrecomp_runtime.so", RTLD_NOW | RTLD_LOCAL);
+    // The private recompiled game module resolves host HLE functions here.
+// Keep the engine in the process-wide symbol group on Android.
+    void *engine = dlopen("liblasrecomp_runtime.so", RTLD_NOW | RTLD_GLOBAL);
     if (!engine) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      "LASRecomp: native game runtime not packaged: %s", dlerror());
