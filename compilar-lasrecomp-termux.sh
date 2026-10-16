@@ -307,6 +307,13 @@ for so in "$SDL_SO" "$SHADERC_SO" "$RUNTIME" "$LIB/libmain.so" \
  "$LIB/liblasrecomp_prepare.so" "$LIB/liblasrecomp_probe.so"; do
  cp -L "$so" "$STAGE/lib/arm64-v8a/$(basename "$so")"
 done
+# SDL3 compilado no Termux pode depender de libiconv.
+# Empacota a biblioteca existente e preserva os objetos ja compilados.
+if llvm-readelf -d "$SDL_SO" | grep -q 'Shared library: \[libiconv.so\]'; then
+ ICONV_SO="$PREFIX/lib/libiconv.so"
+ [[ -s "$ICONV_SO" ]] || fail "SDL3 requer libiconv.so, mas nao existe em $ICONV_SO (pkg install libiconv)"
+ cp -L "$ICONV_SO" "$STAGE/lib/arm64-v8a/libiconv.so"
+fi
 if [[ -n "${LASRECOMP_GAME_SO:-}" ]]; then
  [[ -s "$LASRECOMP_GAME_SO" ]] || fail "LASRECOMP_GAME_SO ausente"
  llvm-nm -D --defined-only "$LASRECOMP_GAME_SO" \
