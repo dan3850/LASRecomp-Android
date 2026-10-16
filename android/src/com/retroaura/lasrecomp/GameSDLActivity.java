@@ -24,6 +24,13 @@ import java.nio.charset.StandardCharsets;
  */
 public final class GameSDLActivity extends SDLActivity {
     private GameTouchControls touchControls;
+    private android.net.Uri selectedGameTree;
+
+    /** Native JNI can call this method and then use the returned read-only fd. */
+    public int openGameDocumentFd(String relativePath) throws java.io.IOException {
+        if (selectedGameTree == null) throw new java.io.FileNotFoundException("No external game folder selected");
+        return GameDocumentBridge.openReadFd(this, selectedGameTree, relativePath);
+    }
 
     private void enforceLandscapeFullscreen() {
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
@@ -77,6 +84,14 @@ public final class GameSDLActivity extends SDLActivity {
     @Override
     public void onCreate(Bundle state) {
         markActivity("onCreate");
+        String tree = getIntent().getStringExtra("game_tree_uri");
+        if (tree != null) {
+            android.net.Uri candidate = android.net.Uri.parse(tree);
+            if (GameDocumentBridge.hasPermission(this, candidate)) {
+                selectedGameTree = candidate;
+                markActivity("SAF game folder permission verified");
+            } else markActivity("SAF game folder permission missing");
+        }
         enforceLandscapeFullscreen();
         installFallbackFont();
         super.onCreate(state);
