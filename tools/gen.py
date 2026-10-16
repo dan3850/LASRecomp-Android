@@ -18,6 +18,14 @@ from lifter import Insn, Lifter, Unsupported, bits, emit_asm_batch, hx, sext
 
 SCRATCH_MEM = 0x7300000000
 
+# The Switch v1.0.0 Stable 60fps v2 patch skips these two instructions.
+# In Termux-generated Android game libraries, keep the original instructions
+# available so the existing MODS menu can select them at startup.
+STABLE60_BUILD_ID = "ae16f71e002af8cb059a9a74c4d90f34ba984892"
+STABLE60_OFFSETS = (0x01019608, 0x01019628)
+STABLE60_CAPABILITY = "stable60-v2:" + STABLE60_BUILD_ID.upper() + ":01019608,01019628"
+STABLE60_TERMUX_PREFIX = "/data/data/com.termux/files/usr"
+
 
 def sext26(w):
     v = w & 0x03FFFFFF
@@ -503,6 +511,28 @@ def write_if_changed(path, text):
         f.write(text)
 
 
+def enable_stable60_menu(module, enabled, explicit=False):
+    """Insert runtime-selectable NOP sites only for the verified game version."""
+    if not enabled or module.name != 'main':
+        return False
+    if module.nso.build_id.lower() != STABLE60_BUILD_ID:
+        if explicit:
+            raise ValueError("Stable 60fps v2 supports only the original v1.0.0 main NSO")
+        return False
+    if module.base != 0x7000000000:
+        raise ValueError("Stable 60fps v2: unexpected main load address")
+    sites = [module.base + offset for offset in STABLE60_OFFSETS]
+    for pc, offset in zip(sites, STABLE60_OFFSETS):
+        if not module.in_text(pc):
+            raise ValueError(f"Stable 60fps v2: site main+{offset:#x} outside text")
+        if pc in PATCHES or offset in RANDO_CODE:
+            raise ValueError(f"Stable 60fps v2: patch conflict at main+{offset:#x}")
+        if module.word(pc) == 0xd503201f:
+            raise ValueError(f"Stable 60fps v2: main+{offset:#x} is already a NOP")
+    module.runtime_nops.update(sites)
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('name')
@@ -516,10 +546,24 @@ def main():
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--simd', choices=('asm', 'c'),
                     default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
+    ap.add_argument('--stable60-menu', dest='stable60_menu', action='store_true',
+                    help='add menu-selectable Stable 60fps v2 hooks (requires v1.0.0 main)')
+    ap.add_argument('--no-stable60-menu', dest='stable60_menu', action='store_false',
+                    help='generate the original instructions without Stable 60fps hooks')
+    ap.set_defaults(stable60_menu=None)
     args = ap.parse_args()
 
     t0 = time.time()
     m = Module(args.name, args.nso, args.base, args.simd)
+    # Default on direct Termux ARM64 builds only. Other platforms retain the
+    # original generator behavior unless explicitly opted in.
+    termux = (os.environ.get('PREFIX') == STABLE60_TERMUX_PREFIX and
+              platform.machine().lower() in ('aarch64', 'arm64'))
+    enabled = args.stable60_menu if args.stable60_menu is not None else termux
+    stable60_menu = enable_stable60_menu(m, enabled, explicit=args.stable60_menu is True)
+    if stable60_menu:
+        print('main: Stable 60fps v2 menu hooks enabled; default gameplay remains unpatched',
+              file=sys.stderr, flush=True)
     starts = m.boundaries()
     hle = {}
     if args.hle and os.path.exists(args.hle):
@@ -636,6 +680,15 @@ def main():
         f.write(',\n'.join(fname(a) for a in order))
         f.write('};\n')
         f.write(f'const uint64_t {args.name}_fn_count = {len(order)};\n')
+        if stable60_menu:
+            # The Android loader and import screen require this exact marker.
+            # Export from main_table.c so no separate patch-tag object is needed.
+            f.write('__attribute__((visibility("default")))\n')
+            f.write('const char *lasgame_mod_stable60_v2(void) { return "'
+                    + STABLE60_BUILD_ID + '"; }\n')
+            f.write('__attribute__((visibility("default")))\n')
+            f.write('const char *lasgame_mod_menu_v1(void) { return "'
+                    + STABLE60_CAPABILITY + '"; }\n')
         write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
     print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 
