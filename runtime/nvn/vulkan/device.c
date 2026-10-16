@@ -25,8 +25,23 @@ static VkDebugUtilsMessengerEXT messenger;
 static bool surface_rebuild_needed;
 static Uint64 last_surface_rebuild_attempt_ns;
 static void mark_surface_lost(const char *op) {
-    if (!surface_rebuild_needed) LOG("[vk] surface lost at %s; will rebuild surface and swapchain\n", op);
+    if (!surface_rebuild_needed) LOG("[vk] surface lost at %s; suspending presentation until surface recovery\n", op);
     surface_rebuild_needed = true;
+}
+
+static bool android_window_surface_ready(const char *stage) {
+#ifdef __ANDROID__
+    if (!window) { LOG("[vk] %s: SDL window missing\n", stage); return false; }
+    SDL_PropertiesID props = SDL_GetWindowProperties(window);
+    if (!props) { LOG("[vk] %s: SDL window properties unavailable\n", stage); return false; }
+    if (!SDL_GetPointerProperty(props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL)) {
+        LOG("[vk] %s: Android native window unavailable\n", stage);
+        return false;
+    }
+#else
+    (void)stage;
+#endif
+    return true;
 }
 
 // ================================================================== instance / device
@@ -416,7 +431,12 @@ static void create_swapchain(void) {
 }
 
 static void recreate_swapchain(void) {
-    vkDeviceWaitIdle(g_vk.dev);
+    if (surface_rebuild_needed || !android_window_surface_ready("swapchain recreation")) return;
+    VkResult idle = vkDeviceWaitIdle(g_vk.dev);
+    if (idle != VK_SUCCESS) {
+        LOG("[vk] swapchain recreation: device wait failed: %d\n", idle);
+        return;
+    }
     create_swapchain();
 }
 
@@ -429,13 +449,15 @@ static bool recover_lost_surface(void) {
     last_surface_rebuild_attempt_ns = now;
     int w = 0, h = 0;
     SDL_GetWindowSizeInPixels(window, &w, &h);
-    if (w <= 0 || h <= 0) return false;
-    // Some SDL3 Android builds crash when creating a Vulkan surface while
-    // the Android native window is NULL (e.g. app still in background).
-    if (!SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL))
+    if (w <= 0 || h <= 0) {
+        LOG("[vk] recovery postponed: window extent %dx%d\n", w, h);
         return false;
+    }
+    if (!android_window_surface_ready("surface recovery")) return false;
+    LOG("[vk] recovery: waiting for all submitted GPU work\n");
     VkResult idle = vkDeviceWaitIdle(g_vk.dev);
     if (idle != VK_SUCCESS) { LOG("[vk] surface recovery device wait failed: %d\n", idle); return false; }
+    LOG("[vk] recovery: GPU idle; releasing %u image views and old swapchain\n", g_vk.sc_count);
     for (uint32_t i = 0; i < g_vk.sc_count; ++i) {
         if (g_vk.sc_views[i]) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
         g_vk.sc_views[i] = VK_NULL_HANDLE;
@@ -445,10 +467,13 @@ static bool recover_lost_surface(void) {
     g_vk.swapchain = VK_NULL_HANDLE;
     if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
     g_vk.surface = VK_NULL_HANDLE;
+    if (!android_window_surface_ready("new SDL Vulkan surface")) return false;
+    LOG("[vk] recovery: creating new SDL Vulkan surface\n");
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) {
         LOG("[vk] SDL surface not ready for recovery: %s\n", SDL_GetError());
         return false;
     }
+    LOG("[vk] recovery: creating replacement swapchain\n");
     create_swapchain();
     if (!g_vk.swapchain) { LOG("[vk] new surface not yet ready for swapchain\n"); return false; }
     surface_rebuild_needed = false;
@@ -495,7 +520,12 @@ bool vk_frame_begin(const float clear[4]) {
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     if (!w || !h) return false;  // minimised
-    if (surface_rebuild_needed && !recover_lost_surface()) { SDL_Delay(16); return false; }
+    if (surface_rebuild_needed) {
+        if (!recover_lost_surface()) { SDL_Delay(16); return false; }
+        // The old surface must never be acquired after a recovery attempt.
+        if (surface_rebuild_needed || !g_vk.surface || !g_vk.swapchain) return false;
+    }
+    if (!android_window_surface_ready("frame begin")) return false;
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
     if (surface_rebuild_needed || !g_vk.swapchain) return false;
     static int trace = -1;
