@@ -9,6 +9,8 @@
 
 #include "vk.h"
 #include "../astc.h"
+#include "../bcn_decode.h"
+#include "diagnostics.h"
 #include "../renderer.h"
 #include "../texpatch.h"
 
@@ -163,6 +165,32 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
     return (p.optimalTilingFeatures & want) == want;
 }
 
+static unsigned bcn_format(uint32_t f) {
+    switch (f) {
+    case 0x41: case 0x42: case 0x45: case 0x46: return LAS_BC1;
+    case 0x43: case 0x47: return LAS_BC2;
+    case 0x44: case 0x48: return LAS_BC3;
+    case 0x49: return LAS_BC4U;
+    case 0x4A: return LAS_BC4S;
+    case 0x4B: return LAS_BC5U;
+    case 0x4C: return getenv("LARECOMP_BC5_UNORM") ? LAS_BC5U : LAS_BC5S;
+    case 0x4D: case 0x4E: return LAS_BC7;
+    case 0x4F: return LAS_BC6S;
+    case 0x50: return LAS_BC6U;
+    default: return LAS_BC_NONE;
+    }
+}
+static VkFormat bcn_decoded_format(uint32_t nvn, unsigned f) {
+    switch (f) {
+    case LAS_BC4U: return VK_FORMAT_R8_UNORM;
+    case LAS_BC4S: return VK_FORMAT_R8_SNORM;
+    case LAS_BC5U: return VK_FORMAT_R8G8_UNORM;
+    case LAS_BC5S: return VK_FORMAT_R8G8_SNORM;
+    case LAS_BC6U: case LAS_BC6S: return VK_FORMAT_R16G16B16A16_SFLOAT;
+    default: return (nvn >= 0x45 && nvn <= 0x48) || nvn == 0x4E ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    }
+}
+
 // ================================================================== output resolution / per-frame clears
 // Same rules as metal.m (see the comments there).
 static float g_rs_x = 1, g_rs_y = 1;
@@ -295,6 +323,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkFormat vf = mf.vf;
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     b->astc_bw = b->astc_bh = 0;
+    b->bcn_format = 0;
     if (!format_supports(vf, need)) {
         bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
         const FormatInfo *fi = t->layout.fmt;
@@ -303,7 +332,13 @@ static void create_image(NvnTexture *t, TexBackend *b) {
             b->astc_bh = fi->bh;
             b->astc_srgb = t->format >= 0x87;
             vf = b->astc_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        } else if ((b->bcn_format = bcn_format(t->format)) != 0) {
+            vf = bcn_decoded_format(t->format, b->bcn_format);
+            vk_diag_event(VD_INFO, "BCn CPU fallback: texture=%llu NVN=%#x VkFormat=%d -> %d %ux%ux%u",
+                (unsigned long long)t->debug_id, t->format, mf.vf, vf, t->width, t->height, t->depth);
         } else {
+            vk_diag_event(VD_UNSUPPORTED_FORMAT, "texture=%llu NVN=%#x VkFormat=%d size=%ux%ux%u flags=%#x",
+                (unsigned long long)t->debug_id, t->format, vf, t->width, t->height, t->depth, t->flags);
             static int nlog;
             if (nlog++ < 20) LOG("[vk] format %d (nvn %#x) not supported: RGBA8 instead\n", vf, t->format);
             vf = VK_FORMAT_R8G8B8A8_UNORM;
@@ -323,15 +358,20 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
     if (r != VK_SUCCESS) {
+        vk_diag_event(VD_UNSUPPORTED_FORMAT, "create image failed result=%d texture=%llu NVN=%#x VkFormat=%d",
+            r, (unsigned long long)t->debug_id, t->format, vf);
         LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        b->astc_bw = b->astc_bh = b->bcn_format = 0;
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
         depthfmt = false;
     }
     b->format = vf;
+    vk_diag_event(VD_TEXTURE, "id=%llu NVN=%#x host=%d %ux%ux%u layers=%u levels=%u flags=%#x",
+        (unsigned long long)t->debug_id, t->format, vf, tw, th, depth, layers, levels, t->flags);
     b->width = tw; b->height = th; b->depth = depth; b->layers = layers; b->levels = levels; b->samples = samples;
     b->aspect = depthfmt ? aspect_of(t->format) : VK_IMAGE_ASPECT_COLOR_BIT;
     b->base_type = type == VK_IMAGE_TYPE_1D ? (layers > 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D)
@@ -339,6 +379,11 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                  : t->target == 8 ? VK_IMAGE_VIEW_TYPE_CUBE : t->target == 9 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
                  : layers > 1 || t->target == 4 || t->target == 6 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     vk_image_init_layout(vk_upload_cmd(), b->image, b->aspect);
+    if (!depthfmt && b->format != mf.vf && !b->astc_bw && !b->bcn_format) {
+        VkClearColorValue zero = {{0, 0, 0, 0}};
+        VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+        vkCmdClearColorImage(vk_upload_cmd(), b->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+    }
     if (depthfmt) {
         // New depth / stencil images start zeroed (as fresh memory reads on Apple GPUs). The game builds its depth
         // pyramid with depth-only copies, so the stencil of those images was never written: whatever the memory
@@ -486,6 +531,9 @@ uint64_t prof_tex_checks, prof_tex_samples, prof_tex_full, prof_tex_full_bytes, 
 static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (!t->addr || t->target == 10) return;
     uint64_t frame = vk_frame_counter();
+    // Glyph atlases are sparse CPU writes. Mark linear textures dynamic BEFORE
+    // throttling so new characters are never missed by the strided hash.
+    if (t->flags & 0x10) b->dynamic = true;
     if (b->uploaded && b->checked_frame == frame) return;
     if (b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
     const FormatInfo *fi = t->layout.fmt;
@@ -535,7 +583,14 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (b->tp > 0) b->tp_gen = texpatch_generation();
     b->data_hash = h;
     b->uploaded = true;
-    if (b->format != mf.vf && !b->astc_bw) return;  // unsupported format: nothing sensible to copy
+    if (b->format != mf.vf && !b->astc_bw && !b->bcn_format) {
+        vk_diag_event(VD_UPLOAD_SKIPPED, "unsupported texture=%llu NVN=%#x host=%d expected=%d",
+            (unsigned long long)t->debug_id, t->format, b->format, mf.vf);
+        return;
+    }
+    if (t->format == 0x01 && (t->flags & 0x10))
+        vk_diag_event(VD_GLYPH_UPLOAD, "R8 linear texture=%llu %ux%u stride=%llu hash=%llx",
+            (unsigned long long)t->debug_id, t->width, t->height, (unsigned long long)t->stride, (unsigned long long)h);
     VkCommandBuffer cb = vk_upload_cmd();
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers > b->layers && b->depth == 1) layers = b->layers;
@@ -545,6 +600,31 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     for (uint32_t layer = 0; layer < layers; layer++) {
         for (uint32_t lv = 0; lv < levels; lv++) {
             LevelLayout l = tegra_level(&t->layout, lv);
+            if (b->bcn_format) {
+                uint64_t ns = (uint64_t)l.wb * l.hb * l.d * fi->bpb;
+                uint64_t np = (uint64_t)l.w * l.h * l.d * las_bcn_pixel_bytes(b->bcn_format);
+                uint8_t *blocks = malloc(ns);
+                if (!blocks) { b->uploaded = false; vk_diag_event(VD_UPLOAD_SKIPPED, "BCn allocation failed bytes=%llu", (unsigned long long)ns); return; }
+                const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
+                if (linear) {
+                    for (uint32_t z = 0; z < l.d; z++) for (uint32_t y = 0; y < l.hb; y++)
+                        memcpy(blocks + ((uint64_t)z * l.hb + y) * l.wb * fi->bpb,
+                               src + ((uint64_t)z * l.hb + y) * t->stride, l.wb * fi->bpb);
+                } else tegra_deswizzle(src, blocks, l.wb, l.hb, l.d, fi->bpb, l.block_height_log2, l.block_depth_log2);
+                if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, blocks, l.w, l.h, l.wb * fi->bpb);
+                VkSpan s = vk_transient(np, 16);
+                bool ok = las_bcn_decode(b->bcn_format, blocks, ns, l.w, l.h, l.d, s.ptr, np);
+                free(blocks);
+                if (!ok) { b->uploaded = false; vk_diag_event(VD_UPLOAD_SKIPPED, "BCn decode failed texture=%llu level=%u", (unsigned long long)t->debug_id, lv); return; }
+                VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
+                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, b->depth > 1 ? 0 : layer, 1},
+                    .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv),
+                        l.h < level_h(b, lv) ? l.h : level_h(b, lv), l.d}};
+                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+                vk_diag_event(VD_BCN_DECODE, "texture=%llu NVN=%#x level=%u layer=%u bytes=%llu",
+                    (unsigned long long)t->debug_id, t->format, lv, layer, (unsigned long long)np);
+                continue;
+            }
             if (b->astc_bw) {  // blocks -> linear block rows -> RGBA8 texels
                 const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
                 uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 16);
@@ -802,7 +882,7 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
         switch (d->wrap[i]) {
         case 0: case 7: modes[i] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; break;
         case 1: modes[i] = VK_SAMPLER_ADDRESS_MODE_REPEAT; break;
-        case 2: case 3: modes[i] = VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE; break;
+        case 2: case 3: modes[i] = g_vk.sampler_mirror_clamp ? VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; break;
         case 4: case 5: modes[i] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER; border = true; break;
         case 6: modes[i] = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT; break;
         default: modes[i] = VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -814,7 +894,10 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     if (mf <= 1) si.maxLod = si.minLod + 0.25f;  // not mipmapped: stay on the base level
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     si.mipLodBias = d->lod_bias;
-    if (d->max_aniso > 1) { si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = fminf(d->max_aniso, 16); }
+    if (d->max_aniso > 1 && g_vk.sampler_anisotropy) {
+        si.anisotropyEnable = VK_TRUE;
+        si.maxAnisotropy = fminf(d->max_aniso, fminf(16, g_vk.props.limits.maxSamplerAnisotropy));
+    }
     static float lodmin = -1;
     if (lodmin < 0) lodmin = getenv("LARECOMP_LOD_MIN") ? (float)atof(getenv("LARECOMP_LOD_MIN")) : 0;
     if (lodmin > 0 && mf > 1) si.minLod = fmaxf(si.minLod, lodmin);
@@ -855,4 +938,62 @@ VkSampler vk_default_sampler(bool linear) {
         VK_CHECK(vkCreateSampler(g_vk.dev, &si, NULL, &s[linear]));
     }
     return s[linear];
+}
+
+void vk_diag_texture_report(FILE *f) {
+    fprintf(f, "live=%d; atlas candidates are linear R8, not proof of font content\n", g_nlive);
+    int printed = 0;
+    for (int pass = 0; pass < 2; pass++) for (int i = 0; i < g_nlive && printed < 512; i++) {
+        NvnTexture *t = g_live[i];
+        TexBackend *b = t->backend;
+        bool atlas = t->format == 0x01 && (t->flags & 0x10);
+        if (!b || atlas != (pass == 0)) continue;
+        fprintf(f, "id=%llu label=%.63s NVN=%#x host=%d %ux%ux%u levels=%u layers=%u flags=%#x stride=%llu "
+            "uploaded=%d dynamic=%d gpu_owned=%d bcn=%u astc=%ux%u hash=%llx swizzle=%u,%u,%u,%u\n",
+            (unsigned long long)t->debug_id, t->label, t->format, b->format, b->width, b->height, b->depth,
+            b->levels, b->layers, t->flags, (unsigned long long)t->stride, b->uploaded, b->dynamic, b->gpu_owned,
+            b->bcn_format, b->astc_bw, b->astc_bh, (unsigned long long)b->data_hash,
+            t->swizzle[0], t->swizzle[1], t->swizzle[2], t->swizzle[3]);
+        printed++;
+    }
+}
+static void save_r8(const char *path, const uint8_t *p, uint32_t w, uint32_t h, uint64_t stride) {
+    uint8_t *rgba = malloc((size_t)w * h * 4);
+    if (!rgba) { vk_diag_event(VD_CAPTURE, "atlas conversion allocation failed"); return; }
+    uint64_t nonzero = 0;
+    for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
+        uint8_t value = p[(uint64_t)y * stride + x];
+        size_t at = ((size_t)y * w + x) * 4;
+        rgba[at] = rgba[at + 1] = rgba[at + 2] = value; rgba[at + 3] = 255;
+        nonzero += value != 0;
+    }
+    vk_save_png(path, rgba, w, h);
+    vk_diag_event(VD_CAPTURE, "%s %ux%u nonzero=%llu", path, w, h, (unsigned long long)nonzero);
+    free(rgba);
+}
+void vk_diag_capture_atlases(void) {
+    int n = 0;
+    for (int i = 0; i < g_nlive && n < 4; i++) {
+        NvnTexture *t = g_live[i];
+        TexBackend *b = t->backend;
+        if (t->format != 0x01 || !(t->flags & 0x10) || !t->addr || !b || b->format != VK_FORMAT_R8_UNORM ||
+            b->depth != 1 || b->samples != 1 || t->width != b->width || t->height != b->height ||
+            t->width < 128 || t->height < 128 || (uint64_t)t->width * t->height > 4 * 1024 * 1024 || t->stride < t->width) continue;
+        char path[80];
+        LevelLayout l = tegra_level(&t->layout, 0);
+        snprintf(path, sizeof path, "graphics/atlas-%d-cpu.png", n);
+        save_r8(path, (const uint8_t *)(uintptr_t)t->addr + l.offset, t->width, t->height, t->stride);
+        vk_end_pass();
+        VkCommandBuffer cb = vk_cmd();
+        vk_full_barrier(cb);
+        VkSpan out = vk_readback((uint64_t)b->width * b->height);
+        VkBufferImageCopy rg = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .imageExtent = {b->width, b->height, 1}};
+        vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &rg);
+        renderer_flush(); vk_readback_invalidate();
+        snprintf(path, sizeof path, "graphics/atlas-%d-gpu.png", n);
+        save_r8(path, out.ptr, b->width, b->height, b->width);
+        n++;
+    }
+    if (!n) vk_diag_event(VD_CAPTURE, "no eligible linear R8 atlas was present at capture time");
 }

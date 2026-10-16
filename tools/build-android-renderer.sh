@@ -71,6 +71,7 @@ for src in "${SOURCES[@]}"; do
         flags=(-std=c++17)
     fi
     if "$compiler" "${flags[@]}" -O2 -fPIC -fno-strict-aliasing \
+            "-DLASRECOMP_BUILD_SHA=\"$(git -C "$ROOT" rev-parse --short=12 HEAD)\"" \
             -D_FILE_OFFSET_BITS=64 -DVK_NO_PROTOTYPES -DIMGUI_IMPL_VULKAN_USE_VOLK -Wno-nullability-completeness -Werror=implicit-function-declaration \
             "${INC[@]}" -c "$src" -o "$obj"; then
         OBJECTS+=("$obj")

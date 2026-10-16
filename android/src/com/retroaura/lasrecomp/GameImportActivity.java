@@ -172,6 +172,10 @@ public final class GameImportActivity extends Activity {
         bootLogButton.setText("VER REGISTRO DO BOOT");
         bootLogButton.setOnClickListener(v -> showBootLog());
         layout.addView(bootLogButton);
+        Button graphicsLogButton = new Button(this);
+        graphicsLogButton.setText("SALVAR DIAGNÓSTICO GRÁFICO (ZIP)");
+        graphicsLogButton.setOnClickListener(v -> GraphicsDiagnostics.chooseDestination(this));
+        layout.addView(graphicsLogButton);
         ScrollView scroller = new ScrollView(this);
         scroller.setFillViewport(false);
         scroller.setVerticalScrollBarEnabled(true);
@@ -202,7 +206,9 @@ public final class GameImportActivity extends Activity {
     private void showBootLog() {
         String boot = readLogTail(new File(getFilesDir(), "lasrecomp_boot.txt"), 10000);
         String runtime = readLogTail(new File(getFilesDir(), "lasrecomp.log"), 16000);
-        String output = "=== INICIO / SDL ===\n" + boot
+        String graphics = readLogTail(new File(getFilesDir(), "graphics/device.txt"), 12000)
+            + "\n" + readLogTail(new File(getFilesDir(), "graphics/events.txt"), 24000);
+        String output = "=== VULKAN / GRÁFICOS ===\n" + graphics + "\n\n=== INICIO / SDL ===\n" + boot
                       + "\n\n=== MOTOR NATIVO ===\n" + runtime;
         new AlertDialog.Builder(this)
             .setTitle("Diagnostico do boot")
@@ -502,6 +508,7 @@ public final class GameImportActivity extends Activity {
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (GraphicsDiagnostics.handleResult(this, requestCode, resultCode, data)) return;
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == PICK_SYSTEM_FONT) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {

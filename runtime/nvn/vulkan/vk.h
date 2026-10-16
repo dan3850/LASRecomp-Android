@@ -41,6 +41,8 @@ typedef struct {
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
     bool custom_border, divisor, host_import;
+    bool sampler_anisotropy;
+    bool sampler_mirror_clamp;
     // window
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
@@ -89,6 +91,7 @@ typedef struct TexBackend {
     uint32_t pending_w, pending_h, pending_stride;
     uint8_t astc_bw, astc_bh;  // ASTC without GPU support: decoded to RGBA8 on upload (runtime/nvn/astc.c)
     bool astc_srgb;
+    uint8_t bcn_format;  // BCn without driver support: CPU decode, preserving channel type/colour space
     int tp;              // runtime/nvn/texpatch.c: 0 not checked yet, -1 none, else known UI texture + 1
     uint32_t tp_gen;     // texpatch_generation() it was last uploaded with
     int reg;  // slot in textures.c's live list + 1 (a reboot destroys them all)
@@ -110,6 +113,8 @@ void vk_defer_image(VkImage img, VmaAllocation mem);
 void vk_defer_view(VkImageView v);
 void vk_views_forget(TexBackend *b);  // drop (deferred) the cached views of an image being replaced
 uint64_t vk_frame_counter(void);
+uint64_t renderer_present_count(void);
+void vk_readback_invalidate(void);  // after the GPU wait, before reading vk_readback().ptr
 
 // ---- shaders / pipelines (shaders.c)
 VkShaderModule vk_compile_glsl(const char *src, int stage, const char *name);  // NULL on failure (logged)

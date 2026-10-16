@@ -15,6 +15,8 @@
 
 // ---- what shaders.c needs from the rest of the runtime
 VkG g_vk;
+// This harness exercises shader compilation/layouts only, without the window/capture backend.
+void vk_diag_event(unsigned kind, const char *fmt, ...) { (void)kind; (void)fmt; }
 void rt_fatal_trace(void) { abort(); }
 ShaderInfo *old_maxwell_translate(const uint8_t *c, size_t m, int s, const ShaderKey *k) { (void)c, (void)m, (void)s, (void)k; return NULL; }
 void old_maxwell_free(ShaderInfo *s) { (void)s; }

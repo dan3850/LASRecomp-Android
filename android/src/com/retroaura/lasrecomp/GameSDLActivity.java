@@ -23,6 +23,9 @@ import java.nio.charset.StandardCharsets;
  * It does not use Termux.
  */
 public final class GameSDLActivity extends SDLActivity {
+    private static native boolean nativeRequestGraphicsCapture();
+    private android.widget.Button captureButton;
+    private final android.os.Handler captureHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private GameTouchControls touchControls;
     private android.net.Uri selectedGameTree;
     private GameDocumentBridge.RomfsIndex romfsIndex;
@@ -122,7 +125,59 @@ public final class GameSDLActivity extends SDLActivity {
             mLayout.addView(touchControls, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             touchControls.bringToFront();
+            captureButton = new android.widget.Button(this);
+            captureButton.setText("CAPTURAR LOG");
+            captureButton.setTextSize(10);
+            captureButton.setAlpha(0.8f);
+            android.widget.RelativeLayout.LayoutParams cp = new android.widget.RelativeLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            cp.addRule(android.widget.RelativeLayout.ALIGN_PARENT_TOP);
+            cp.addRule(android.widget.RelativeLayout.CENTER_HORIZONTAL);
+            mLayout.addView(captureButton, cp);
+            captureButton.setOnClickListener(v -> requestGraphicsCapture());
         }
+    }
+    private void requestGraphicsCapture() {
+        new File(getFilesDir(), "graphics/capture.state").delete();
+        boolean accepted;
+        try { accepted = nativeRequestGraphicsCapture(); }
+        catch (UnsatisfiedLinkError error) { accepted = false; }
+        if (!accepted) {
+            android.widget.Toast.makeText(this, "O motor ainda não está pronto para capturar.", android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
+        captureButton.setEnabled(false);
+        captureButton.setText("CAPTURANDO…");
+        pollGraphicsCapture(0);
+    }
+    private void pollGraphicsCapture(int attempt) {
+        captureHandler.postDelayed(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            String state = "";
+            try (java.io.FileInputStream in = new java.io.FileInputStream(new File(getFilesDir(), "graphics/capture.state"))) {
+                byte[] bytes = new byte[512]; int n = in.read(bytes);
+                if (n > 0) state = new String(bytes, 0, n, StandardCharsets.UTF_8);
+            } catch (java.io.IOException ignored) {}
+            if (state.startsWith("complete") || state.startsWith("error")) {
+                captureButton.setEnabled(true); captureButton.setText("CAPTURAR LOG");
+                new android.app.AlertDialog.Builder(this).setTitle("Diagnóstico gráfico")
+                    .setMessage(state.startsWith("complete")
+                        ? "Captura concluída. Salve o ZIP com a tela, os atlas de texto disponíveis e o registro Vulkan."
+                        : "A captura teve uma falha. Salve o registro disponível para análise.")
+                    .setNegativeButton("FECHAR", null)
+                    .setPositiveButton("SALVAR ZIP", (d, w) -> GraphicsDiagnostics.chooseDestination(this)).show();
+            } else if (attempt < 119) pollGraphicsCapture(attempt + 1);
+            else {
+                captureButton.setEnabled(true); captureButton.setText("CAPTURAR LOG");
+                new android.app.AlertDialog.Builder(this).setTitle("Captura sem resposta")
+                    .setMessage("O motor não concluiu a captura em 30 segundos. O registro pode ser salvo para análise.")
+                    .setNegativeButton("FECHAR", null)
+                    .setPositiveButton("SALVAR ZIP", (d, w) -> GraphicsDiagnostics.chooseDestination(this)).show();
+            }
+        }, 250);
+    }
+    @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
+        if (!GraphicsDiagnostics.handleResult(this, request, result, data)) super.onActivityResult(request, result, data);
     }
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
@@ -136,6 +191,7 @@ public final class GameSDLActivity extends SDLActivity {
     }
     @Override
     protected void onDestroy() {
+        captureHandler.removeCallbacksAndMessages(null);
         if (touchControls != null) touchControls.releaseAll();
         markActivity("onDestroy");
         super.onDestroy();

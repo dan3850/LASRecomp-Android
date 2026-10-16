@@ -12,6 +12,7 @@
 #include "../../settings.h"
 #include "../../ui/menu.h"
 #include "vk.h"
+#include "diagnostics.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -183,7 +184,9 @@ static void create_device(void) {
         .pNext = has_fault ? (void *)&supported_fault : (void *)&supported11};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
 
-    g_vk.custom_border = has_border && supported_border.customBorderColors;
+    // Samplers are cached independently of textures, so a custom border must
+    // be allowed without prescribing a single image format.
+    g_vk.custom_border = has_border && supported_border.customBorderColors && supported_border.customBorderColorWithoutFormat;
     g_vk.divisor = has_divisor && supported_div.vertexAttributeInstanceRateDivisor;
     g_vk.host_import = has_import;  // guest heap as a GPU buffer (exec.c)
     bool fault = has_fault && supported_fault.deviceFault;
@@ -230,6 +233,7 @@ static void create_device(void) {
     VK_ENABLE_FEATURE(f12, supported12, timelineSemaphore);
     VK_ENABLE_FEATURE(f12, supported12, shaderInt8);
     VK_ENABLE_FEATURE(f12, supported12, samplerMirrorClampToEdge);
+    g_vk.sampler_mirror_clamp = !!supported12.samplerMirrorClampToEdge;
     VK_ENABLE_FEATURE(f12, supported12, uniformAndStorageBuffer8BitAccess);
     VK_ENABLE_FEATURE(f12, supported12, storageBuffer8BitAccess);
     VK_ENABLE_FEATURE(f12, supported12, scalarBlockLayout);
@@ -248,6 +252,7 @@ static void create_device(void) {
     b->dualSrcBlend = h->dualSrcBlend;
     b->fillModeNonSolid = h->fillModeNonSolid;
     b->samplerAnisotropy = h->samplerAnisotropy;
+    g_vk.sampler_anisotropy = !!h->samplerAnisotropy;
     b->textureCompressionBC = h->textureCompressionBC;
     b->shaderInt64 = h->shaderInt64;
     b->depthBiasClamp = h->depthBiasClamp;
@@ -260,6 +265,13 @@ static void create_device(void) {
     b->vertexPipelineStoresAndAtomics = h->vertexPipelineStoresAndAtomics;
     b->robustBufferAccess = h->robustBufferAccess;  // guest shaders index cbufs freely: keep OOB reads harmless
     b->shaderClipDistance = h->shaderClipDistance;
+    vk_diag_info("BC=%d ASTC_LDR=%d ETC2=%d shaderInt64=%d anisotropy=%d host_import=%d custom_border=%d divisor=%d",
+        h->textureCompressionBC, h->textureCompressionASTC_LDR, h->textureCompressionETC2,
+        h->shaderInt64, h->samplerAnisotropy, g_vk.host_import, g_vk.custom_border, g_vk.divisor);
+    vk_diag_info("limits: maxStorageBufferRange=%u maxUniformBufferRange=%u uniformAlignment=%llu storageAlignment=%llu",
+        g_vk.props.limits.maxStorageBufferRange, g_vk.props.limits.maxUniformBufferRange,
+        (unsigned long long)g_vk.props.limits.minUniformBufferOffsetAlignment,
+        (unsigned long long)g_vk.props.limits.minStorageBufferOffsetAlignment);
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
@@ -356,7 +368,10 @@ static void create_swapchain(void) {
     // scanout shows the bytes the game wrote (see the raw views in the present pass): a UNORM swapchain like Metal's
     VkSurfaceFormatKHR sf = fmts[0];
     for (uint32_t i = 0; i < nf; i++)
-        if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
+        if ((fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM || fmts[i].format == VK_FORMAT_R8G8B8A8_UNORM) &&
+            fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
+    vk_diag_info("swapchain: format=%d colorSpace=%d extent=%ux%u surface_usage=%#x transform=%#x",
+        sf.format, sf.colorSpace, ext.width, ext.height, caps.supportedUsageFlags, caps.currentTransform);
     uint32_t count = caps.minImageCount + 1;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
@@ -552,9 +567,17 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
 // End rendering into the window image and present it. shot_path: also save the window image as PNG.
 void vk_frame_end(const char *shot_path) {
     if (!cur_frame.ok) return;
+    if (shot_path && g_vk.sc_format != VK_FORMAT_R8G8B8A8_UNORM && g_vk.sc_format != VK_FORMAT_R8G8B8A8_SRGB &&
+        g_vk.sc_format != VK_FORMAT_B8G8R8A8_UNORM && g_vk.sc_format != VK_FORMAT_B8G8R8A8_SRGB) {
+        vk_diag_event(VD_CAPTURE, "screenshot format %d is not RGBA8/BGRA8", g_vk.sc_format);
+        shot_path = NULL;
+    }
     VkCommandBuffer cb = vk_cmd();
     vkCmdEndRendering(cb);
     VkSpan shot = {0};
+    // A failed present can recreate the swapchain. Readback retains its original dimensions.
+    VkExtent2D shot_extent = g_vk.sc_extent;
+    VkFormat shot_format = g_vk.sc_format;
     if (shot_path) save_window_image(cb, &shot);
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     uint32_t img = cur_frame.image;
@@ -573,9 +596,10 @@ void vk_frame_end(const char *shot_path) {
     cur_frame.ok = false;
     if (shot_path) {
         vk_wait_seq(seq);
-        uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
+        vk_readback_invalidate();
+        uint32_t w = shot_extent.width, h = shot_extent.height;
         uint8_t *px = shot.ptr;
-        bool bgr = g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB;
+        bool bgr = shot_format == VK_FORMAT_B8G8R8A8_UNORM || shot_format == VK_FORMAT_B8G8R8A8_SRGB;
         for (uint64_t i = 0; bgr && i < (uint64_t)w * h; i++) { uint8_t t = px[i * 4]; px[i * 4] = px[i * 4 + 2]; px[i * 4 + 2] = t; }
         for (uint64_t i = 0; i < (uint64_t)w * h; i++) px[i * 4 + 3] = 255;
         vk_save_png(shot_path, px, w, h);
@@ -662,7 +686,12 @@ void backend_present(NvnTexture *t) {
         static long win_shot = -1;
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)total_frames + 1 == win_shot;
-        vk_frame_end(shot ? "build/window.png" : NULL);
+        bool diagnostic = vk_diag_begin_capture();
+        vk_frame_end(diagnostic ? "graphics/frame.png" : shot ? "build/window.png" : NULL);
+        if (diagnostic) {
+            vk_diag_capture_atlases();
+            vk_diag_finish_capture(access("graphics/frame.png", R_OK) == 0);
+        }
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
     } else {
         renderer_submit();

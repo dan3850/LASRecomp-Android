@@ -13,6 +13,8 @@
 #include "../../kernel.h"
 #include "shaders.h"
 #include "vk.h"
+#include "diagnostics.h"
+#include "../bcn_decode.h"
 #include "../renderer.h"
 #include "../../settings.h"
 
@@ -292,6 +294,7 @@ void vk_full_barrier(VkCommandBuffer cb) {
 }
 
 static void ring_retire(void);
+static void ring_flush(void);
 void vc_flush(void);
 
 // ---- LARECOMP_GPUPROF_AT=<frame>: GPU time per pass / dispatch / copy of that frame, logged as "[gpuprof]".
@@ -382,6 +385,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     {
         PROF_T0();
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
+        ring_flush();  // CPU-written mapped memory need not be HOST_COHERENT.
         VkResult sr = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
         if (sr == VK_ERROR_DEVICE_LOST) vk_devlost_dump();
         VK_CHECK(sr);
@@ -454,7 +458,7 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
 // 64 MB host-visible chunks (device-local when the GPU exposes resizable BAR); a chunk is reused once every
 // submission that allocated from it has completed.
 #define CHUNK_SIZE (64ull << 20)
-typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq; } Chunk;
+typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq, dirty_lo, dirty_hi; } Chunk;
 static Chunk *chunks;
 static int nchunks, active = -1;
 
@@ -473,16 +477,26 @@ static int new_chunk(uint64_t size) {
     VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info));
     c->ptr = info.pMappedData;
     c->size = size;
+    c->dirty_lo = UINT64_MAX;
     if (!nchunks) {  // where the ring lives: device-local (resizable BAR) or system memory read across PCIe
         VkMemoryPropertyFlags f;
         vmaGetMemoryTypeProperties(g_vk.vma, info.memoryType, &f);
-        LOG("[vk] transient ring: memory type %u (%s%s%s)\n", info.memoryType, f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? "device-local " : "system memory ",
-            f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ? "host-visible " : "", f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? "cached" : "");
+        LOG("[vk] transient ring: memory type %u flags=%#x coherent=%d\n", info.memoryType, f, !!(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+        vk_diag_info("transient_memory_type=%u flags=%#x coherent=%d nonCoherentAtomSize=%llu", info.memoryType, f,
+            !!(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT), (unsigned long long)g_vk.props.limits.nonCoherentAtomSize);
     }
     return nchunks++;
 }
 
 static void ring_retire(void) {}  // chunks are recycled lazily in vk_transient
+static void ring_flush(void) {
+    for (int i = 0; i < nchunks; i++) {
+        Chunk *c = &chunks[i];
+        if (c->dirty_lo == UINT64_MAX) continue;
+        VK_CHECK(vmaFlushAllocation(g_vk.vma, c->mem, c->dirty_lo, c->dirty_hi - c->dirty_lo));
+        c->dirty_lo = UINT64_MAX; c->dirty_hi = 0;
+    }
+}
 
 VkSpan vk_transient(uint64_t size, uint64_t align) {
     if (align < 16) align = 16;
@@ -491,6 +505,8 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
         Chunk *c = &chunks[active];
         uint64_t off = (c->used + align - 1) & ~(align - 1);
         if (off + size <= c->size) {
+            if (off < c->dirty_lo) c->dirty_lo = off;
+            if (off + size > c->dirty_hi) c->dirty_hi = off + size;
             c->used = off + size;
             c->seq = pending;
             stat_upload_bytes += size;
@@ -504,6 +520,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     if (pick < 0) pick = new_chunk(size > CHUNK_SIZE ? size : CHUNK_SIZE);
     active = pick;
     chunks[pick].used = size;
+    chunks[pick].dirty_lo = 0; chunks[pick].dirty_hi = size;
     chunks[pick].seq = pending;
     stat_upload_bytes += size;
     return (VkSpan){chunks[pick].buf, 0, chunks[pick].ptr};
@@ -512,6 +529,11 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
 // GPU -> CPU copies: the ring is write-combined (often device-local over the BAR), where CPU reads crawl (a
 // 1280x720 screenshot took 7 s). Readbacks use one host-cached buffer instead. Every user waits for the GPU and
 // reads the data before the next readback (render thread), so a single grow-only buffer suffices.
+static VmaAllocation readback_mem;
+static uint64_t readback_used;
+void vk_readback_invalidate(void) {
+    if (readback_mem && readback_used) VK_CHECK(vmaInvalidateAllocation(g_vk.vma, readback_mem, 0, readback_used));
+}
 VkSpan vk_readback(uint64_t size) {
     static VkBuffer buf;
     static VmaAllocation mem;
@@ -526,7 +548,9 @@ VkSpan vk_readback(uint64_t size) {
         VmaAllocationInfo info;
         VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buf, &mem, &info));
         ptr = info.pMappedData;
+        readback_mem = mem;
     }
+    readback_used = size;
     return (VkSpan){buf, 0, ptr};
 }
 
@@ -1521,6 +1545,7 @@ static void build_pipeline(void *arg) {
     if (r != VK_SUCCESS) {
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
+        vk_diag_event(VD_PIPELINE_ERROR, "graphics VkResult=%d color_targets=%u depth=%d stencil=%d", r, k->ncolor, k->depth, k->stencil);
     }
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&pp->state, r == VK_SUCCESS ? 1 : 2);
@@ -1597,6 +1622,7 @@ static void debug_save_depth(TexBackend *b, const char *path) {
                            .imageExtent = {b->width, b->height, 1}};
     vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
+    vk_readback_invalidate();
     const float *d = out.ptr;
     float lo = 1e30f, hi = -1e30f;
     for (uint64_t i = 0; i < n; i++) { if (d[i] < lo) lo = d[i]; if (d[i] > hi) hi = d[i]; }
@@ -1927,7 +1953,11 @@ static bool gmem_import(uint64_t size) {
                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
     VkBuffer buf;
     if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) { vkFreeMemory(g_vk.dev, mem, NULL); return false; }
-    vkBindBufferMemory(g_vk.dev, buf, mem, 0);
+    VkResult bind = vkBindBufferMemory(g_vk.dev, buf, mem, 0);
+    if (bind != VK_SUCCESS) {
+        vk_diag_event(VD_ZERO_GMEM, "import buffer bind failed VkResult=%d bytes=%llu", bind, (unsigned long long)size);
+        vkDestroyBuffer(g_vk.dev, buf, NULL); vkFreeMemory(g_vk.dev, mem, NULL); return false;
+    }
     if (gmem_buf) {  // the heap grew: the old import may still be in use by submitted work
         vk_wait_seq(submit_seq);
         vkDestroyBuffer(g_vk.dev, gmem_buf, NULL);
@@ -2337,7 +2367,12 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
         }
     }
     if (h && st.spool && tsc < (uint32_t)st.spool->count) smp = vk_sampler(&((NvnSamplerDesc *)st.spool->entries)[tsc]);
-    if (!view) view = vk_dummy_view(st_->type);
+    if (!view) {
+        vk_diag_event(VD_MISSING_TEXTURE, "stage=%d shader=%llx handle=%llx type=%d slot=%d pool=%d",
+            stage, (unsigned long long)(st.program ? st.program->stages[stage].code_addr : 0),
+            (unsigned long long)h, st_->type, slot, st.tpool ? st.tpool->count : -1);
+        view = vk_dummy_view(st_->type);
+    }
     if (!smp) smp = vk_default_sampler(true);
     *out = (VkDescriptorImageInfo){smp, view, VK_IMAGE_LAYOUT_GENERAL};
 }
@@ -2379,6 +2414,10 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
             bi[n] = b->binding == GFAST_BUFFER_INDEX ? gfast_info() : gmem_info();
+            if (b->binding == GMEM_BUFFER_INDEX && !gmem_buf)
+                vk_diag_event(VD_ZERO_GMEM, "stage=%d shader=%llx writes=%d extension=%d heap=%llu zero_descriptor=%llu",
+                    stage, (unsigned long long)(st.program ? st.program->stages[stage].code_addr : 0),
+                    si->uses_gmem_store, g_vk.host_import, (unsigned long long)kernel_heap_size(), (unsigned long long)bi[n].range);
             w[n].pBufferInfo = &bi[n];
         } else {
             continue;  // rscale / tint: written below, once the textures (and their scales) are known
@@ -2429,7 +2468,10 @@ static void build_compute(void *arg) {
     VkResult r = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &cp->pipe);
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
-    if (r != VK_SUCCESS) LOG("[compute] pipeline failed: %d\n", r);
+    if (r != VK_SUCCESS) {
+        LOG("[compute] pipeline failed: %d\n", r);
+        vk_diag_event(VD_PIPELINE_ERROR, "compute VkResult=%d local=%ux%ux%u", r, cp->local[0], cp->local[1], cp->local[2]);
+    }
 }
 
 static struct CsEnt { uint64_t addr; CsProg *cp; } g_cs_tab[256];  // compute programs by code address
@@ -2607,6 +2649,15 @@ static void draw_(CmdRec *r, bool indexed) {
         if (st.ubuf[0][5].addr) widescreen_scene_ubo((const float *)(uintptr_t)st.ubuf[0][5].addr, st.ubuf[0][5].size);
     }
     if (g_debug_frame) debug_draw(pr, r, indexed);
+    if (vk_diag_trace_draw()) {
+        NvnTexture *a = pr->fi->ntex > 0 ? shader_texture_object(1, &pr->fi->tex[0]) : NULL;
+        NvnTexture *b = pr->fi->ntex > 1 ? shader_texture_object(1, &pr->fi->tex[1]) : NULL;
+        vk_diag_event(VD_DRAW, "vs=%llx fs=%llx RT=%d channel_mask=%#x gmem=%d/%d t0=%llu/%#x t1=%llu/%#x textures=%d",
+            (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)st.program->stages[1].code_addr,
+            st.rt.ncolor, st.channel_mask, pr->vi->uses_gmem, pr->fi->uses_gmem,
+            (unsigned long long)(a ? a->debug_id : 0), a ? a->format : 0,
+            (unsigned long long)(b ? b->debug_id : 0), b ? b->format : 0, pr->fi->ntex);
+    }
     if (ct_on()) ct_draw(pr, "draw");
     alias_draw_check();
     resolve_feedback(pr);
@@ -3070,6 +3121,29 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     TexBackend *b = vk_tex(t, false);  // prior CPU contents uploaded first
     renderer_mark_gpu_owned(t);
     if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) return;
+    if (b->bcn_format) {
+        bool array = b->layers > 1 && b->depth == 1;
+        uint32_t nz = (uint32_t)rg[5], w = (uint32_t)rg[3], h = (uint32_t)rg[4];
+        uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+        uint64_t ns = (uint64_t)bw * bh * nz * fi->bpb;
+        uint64_t np = (uint64_t)w * h * nz * las_bcn_pixel_bytes(b->bcn_format);
+        uint8_t *blocks = malloc(ns);
+        if (!blocks) { vk_diag_event(VD_UPLOAD_SKIPPED, "BCn buffer copy allocation failed"); return; }
+        for (uint32_t z = 0; z < nz; z++) for (uint32_t y = 0; y < bh; y++)
+            memcpy(blocks + ((uint64_t)z * bh + y) * bw * fi->bpb,
+                (const void *)(uintptr_t)(src + (uint64_t)z * img + (uint64_t)y * row), bw * fi->bpb);
+        VkSpan s = vk_transient(np, 16);
+        bool ok = las_bcn_decode(b->bcn_format, blocks, ns, w, h, nz, s.ptr, np);
+        free(blocks);
+        if (!ok) { vk_diag_event(VD_UPLOAD_SKIPPED, "BCn buffer copy decode failed"); return; }
+        VkCommandBuffer cb = vk_cmd(); vk_full_barrier(cb);
+        VkBufferImageCopy c = {.bufferOffset = s.off, .bufferRowLength = w, .bufferImageHeight = h,
+            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)level, array ? (uint32_t)rg[2] : 0, array ? nz : 1},
+            .imageOffset = {rg[0], rg[1], array ? 0 : rg[2]}, .imageExtent = {w, h, array ? 1 : nz}};
+        vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+        vk_diag_event(VD_BCN_DECODE, "buffer -> texture=%llu %ux%ux%u level=%d", (unsigned long long)t->debug_id, w, h, nz, level);
+        return;
+    }
     if (b->astc_bw) {  // (blocks would need the CPU decode: not seen in the game yet)
         static int nlog;
         if (nlog++ < 5) LOG("[vk] buffer -> ASTC texture copy skipped (%ux%u)\n", t->width, t->height);
@@ -3110,6 +3184,11 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     copy_region_dims(t, src, &fi, rg, &level, &row, &img);
     if (!fi || !fi->bpb || fi->bpb == 3 || row % fi->bpb) return;
     TexBackend *b = vk_tex(t, false);
+    if (b->bcn_format || b->astc_bw) {
+        vk_diag_event(VD_UPLOAD_SKIPPED, "decoded compressed texture readback needs recompression: id=%llu NVN=%#x",
+            (unsigned long long)t->debug_id, t->format);
+        return;
+    }
     float tsx, tsy;
     renderer_texture_scale(t, &tsx, &tsy);
     VkCommandBuffer cb = vk_cmd();
@@ -3142,6 +3221,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     vkCmdCopyImageToBuffer(cb, srcimg, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     wait_why = "texture -> buffer readback";
     renderer_flush();  // the CPU may read the result right after the fence
+    vk_readback_invalidate();
     memcpy((void *)(uintptr_t)dst, out.ptr, total);
     if (small_mem) vmaDestroyImage(g_vk.vma, srcimg, small_mem);
 }
@@ -3544,6 +3624,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
     VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
     vkCmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
+    vk_readback_invalidate();
     vk_save_png(path, out.ptr, w, h);
     vkDestroyImageView(g_vk.dev, tv, NULL);
     vmaDestroyImage(g_vk.vma, img, mem);

@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 
 #include "shaders.h"
+#include "diagnostics.h"
 
 void vk_shaders_init(void) {  // (compilers are per thread: check shaderc works at all)
     shaderc_compiler_t c = shaderc_compiler_initialize();
@@ -128,6 +129,8 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
     shaderc_compilation_result_t r = shaderc_compile_into_spv(comp, src, strlen(src), kind_of(stage), name, "main", o);
     shaderc_compile_options_release(o);
     if (shaderc_result_get_compilation_status(r) != shaderc_compilation_status_success) {
+        vk_diag_event(VD_SHADER_ERROR, "stage=%d name=%s hash=%llx: %.240s", stage, name,
+            (unsigned long long)h, shaderc_result_get_error_message(r));
         static int nlog;
         if (nlog++ < 20) LOG("[shader] %s: GLSL compile failed:\n%s\n%s\n", name, shaderc_result_get_error_message(r), src);
     } else {

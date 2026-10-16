@@ -250,6 +250,7 @@ while IFS= read -r src; do
  cc=clang; std=-std=gnu11
  [[ "$src" == *.cpp ]] && { cc=clang++; std=-std=c++17; }
  compile "$src" "$obj" "$cc" "$std" -DVK_NO_PROTOTYPES \
+  "-DLASRECOMP_BUILD_SHA=\"$(git -C "$ROOT" rev-parse --short=12 HEAD)\"" \
   -DIMGUI_IMPL_VULKAN_USE_VOLK -D_FILE_OFFSET_BITS=64 "${INC[@]}"
  RENDER+=("$obj")
 done < <(

@@ -44,6 +44,7 @@ jobs:
           set -euo pipefail
           export CC="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
           python3 tests/test_romfs_virtual.py
+          python3 tests/test_bcn_decode.py
           bash -n compilar-lasrecomp-pasta-externa.sh
           bash -n compilar-lasrecomp-termux.sh
       # SDL3 is part of the actual LASRecomp UI/render runtime. Build for the
@@ -175,18 +176,22 @@ jobs:
           # different CI-generated test signing key. Never tell users to
           # uninstall it (their imported Zelda data belongs to that app).
           # Build a parallel debug package from exactly the same engine.
-          sed -e 's/package="com.retroaura.lasrecomp.bootdiag"/package="com.retroaura.lasrecomp.bootdiag.controls"/' \
-              -e 's/LASRecomp Boot TESTE/LASRecomp Controles/g' \
+          sed -e 's/package="com.retroaura.lasrecomp.bootdiag"/package="com.retroaura.lasrecomp.bootdiag.graphics"/' \
+              -e 's/LASRecomp Boot TESTE/LASRecomp Vulkan Teste/g' \
               android/bootstrap/AndroidManifest.xml > "$RUNNER_TEMP/las-controls-manifest.xml"
           ANDROID_MANIFEST_OVERRIDE="$RUNNER_TEMP/las-controls-manifest.xml" \
             bash tools/build-android-termux.sh
           mv build/android-bootstrap/LASRecomp-Android.apk \
-            build/android-bootstrap/LASRecomp-Android-Controles-Paralelo.apk
+            "build/android-bootstrap/LASRecomp-Vulkan-${GITHUB_SHA:0:12}.apk"
+          git archive --format=zip --prefix=LASRecomp-Android/ HEAD \
+            > "build/android-bootstrap/LASRecomp-fontes-${GITHUB_SHA:0:12}.zip"
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: LASRecomp-Android-Controles-ARM64-Paralelo
-          path: build/android-bootstrap/LASRecomp-Android-Controles-Paralelo.apk
+          name: LASRecomp-Vulkan-ARM64-Paralelo
+          path: |
+            build/android-bootstrap/LASRecomp-Vulkan-*.apk
+            build/android-bootstrap/LASRecomp-fontes-*.zip
           if-no-files-found: error
           retention-days: 14
