@@ -196,11 +196,18 @@ if [[ ! -f "$OUT/flags.id" || "$(cat "$OUT/flags.id")" != "$HASH" ]]; then
 fi
 compile(){
  local src="$1" obj="$2" compiler="$3"; shift 3
+ local dep="$obj.d"
  mkdir -p "$(dirname "$obj")"
- if [[ ! -s "$obj" || "$src" -nt "$obj" || "$STAMP" -nt "$obj" ]]; then
+ # Include dependencies matter for shared struct layouts (e.g. TexBackend).
+ # Old objects without a depfile are rebuilt once; private game-code objects
+ # belong to another script and remain untouched.
+ if [[ ! -s "$obj" || ! -s "$dep" || "$src" -nt "$obj" || "$STAMP" -nt "$obj" ]] ||
+    ! make -q -f "$dep" "$obj" 2>/dev/null; then
   echo "CC ${src#"$ROOT"/}"
   "$compiler" -O2 -fPIC -fno-strict-aliasing \
-   -Wno-nullability-completeness "$@" -c "$src" -o "$obj.tmp"
+   -Wno-nullability-completeness -MMD -MP -MF "$dep.tmp" -MQ "$obj" \
+   "$@" -c "$src" -o "$obj.tmp"
+  mv -f "$dep.tmp" "$dep"
   mv -f "$obj.tmp" "$obj"
  fi
 }
