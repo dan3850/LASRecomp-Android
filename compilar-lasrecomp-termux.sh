@@ -338,6 +338,13 @@ jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
 "${D8_CMD[@]}" --min-api 26 --lib "$ANDROID_JAR" --output "$STAGE/dex" "$STAGE/classes.jar"
 [[ -s "$STAGE/dex/classes.dex" ]] || fail "D8 nao gerou classes.dex"
 LIBDIR="$STAGE/lib/arm64-v8a"
+# Normaliza a dependencia zlib do Termux para o SONAME Android.
+# Nao copia bibliotecas do ambiente Termux para o APK.
+for so in "$LIBDIR"/*.so; do
+ if llvm-readelf -d "$so" | grep -q 'Shared library: \[libz.so.1\]'; then
+  patchelf --replace-needed libz.so.1 libz.so "$so"
+ fi
+done
 for so in "$LIBDIR"/*.so; do
  patchelf --remove-rpath "$so"
  llvm-readelf -h "$so" | grep -q AArch64 || fail "Biblioteca nao ARM64: $so"
