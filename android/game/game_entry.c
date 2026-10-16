@@ -9,30 +9,64 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 #ifdef __ANDROID__
 #include <jni.h>
 #include <SDL3/SDL_system.h>
 
 static void boot_mark(const char *files, const char *stage, int value);
 
+static void document_exception(JNIEnv *env) {
+    if (!(*env)->ExceptionCheck(env)) return;
+    jthrowable error = (*env)->ExceptionOccurred(env);
+    (*env)->ExceptionClear(env);
+    int code = EIO;
+    jclass security = (*env)->FindClass(env, "java/lang/SecurityException");
+    jclass missing = (*env)->FindClass(env, "java/io/FileNotFoundException");
+    if (security && (*env)->IsInstanceOf(env, error, security)) code = EACCES;
+    else if (missing && (*env)->IsInstanceOf(env, error, missing)) code = ENOENT;
+    jclass cls = (*env)->GetObjectClass(env, error);
+    jmethodID text = cls ? (*env)->GetMethodID(env, cls, "toString", "()Ljava/lang/String;") : NULL;
+    jstring message = text ? (jstring)(*env)->CallObjectMethod(env, error, text) : NULL;
+    if (message && !(*env)->ExceptionCheck(env)) {
+        const char *s = (*env)->GetStringUTFChars(env, message, NULL);
+        if (s) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SAF: %s", s);
+            fprintf(stderr, "[fs] SAF: %s\n", s);
+            (*env)->ReleaseStringUTFChars(env, message, s);
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (message) (*env)->DeleteLocalRef(env, message);
+    if (cls) (*env)->DeleteLocalRef(env, cls);
+    if (security) (*env)->DeleteLocalRef(env, security);
+    if (missing) (*env)->DeleteLocalRef(env, missing);
+    (*env)->DeleteLocalRef(env, error);
+    errno = code;
+}
+
 // SDL owns the Activity instance and Java VM. Keep the selected SAF URI
 // available to native integrations without treating it as a POSIX path.
 // Native read-only SAF descriptor bridge. The Java method transfers fd
 // ownership with ParcelFileDescriptor.detachFd(); caller must close(fd).
 static int open_game_document_fd(const char *relative_path) {
-    if (!relative_path || relative_path[0] == '/' ||
-        strstr(relative_path, "..") || strchr(relative_path, '\\')) return -1;
+    if (!relative_path || relative_path[0] == '/' || strchr(relative_path, '\\')) {
+        errno = EINVAL; return -1;
+    }
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject activity = (jobject)SDL_GetAndroidActivity();
-    if (!env || !activity) return -1;
+    if (!env || !activity) { errno = ENODEV; return -1; }
     int fd = -1;
     jclass cls = (*env)->GetObjectClass(env, activity);
     if (cls) {
         jmethodID method = (*env)->GetMethodID(env, cls, "openGameDocumentFd",
-                                               "(Ljava/lang/String;)I");
+                                               "([B)I");
         if (method) {
-            jstring path = (*env)->NewStringUTF(env, relative_path);
+            size_t length = strlen(relative_path);
+            jbyteArray path = length <= INT_MAX ? (*env)->NewByteArray(env, (jsize)length) : NULL;
             if (path) {
+                (*env)->SetByteArrayRegion(env, path, 0, (jsize)length, (const jbyte *)relative_path);
                 jint result = (*env)->CallIntMethod(env, activity, method, path);
                 if (!(*env)->ExceptionCheck(env)) fd = (int)result;
                 (*env)->DeleteLocalRef(env, path);
@@ -40,7 +74,7 @@ static int open_game_document_fd(const char *relative_path) {
         }
         (*env)->DeleteLocalRef(env, cls);
     }
-    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    document_exception(env);
     (*env)->DeleteLocalRef(env, activity);
     return fd;
 }
@@ -48,6 +82,36 @@ static int open_game_document_fd(const char *relative_path) {
 __attribute__((visibility("default")))
 int lasrecomp_android_open_document_fd(const char *relative_path) {
     return open_game_document_fd(relative_path);
+}
+
+// Only a small UTF-8 index crosses JNI. Native owns/frees the returned buffer.
+__attribute__((visibility("default")))
+int lasrecomp_android_romfs_manifest(char **out, size_t *length) {
+    if (!out || !length) { errno = EINVAL; return -1; }
+    *out = NULL; *length = 0;
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    if (!env || !activity) { errno = ENODEV; return -1; }
+    int result = -1;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID method = cls ? (*env)->GetMethodID(env, cls, "getGameRomfsIndex", "()[B") : NULL;
+    jbyteArray bytes = method ? (jbyteArray)(*env)->CallObjectMethod(env, activity, method) : NULL;
+    if (!(*env)->ExceptionCheck(env) && bytes) {
+        jsize n = (*env)->GetArrayLength(env, bytes);
+        if (n > 0 && n <= (64 << 20)) {
+            char *copy = malloc((size_t)n);
+            if (copy) {
+                (*env)->GetByteArrayRegion(env, bytes, 0, n, (jbyte *)copy);
+                if (!(*env)->ExceptionCheck(env)) { *out = copy; *length = (size_t)n; result = 0; }
+                else free(copy);
+            } else errno = ENOMEM;
+        } else errno = EINVAL;
+    }
+    document_exception(env);
+    if (bytes) (*env)->DeleteLocalRef(env, bytes);
+    if (cls) (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, activity);
+    return result;
 }
 
 static void log_selected_game_tree(const char *files) {

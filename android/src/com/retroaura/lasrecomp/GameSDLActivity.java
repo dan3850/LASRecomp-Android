@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 public final class GameSDLActivity extends SDLActivity {
     private GameTouchControls touchControls;
     private android.net.Uri selectedGameTree;
+    private GameDocumentBridge.RomfsIndex romfsIndex;
 
     /** Called by SDL's native entry point through JNI on the active Activity. */
     public String getExternalGameRoot() {
@@ -35,9 +36,21 @@ public final class GameSDLActivity extends SDLActivity {
     }
 
     /** Native JNI can call this method and then use the returned read-only fd. */
-    public int openGameDocumentFd(String relativePath) throws java.io.IOException {
+    public synchronized int openGameDocumentFd(byte[] utf8Path) throws java.io.IOException {
         if (selectedGameTree == null) throw new java.io.FileNotFoundException("No external game folder selected");
+        String relativePath = new String(utf8Path, StandardCharsets.UTF_8);
+        if (relativePath.startsWith("romfs/") && romfsIndex != null)
+            return romfsIndex.open(this, selectedGameTree, relativePath.substring(6));
         return GameDocumentBridge.openReadFd(this, selectedGameTree, relativePath);
+    }
+
+    /** Called once per native mount; UTF-8 bytes avoid JNI modified-UTF-8 paths. */
+    public synchronized byte[] getGameRomfsIndex() throws java.io.IOException {
+        if (selectedGameTree == null) throw new java.io.FileNotFoundException("Pasta externa não selecionada");
+        GameDocumentBridge.RomfsIndex fresh = GameDocumentBridge.indexRomfs(this, selectedGameTree);
+        fresh.validateAccess(this, selectedGameTree);
+        romfsIndex = fresh;
+        return fresh.manifest();
     }
 
     private void enforceLandscapeFullscreen() {

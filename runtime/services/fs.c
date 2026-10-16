@@ -2,6 +2,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -10,6 +12,7 @@
 #include "../hle.h"
 #include "../rando.h"
 #include "../ipc.h"
+#include "../romfs_virtual.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -18,6 +21,27 @@
 
 const char *g_save_dir = "save";
 static int romfs_fd = -1;
+static RomfsVirtual *virtual_romfs;
+static uint64_t romfs_size;
+static bool romfs_mounted;
+static pthread_mutex_t romfs_mount_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Common base for the legacy image and the external directory. Randomizer
+// tables and IStorage must use this rather than bypassing the virtual backend.
+static ssize_t romfs_base_read(int fd, void *dst, size_t size, uint64_t off) {
+    if (off > romfs_size || size > romfs_size - off || size > (size_t)SSIZE_MAX) {
+        errno = EINVAL; return -1;
+    }
+    if (virtual_romfs) return romfs_virtual_read(virtual_romfs, dst, size, off);
+    size_t done = 0;
+    while (done < size) {
+        ssize_t n = pread(fd, (uint8_t *)dst + done, size - done, (off_t)(off + done));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { if (!n) errno = EIO; return -1; }
+        done += (size_t)n;
+    }
+    return (ssize_t)done;
+}
 
 // ------------------------------------------------------------------ RomFS file index (offset -> path)
 typedef struct { uint64_t start, size; char *path; int fd; const uint8_t *mem; } Overlay;
@@ -29,6 +53,14 @@ static Overlay *ov;
 static int ov_n, ov_cap;
 static uint8_t *ov_meta;
 static uint64_t ov_meta_off, ov_meta_size, ov_end;
+static bool overlay_reserve(void) {
+    if (ov_n < ov_cap) return true;
+    int capacity = ov_cap ? ov_cap * 2 : 256;
+    Overlay *grown = realloc(ov, sizeof *ov * capacity);
+    if (!grown) return false;
+    ov = grown; ov_cap = capacity;
+    return true;
+}
 // Lets the runtime see which game files are being streamed (e.g. which level is loading).
 typedef struct { uint64_t off, size; char *path; uint32_t meta; } RomFile;
 static RomFile *rom_files;
@@ -40,8 +72,10 @@ RT_ON_RESET(fs_reset) {
     for (int i = 0; i < ov_n; i++) {
         if (ov[i].fd >= 0) close(ov[i].fd);
         free(ov[i].path);
+        free((void *)ov[i].mem);
     }
-    for (int i = 0; i < npatches; i++) free(patches[i].data);  // (ov_meta and the extended table are among these)
+    for (int i = 0; i < npatches; i++) if (patches[i].data != ov_meta) free(patches[i].data);
+    free(ov_meta);
     for (int i = 0; i < rom_nfiles; i++) free(rom_files[i].path);
     free(ov), free(rom_files);
     ov = NULL, ov_n = ov_cap = 0;
@@ -50,6 +84,10 @@ RT_ON_RESET(fs_reset) {
     rom_files = NULL, rom_nfiles = 0, rom_data_off = 0;
     if (romfs_fd >= 0) close(romfs_fd);
     romfs_fd = -1;
+    romfs_virtual_close(virtual_romfs);
+    virtual_romfs = NULL;
+    romfs_size = 0;
+    romfs_mounted = false;
     g_save_dir = "save";
 }
 
@@ -58,21 +96,28 @@ static int rom_cmp(const void *a, const void *b) {
     return x->off < y->off ? -1 : x->off > y->off;
 }
 
-static void rom_dir_path(const uint8_t *dmeta, uint32_t dsize, uint32_t dir, char *out, size_t cap) {
-    char parts[16][256];
-    int n = 0;
-    while (dir != 0 && dir < dsize && n < 16) {  // root (offset 0) has an empty name
-        uint32_t parent, namelen;
+static bool rom_dir_path(const uint8_t *dmeta, uint32_t dsize, uint32_t dir, char *out, size_t cap) {
+    uint32_t parts[49];
+    unsigned n = 0;
+    while (dir != 0) {
+        if (n == 49 || dir > dsize || dsize - dir < 0x18) return false;
+        uint32_t parent, len;
         memcpy(&parent, dmeta + dir, 4);
-        memcpy(&namelen, dmeta + dir + 0x14, 4);
-        if (namelen > 255) namelen = 255;
-        memcpy(parts[n], dmeta + dir + 0x18, namelen);
-        parts[n][namelen] = 0;
-        n++;
+        memcpy(&len, dmeta + dir + 0x14, 4);
+        if (len > 255 || len > dsize - dir - 0x18) return false;
+        parts[n++] = dir;
         dir = parent;
     }
-    out[0] = 0;
-    for (int i = n - 1; i >= 0; i--) { strlcat(out, parts[i], cap); strlcat(out, "/", cap); }
+    size_t used = 0;
+    for (unsigned i = n; i > 0; i--) {
+        uint32_t pos = parts[i - 1], len;
+        memcpy(&len, dmeta + pos + 0x14, 4);
+        if (used + len + 1 >= cap) return false;
+        memcpy(out + used, dmeta + pos + 0x18, len);
+        used += len; out[used++] = '/';
+    }
+    out[used] = 0;
+    return true;
 }
 
 // ---- files a seed ADDS (names the game's RomFS doesn't have: generated dungeon cells...). The game parses the
@@ -134,28 +179,37 @@ static int64_t dir_lookup(const uint8_t *dm, uint64_t dsz, const char *path) {
     return cur;
 }
 
-static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
+static bool add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
     const char *seed = rando_seed_dir();
-    if (!seed) return;
+    if (!seed) return true;
+    uint8_t *dcopy = NULL, *hcopy = NULL, *head = NULL, *tmp = NULL, *meta = NULL;
     char root[1100];
     snprintf(root, sizeof root, "%s/romfs", seed);
     char **known = malloc(sizeof *known * rom_nfiles);
+    if (!known) return false;
     for (int i = 0; i < rom_nfiles; i++) known[i] = rom_files[i].path;
     qsort(known, rom_nfiles, sizeof *known, path_cmp);
     NewFile *nf = NULL;
     int n = 0, cap = 0;
     walk_new(root, "", known, rom_nfiles, &nf, &n, &cap);
     free(known);
-    if (!n) return;
-    rom_files = realloc(rom_files, sizeof(RomFile) * (rom_nfiles + n));
+    if (!n) { free(nf); return true; }
+    RomFile *grown = realloc(rom_files, sizeof(RomFile) * (rom_nfiles + n));
+    if (!grown) goto fail;
+    rom_files = grown;
     uint64_t hoff = h[5], hsz = h[6];
-    uint8_t *dcopy = malloc(dsz), *hcopy = malloc(hsz), *head = malloc(0x50);
+    dcopy = malloc(dsz); hcopy = malloc(hsz); head = malloc(0x50);
+    if (!dcopy || !hcopy || !head) goto fail;
     memcpy(dcopy, dmeta, dsz);
-    if (pread(fd, hcopy, hsz, (off_t)hoff) != (ssize_t)hsz || pread(fd, head, 0x50, 0) != 0x50) return;
+    if (romfs_base_read(fd, hcopy, hsz, hoff) != (ssize_t)hsz ||
+        romfs_base_read(fd, head, 0x50, 0) != 0x50) goto fail;
     // the file-meta table to extend: the override-patched copy if there is one
     const uint8_t *base_meta = ov_meta;
-    uint8_t *tmp = NULL;
-    if (!base_meta) { tmp = malloc(fsz); pread(fd, tmp, fsz, (off_t)h[7]); base_meta = tmp; }
+    if (!base_meta) {
+        tmp = malloc(fsz);
+        if (!tmp || romfs_base_read(fd, tmp, fsz, h[7]) != (ssize_t)fsz) goto fail;
+        base_meta = tmp;
+    }
     uint64_t extra = 0;
     for (int i = 0; i < n; i++) {
         const char *name = strrchr(nf[i].rel, '/');
@@ -163,13 +217,12 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         extra += 0x20 + ((strlen(name) + 3) & ~3u);
     }
     uint64_t nsz = fsz + extra;
-    uint8_t *meta = calloc(1, nsz);
+    meta = calloc(1, nsz);
+    if (!meta) goto fail;
     memcpy(meta, base_meta, fsz);
-    free(tmp);
+    free(tmp); tmp = NULL;
     if (!ov_end) {
-        struct stat rs;
-        fstat(fd, &rs);
-        ov_end = (rs.st_size + 0xF) & ~0xFull;
+        ov_end = (romfs_size + 0xF) & ~0xFull;
     }
     uint64_t meta_at = ov_end;  // the new table first, then the new files' data
     uint64_t data_at = (meta_at + nsz + 0xF) & ~0xFull;
@@ -199,16 +252,17 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         memcpy(dcopy + dir + 0xC, &entry, 4);
         memcpy(hcopy + 4 * bucket, &entry, 4);
         o += 0x20 + ((nl + 3) & ~3u);
-        if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
+        if (!overlay_reserve()) goto fail;
         ov[ov_n++] = (Overlay){data_at, size, strdup(nf[i].host), -1, NULL};
         rom_files[rom_nfiles++] = (RomFile){data_at, size, strdup(nf[i].rel), entry};
         data_at = (data_at + size + 0xF) & ~0xFull;
         added++;
     }
     // the new table goes before the new data (keep the overlay list sorted by start)
-    if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
+    if (!overlay_reserve()) goto fail;
     memmove(ov + (ov_n - added) + 1, ov + (ov_n - added), sizeof *ov * added);
     ov[ov_n - added] = (Overlay){meta_at, nsz, NULL, -1, meta};
+    meta = NULL;
     ov_n++;
     ov_end = data_at;
     uint64_t fmeta_off = meta_at, fmeta_size = o;
@@ -218,18 +272,31 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
     patches[npatches++] = (Patch){h[3], dsz, dcopy};
     patches[npatches++] = (Patch){hoff, hsz, hcopy};
     LOG("[fs] randomizer: %d new romfs files\n", added);
+    free(nf);
+    return true;
+fail:
+    free(nf); free(dcopy); free(hcopy); free(head); free(tmp); free(meta);
+    return false;
 }
 
-static void rom_index(int fd) {
+static bool rom_index(int fd) {
     uint64_t h[10];
-    if (pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h) return;
+    uint8_t *dmeta = NULL, *fmeta = NULL;
+    if (romfs_base_read(fd, h, sizeof h, 0) != (ssize_t)sizeof h) goto fail;
+    if (h[0] != 0x50 || h[9] < 0x50 || h[9] > romfs_size) goto fail;
+    for (int i = 1; i <= 7; i += 2)
+        if (h[i] < 0x50 || h[i] > romfs_size || h[i + 1] > romfs_size - h[i] ||
+            h[i + 1] > (64u << 20)) goto fail;
+    if (h[4] < 0x18 || h[8] < 0x20 || !h[2] || !h[6] || (h[2] & 3) || (h[6] & 3)) goto fail;
     // header: size, dir hash (off,size), dir meta (off,size), file hash (off,size), file meta (off,size), data off
     uint64_t doff = h[3], dsz = h[4], foff = h[7], fsz = h[8];
     rom_data_off = h[9];
-    uint8_t *dmeta = malloc(dsz), *fmeta = malloc(fsz);
-    if (pread(fd, dmeta, dsz, (off_t)doff) != (ssize_t)dsz || pread(fd, fmeta, fsz, (off_t)foff) != (ssize_t)fsz) return;
+    dmeta = malloc(dsz); fmeta = malloc(fsz);
+    if (!dmeta || !fmeta || romfs_base_read(fd, dmeta, dsz, doff) != (ssize_t)dsz ||
+        romfs_base_read(fd, fmeta, fsz, foff) != (ssize_t)fsz) goto fail;
     int cap = 4096;
     rom_files = malloc(sizeof(RomFile) * cap);
+    if (!rom_files) goto fail;
     for (uint64_t o = 0; o + 0x20 <= fsz;) {
         uint32_t parent, namelen;
         uint64_t data, size;
@@ -237,13 +304,21 @@ static void rom_index(int fd) {
         memcpy(&data, fmeta + o + 8, 8);
         memcpy(&size, fmeta + o + 0x10, 8);
         memcpy(&namelen, fmeta + o + 0x1C, 4);
-        char dir[1024], name[256];
-        rom_dir_path(dmeta, (uint32_t)dsz, parent, dir, sizeof dir);
-        uint32_t nl = namelen > 255 ? 255 : namelen;
+        char dir[4096], name[256];
+        if (namelen > 255 || namelen > fsz - o - 0x20 ||
+            data > romfs_size - rom_data_off || size > romfs_size - rom_data_off - data ||
+            !rom_dir_path(dmeta, (uint32_t)dsz, parent, dir, sizeof dir)) goto fail;
+        uint32_t nl = namelen;
         memcpy(name, fmeta + o + 0x20, nl);
         name[nl] = 0;
-        if (rom_nfiles == cap) { cap *= 2; rom_files = realloc(rom_files, sizeof(RomFile) * cap); }
+        if (rom_nfiles == cap) {
+            cap *= 2;
+            RomFile *grown = realloc(rom_files, sizeof(RomFile) * cap);
+            if (!grown) goto fail;
+            rom_files = grown;
+        }
         char *path = malloc(strlen(dir) + nl + 1);
+        if (!path) goto fail;
         strcpy(path, dir);
         strcat(path, name);
         rom_files[rom_nfiles++] = (RomFile){rom_data_off + data, size, path, (uint32_t)o};
@@ -258,17 +333,16 @@ static void rom_index(int fd) {
         if (stat(host, &sb)) continue;
         if (!ov_meta) {
             ov_meta = malloc(fsz);
+            if (!ov_meta) goto fail;
             memcpy(ov_meta, fmeta, fsz);
             ov_meta_off = foff;
             ov_meta_size = fsz;
-            struct stat rs;
-            fstat(fd, &rs);
-            ov_end = (rs.st_size + 0xF) & ~0xFull;
+            ov_end = (romfs_size + 0xF) & ~0xFull;
         }
         uint64_t rel = ov_end - rom_data_off, size = (uint64_t)sb.st_size;
         memcpy(ov_meta + rom_files[i].meta + 8, &rel, 8);
         memcpy(ov_meta + rom_files[i].meta + 0x10, &size, 8);
-        if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
+        if (!overlay_reserve()) goto fail;
         ov[ov_n].start = ov_end;
         ov[ov_n].size = size;
         ov[ov_n].path = strdup(host);
@@ -279,45 +353,58 @@ static void rom_index(int fd) {
     }
     if (ov_n) LOG("[fs] randomizer: %d romfs files replaced\n", ov_n);
     if (ov_meta) { patches[npatches++] = (Patch){ov_meta_off, ov_meta_size, ov_meta}; }
-    add_new_files(fd, h, dmeta, dsz, fsz);
+    if (!add_new_files(fd, h, dmeta, dsz, fsz)) goto fail;
     qsort(rom_files, rom_nfiles, sizeof *rom_files, rom_cmp);
     free(dmeta);
     free(fmeta);
     LOG("[fs] romfs index: %d files\n", rom_nfiles);
+    return true;
+fail:
+    free(dmeta); free(fmeta);
+    LOG("[fs] invalid or unreadable RomFS metadata\n");
+    return false;
 }
 
 // Virtual RomFS image read: original bytes, with the patched file table and appended replacement files.
 static ssize_t romfs_read(int fd, uint8_t *dst, uint64_t size, uint64_t off) {
-    if (!ov_n) return pread(fd, dst, size, (off_t)off);
+    if (!ov_n) return romfs_base_read(fd, dst, (size_t)size, off);
     uint64_t done = 0;
     while (done < size) {
         uint64_t o = off + done, n = size - done;
-        if (o >= ov[0].start) {  // appended region
+        if (o >= ov[0].start) {
             int i = 0;
-            while (i < ov_n && !(o >= ov[i].start && o < ov[i].start + ((ov[i].size + 0xF) & ~0xFull))) i++;
-            if (i == ov_n) { memset(dst + done, 0, n); done += n; break; }
-            uint64_t in = o - ov[i].start, avail = ((ov[i].size + 0xF) & ~0xFull) - in;
-            if (n > avail) n = avail;
-            ssize_t r;
-            if (ov[i].mem) {  // in-memory blob (the extended file table)
-                r = in < ov[i].size ? (ssize_t)(n < ov[i].size - in ? n : ov[i].size - in) : 0;
-                memcpy(dst + done, ov[i].mem + in, (size_t)r);
+            while (i < ov_n && o >= ov[i].start + ((ov[i].size + 0xF) & ~0xFull)) i++;
+            if (i == ov_n || o < ov[i].start) {
+                if (i < ov_n && n > ov[i].start - o) n = ov[i].start - o;
+                memset(dst + done, 0, (size_t)n); // synthetic alignment only
             } else {
-                if (ov[i].fd < 0) ov[i].fd = open(ov[i].path, O_RDONLY);
-                r = in < ov[i].size ? pread(ov[i].fd, dst + done, n < ov[i].size - in ? n : ov[i].size - in, (off_t)in) : 0;
+                uint64_t in = o - ov[i].start;
+                uint64_t avail = ((ov[i].size + 0xF) & ~0xFull) - in;
+                if (n > avail) n = avail;
+                size_t data = in < ov[i].size ? (size_t)(n < ov[i].size - in ? n : ov[i].size - in) : 0;
+                if (data && ov[i].mem) memcpy(dst + done, ov[i].mem + in, data);
+                else if (data) {
+                    if (ov[i].fd < 0) ov[i].fd = open(ov[i].path, O_RDONLY);
+                    if (ov[i].fd < 0) return -1;
+                    size_t read_bytes = 0;
+                    while (read_bytes < data) {
+                        ssize_t got = pread(ov[i].fd, dst + done + read_bytes, data - read_bytes, (off_t)(in + read_bytes));
+                        if (got < 0 && errno == EINTR) continue;
+                        if (got <= 0) { if (!got) errno = EIO; return -1; }
+                        read_bytes += (size_t)got;
+                    }
+                }
+                if (data < n) memset(dst + done + data, 0, (size_t)n - data);
             }
-            if (r < 0) r = 0;
-            if ((uint64_t)r < n) memset(dst + done + r, 0, n - r);
         } else {
-            if (o + n > ov[0].start) n = ov[0].start - o;
-            ssize_t r = pread(fd, dst + done, n, (off_t)o);
-            if (r < 0) r = 0;
-            if ((uint64_t)r < n) memset(dst + done + r, 0, n - r);
-            // overlay the patched tables (file meta, and with added files: header, dir meta, file hash)
+            if (n > ov[0].start - o) n = ov[0].start - o;
+            size_t data = o < romfs_size ? (size_t)(n < romfs_size - o ? n : romfs_size - o) : 0;
+            if (data && romfs_base_read(fd, dst + done, data, o) != (ssize_t)data) return -1;
+            if (data < n) memset(dst + done + data, 0, (size_t)n - data);
             for (int k = 0; k < npatches; k++) {
                 uint64_t a = o > patches[k].off ? o : patches[k].off;
                 uint64_t b = o + n < patches[k].off + patches[k].size ? o + n : patches[k].off + patches[k].size;
-                if (a < b) memcpy(dst + done + (a - o), patches[k].data + (a - patches[k].off), b - a);
+                if (a < b) memcpy(dst + done + (a - o), patches[k].data + (a - patches[k].off), (size_t)(b - a));
             }
         }
         done += n;
@@ -348,10 +435,16 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
     case 0: {  // Read(offset, size) -> B buffer
         uint64_t off = IN(uint64_t, 0), size = IN(uint64_t, 8);
         IpcBuf *b = out_buf(req, 0);
-        if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
-        if (size > b->size) size = b->size;
+        uint64_t limit = ov_n ? ov_end : st->size;
+        if (!b || size > b->size || size > (uint64_t)SSIZE_MAX || off > limit || size > limit - off) {
+            resp->result = MAKE_RESULT(2, 6001); break;
+        }
         ssize_t n = romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
-        if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
+        if (n < 0 || (uint64_t)n != size) {
+            LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
+            resp->result = MAKE_RESULT(2, 4000);
+            break;
+        }
         {
             const char *path = romfs_file_at(off);
             static const char *last;
@@ -372,32 +465,72 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
     }
 }
 
-static Service *open_romfs_storage(void) {
-    if (romfs_fd < 0) {
-        char path[1024];
-        snprintf(path, sizeof path, "%s.bin", g_romfs_dir);  // extracted/romfs.bin
-        romfs_fd = open(path, O_RDONLY);
 #ifdef __ANDROID__
-        if (romfs_fd < 0) {
-            extern int lasrecomp_external_open(const char *relative_path);
-            romfs_fd = lasrecomp_external_open("romfs.bin");
-            if (romfs_fd >= 0 && lseek(romfs_fd, 0, SEEK_CUR) < 0) {
-                // Some SAF providers return pipes; RomFS requires pread.
-                close(romfs_fd);
-                romfs_fd = -1;
-                FATAL("external romfs.bin is not seekable; choose local storage\n");
-            }
-        }
+static int open_external_romfs_file(void *context, const char *relative) {
+    (void)context;
+    extern int lasrecomp_external_open(const char *relative_path);
+    char path[4102];
+    if (snprintf(path, sizeof path, "romfs/%s", relative) >= (int)sizeof path) { errno = ENAMETOOLONG; return -1; }
+    return lasrecomp_external_open(path);
+}
 #endif
-        if (romfs_fd < 0) FATAL("cannot open %s (set up the game files on the start screen)\n", path);
-        rom_index(romfs_fd);
+
+static Service *open_romfs_storage(void) {
+    pthread_mutex_lock(&romfs_mount_lock);
+    if (!romfs_mounted) {
+        char path[1100];
+#ifdef __ANDROID__
+        // Explicit directory selection takes precedence over any older local image.
+        // romfs/ need not exist locally, so use its parent for the marker.
+        snprintf(path, sizeof path, "%s", g_romfs_dir);
+        char *slash = strrchr(path, '/');
+        if (slash) *slash = 0; else strcpy(path, ".");
+        size_t root_len = strlen(path);
+        snprintf(path + root_len, sizeof path - root_len, "/.external-romfs-directory");
+        if (access(path, F_OK) == 0) {
+            extern int lasrecomp_external_romfs_manifest(char **out, size_t *length);
+            char *manifest = NULL, why[384] = "";
+            size_t length = 0;
+            if (lasrecomp_external_romfs_manifest(&manifest, &length) < 0) {
+                LOG("[fs] cannot enumerate external RomFS: %s\n", strerror(errno));
+                free(manifest); goto failed;
+            }
+            virtual_romfs = romfs_virtual_create(manifest, length, open_external_romfs_file, NULL, why, sizeof why);
+            free(manifest);
+            if (!virtual_romfs) { LOG("[fs] cannot mount virtual RomFS: %s\n", why); goto failed; }
+            romfs_size = romfs_virtual_size(virtual_romfs);
+            LOG("[fs] direct SAF RomFS mounted: %llu virtual bytes; no image generated\n", (unsigned long long)romfs_size);
+        } else
+#endif
+        {
+            snprintf(path, sizeof path, "%s.bin", g_romfs_dir);
+            romfs_fd = open(path, O_RDONLY);
+#ifdef __ANDROID__
+            if (romfs_fd < 0) {
+                extern int lasrecomp_external_open(const char *relative_path);
+                romfs_fd = lasrecomp_external_open("romfs.bin");
+            }
+#endif
+            struct stat sb;
+            if (romfs_fd < 0 || lseek(romfs_fd, 0, SEEK_CUR) < 0 || fstat(romfs_fd, &sb) < 0 || sb.st_size < 0x50) {
+                LOG("[fs] cannot open seekable RomFS image: %s\n", strerror(errno));
+                goto failed;
+            }
+            romfs_size = (uint64_t)sb.st_size;
+        }
+        if (!rom_index(romfs_fd)) goto failed;
+        romfs_mounted = true;
     }
     Storage *st = calloc(1, sizeof *st);
+    if (!st) goto failed;
     st->fd = romfs_fd;
-    struct stat sb;
-    fstat(romfs_fd, &sb);
-    st->size = sb.st_size;
+    st->size = romfs_size;
+    pthread_mutex_unlock(&romfs_mount_lock);
     return service_new("IStorage(romfs)", storage, st);
+failed:
+    fs_reset();
+    pthread_mutex_unlock(&romfs_mount_lock);
+    return NULL;
 }
 
 // ------------------------------------------------------------------ host-directory filesystem
@@ -617,7 +750,12 @@ SERVICE("fsp-srv", fsp_srv) {
         ipc_return_object(resp, open_host_fs(sub));
         break;
     }
-    case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess
+    case 200: { // OpenDataStorageByCurrentProcess
+        Service *romfs = open_romfs_storage();
+        if (romfs) ipc_return_object(resp, romfs);
+        else resp->result = MAKE_RESULT(2, 4000);
+        break;
+    }
     case 202:  // OpenDataStorageByDataId (system data archives)
         LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", IN(uint64_t, 8));
         resp->result = MAKE_RESULT(2, 1001);
