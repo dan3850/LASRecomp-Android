@@ -283,6 +283,36 @@ public final class GameImportActivity extends Activity {
         settingsButton.setOnClickListener(v -> showVideoSettings());
         layout.addView(settingsButton);
 
+        // The mod dialog already exists in GameMods; expose it from the start screen.
+        // Run the native library probe off the UI thread because dlopen can be expensive.
+        Button modsButton = new Button(this);
+        modsButton.setText("MODS — STABLE 60 FPS");
+        modsButton.setOnClickListener(v -> {
+            if (importing) return;
+            modsButton.setEnabled(false);
+            new Thread(() -> {
+                boolean prepared = false;
+                try {
+                    File gameCode = privateGameCodeFile();
+                    if (!gameCode.isFile()) {
+                        String nativeDir = getApplicationInfo().nativeLibraryDir;
+                        if (nativeDir != null) gameCode = new File(nativeDir, "liblasgame.so");
+                    }
+                    if (gameCode.isFile())
+                        prepared = nativeSupportsModMenu(gameCode.getAbsolutePath());
+                } catch (Throwable error) {
+                    android.util.Log.w("LASRecomp", "Cannot check mod menu capability", error);
+                }
+                final boolean supported = prepared;
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    modsButton.setEnabled(true);
+                    GameMods.show(this, supported);
+                });
+            }, "LASRecompModCapability").start();
+        });
+        layout.addView(modsButton);
+
         // System fonts are console-owned, not stored in Zelda's NSP or our APK.
         // Users may import their own legitimate Switch Standard/NintendoExt font.
         fontButton = new Button(this);
