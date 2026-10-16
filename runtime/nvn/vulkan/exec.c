@@ -2846,6 +2846,30 @@ static void draw_(CmdRec *r, bool indexed) {
     // build the vertex set now and the fragment set after the decision (stage_set fills tex_sc for stage 1).
     if (prof) prof_dyn += SDL_GetTicksNS() - prof_td_;
     PROF_T0();
+    // Bounded diagnostics for graphics global-memory shader accesses.
+    if (!g_vk.host_import && (pr->vi->uses_gmem || pr->fi->uses_gmem)) {
+        static struct { uint64_t shader; int stage; } seen[24];
+        static unsigned nseen;
+        for (int stage = 0; stage < 2; ++stage) {
+            ShaderInfo *si = stage ? pr->fi : pr->vi;
+            if (!si->uses_gmem) continue;
+            uint64_t shader = st.program->stages[stage].code_addr;
+            bool known = false;
+            for (unsigned k = 0; k < nseen; ++k)
+                if (seen[k].shader == shader && seen[k].stage == stage) { known = true; break; }
+            if (known || nseen >= sizeof(seen) / sizeof(seen[0])) continue;
+            seen[nseen].shader = shader; seen[nseen++].stage = stage;
+            LOG("[gmem-graphics] stage=%d shader=%llx store=%d heap=%llu",
+                stage, (unsigned long long)shader, si->uses_gmem_store,
+                (unsigned long long)kernel_heap_size());
+            for (int i = 0; i < 16; ++i)
+                if (st.sbuf[stage][i].addr && st.sbuf[stage][i].size)
+                    LOG(" sb%d=%llx+%llx", i,
+                        (unsigned long long)st.sbuf[stage][i].addr,
+                        (unsigned long long)st.sbuf[stage][i].size);
+            LOG("\n");
+        }
+    }
     VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL);
     PROF_ADD(prof_sets);
     VkDescriptorImageInfo fii[64];
