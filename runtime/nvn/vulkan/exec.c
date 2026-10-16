@@ -110,6 +110,9 @@ uint64_t vk_pending_seq(void) { return submit_seq + 1; }
 // clock's terms (offset calibrated at each resolve: a timestamp can't be later than the moment its submission is seen
 // done). LARECOMP_VK_COUNTER=cpu: host clock only; =frozen: one value per presented frame (test); =legacy: the host
 // clock in ns instead of GPU ticks, as before (test: reproduces the locked 30).
+// =virtual: a 16 ms synthetic GPU clock step per presented frame (Android A/B test).
+// Virtual time is strictly a diagnostic bypass of a possible 30fps feedback loop; it can
+// produce slow-motion gameplay when the actual work cannot sustain 60fps.
 #define CQ_MAX 64
 typedef struct { VkQueryPool pool; uint32_t n; uint64_t seq; uint64_t *out[CQ_MAX]; } CounterQ;
 static CounterQ cq[SUBS];
@@ -119,7 +122,7 @@ static int64_t cq_offset;  // host ns - GPU ns (the smallest seen)
 // (x 625 / 384). Writing ns made every GPU time look 1.63x as long.
 static uint64_t ns_to_gpu_ticks(uint64_t ns) { return (uint64_t)((unsigned __int128)ns * 384 / 625); }
 static bool cq_calibrated;
-static int counter_mode = -1;  // 0 cpu, 1 frozen, 2 gpu
+static int counter_mode = -1;  // 0 cpu, 1 frozen, 2 gpu, 3 legacy, 4 virtual
 static uint64_t stat_counters_gpu;
 
 static int vk_counter_mode(void) {
@@ -133,16 +136,20 @@ static int vk_counter_mode(void) {
         // provisional host-time penalty. This is an experiment, NOT an optimization:
         // a genuinely slow frame may still run in slow motion.
         // LARECOMP_VK_COUNTER=gpu restores the original GPU timestamp mode.
+        // Virtual mode tests a different feedback loop: frozen wall-clock values can
+        // still jump 33 ms between two guest frames once the game selects 30 FPS.
+        // Give each presented frame a stable 16 ms step so the next frame's
+        // counter no longer inherits the half-rate decision. Does NOT improve GPU speed.
 #ifdef __ANDROID__
-        const int default_mode = 1;  // frozen: A/B test on Android only
+        const int default_mode = 4;  // virtual: Android-only half-rate feedback A/B test
 #else
         const int default_mode = 2;  // gpu: unchanged on other platforms
 #endif
         counter_mode = e && !strcmp(e, "cpu") ? 0 : e && !strcmp(e, "frozen") ? 1 : e && !strcmp(e, "legacy") ? 3
-                     : e && !strcmp(e, "gpu") ? 2 : default_mode;
+                     : e && !strcmp(e, "virtual") ? 4 : e && !strcmp(e, "gpu") ? 2 : default_mode;
         if (counter_mode == 2 && !g_vk.props.limits.timestampComputeAndGraphics) counter_mode = 0;
         LOG("[counter-pace] timestamp source=%s (LARECOMP_VK_COUNTER=%s)\n",
-            counter_mode == 2 ? "gpu" : counter_mode == 0 ? "cpu" : counter_mode == 1 ? "frozen" : "legacy",
+            counter_mode == 2 ? "gpu" : counter_mode == 0 ? "cpu" : counter_mode == 1 ? "frozen" : counter_mode == 4 ? "virtual" : "legacy",
             e ? e : "unset");
     }
     return counter_mode;
@@ -4241,12 +4248,26 @@ static void exec_list(uint64_t handle, int depth) {
             static uint32_t seen;
             if (type < 32 && !(seen & (1u << type))) { seen |= 1u << type; LOG("[nvn] ReportCounter type %u\n", type); }
             int mode = vk_counter_mode();
-            static uint64_t frame_seen = ~0ull, frame_ts;
+            static uint64_t frame_seen = ~0ull, frame_ts, virtual_base_frame, virtual_base_ns;
             extern uint64_t vk_frame_counter(void);
-            if (mode == 1 && vk_frame_counter() != frame_seen) { frame_seen = vk_frame_counter(); frame_ts = ns_to_gpu_ticks(plat_now_ns()); }
+            if (mode == 1 || mode == 4) {
+                uint64_t frame = vk_frame_counter();
+                if (frame != frame_seen) {
+                    if (mode == 4) {
+                        if (frame_seen == ~0ull || frame < virtual_base_frame) {
+                            virtual_base_frame = frame;
+                            virtual_base_ns = plat_now_ns();
+                        }
+                        frame_ts = ns_to_gpu_ticks(virtual_base_ns + (frame - virtual_base_frame) * 16000000ull);
+                    } else {
+                        frame_ts = ns_to_gpu_ticks(plat_now_ns());
+                    }
+                    frame_seen = frame;
+                }
+            }
             if (!out) break;
             out[0] = 0;
-            out[1] = mode == 1 ? frame_ts : mode == 3 ? SDL_GetTicksNS() : ns_to_gpu_ticks(plat_now_ns());  // (3 legacy: ns, the old bug)
+            out[1] = (mode == 1 || mode == 4) ? frame_ts : mode == 3 ? SDL_GetTicksNS() : ns_to_gpu_ticks(plat_now_ns());  // (3 legacy: ns, the old bug)
             static uint64_t *prev_out;  // (frame pacing: the pair's start)
             if (mode == 0 || mode == 2) out[1] = pace_end_counter(prev_out, out, out[1]);
             prev_out = out;
