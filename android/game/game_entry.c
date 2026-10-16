@@ -172,6 +172,31 @@ int SDL_main(int argc, char **argv) {
         return 1;
     }
 
+    // The engine is dlopen'ed after these environment values are populated.
+    setenv("LASRECOMP_PRIVATE_FILES", files, 1);
+#ifdef __ANDROID__
+    JNIEnv *vkenv = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject vkactivity = SDL_GetAndroidActivity();
+    if (vkenv && vkactivity) {
+        jclass vkcls = (*vkenv)->GetObjectClass(vkenv, vkactivity);
+        jmethodID vkmethod = vkcls ? (*vkenv)->GetMethodID(vkenv, vkcls,
+            "getVulkanHookLibraryDirectory", "()Ljava/lang/String;") : NULL;
+        if (vkmethod) {
+            jstring vkdir = (jstring)(*vkenv)->CallObjectMethod(vkenv, vkactivity, vkmethod);
+            if (vkdir && !(*vkenv)->ExceptionCheck(vkenv)) {
+                const char *chars = (*vkenv)->GetStringUTFChars(vkenv, vkdir, NULL);
+                if (chars) {
+                    setenv("LASRECOMP_NATIVE_LIB_DIR", chars, 1);
+                    (*vkenv)->ReleaseStringUTFChars(vkenv, vkdir, chars);
+                }
+                (*vkenv)->DeleteLocalRef(vkenv, vkdir);
+            }
+        }
+        if ((*vkenv)->ExceptionCheck(vkenv)) (*vkenv)->ExceptionClear(vkenv);
+        if (vkcls) (*vkenv)->DeleteLocalRef(vkenv, vkcls);
+        (*vkenv)->DeleteLocalRef(vkenv, vkactivity);
+    }
+#endif
     boot_mark(files, "SDL_main entered", 0);
 #ifdef __ANDROID__
     log_selected_game_tree(files);
