@@ -300,12 +300,36 @@ clang -shared -fPIC -O2 -fvisibility=hidden -Wl,-z,max-page-size=16384 \
 clang -shared -fPIC -O2 -fvisibility=hidden -Wl,-z,max-page-size=16384 \
  -Wl,-soname,liblasrecomp_probe.so -o "$LIB/liblasrecomp_probe.so" \
  android/prepare/loader_probe_module.c
+# AdrenoTools is BSD-2-Clause, unlike Eden's GPL user interface.
+# Build once in the Termux cache and reuse CMake/Ninja outputs afterwards.
+step "AdrenoTools - Vulkan personalizado ARM64"
+ADRENO_SRC="$DEPS/libadrenotools"
+if [[ ! -d "$ADRENO_SRC/.git" ]]; then
+ git clone -q --depth 1 --recurse-submodules https://github.com/bylaws/libadrenotools.git "$ADRENO_SRC"
+fi
+[[ -f "$ADRENO_SRC/lib/linkernsbypass/CMakeLists.txt" ]] ||
+ (cd "$ADRENO_SRC" && git submodule update --init --recursive)
+ADRENO_BUILD="$WORK/adrenotools"
+cmake -S "$ADRENO_SRC" -B "$ADRENO_BUILD" -G Ninja \
+ -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+ -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a -DBUILD_SHARED_LIBS=ON
+cmake --build "$ADRENO_BUILD" --parallel "$JOBS"
+for name in libadrenotools.so libmain_hook.so libhook_impl.so libfile_redirect_hook.so libgsl_alloc_hook.so; do
+ find "$ADRENO_BUILD" -type f -name "$name" -print -quit | grep -q . ||
+  fail "AdrenoTools não gerou $name"
+done
+
 step "Empacotando APK novo (sem modificar motor)"
 STAGE="$OUT/stage"
 # Apaga somente o staging temporario do APK; nunca caches, fontes ou objetos.
 # Evita que uma liblasgame.so privada de uma rodada anterior vaze no APK atual.
 rm -rf -- "$STAGE"
 mkdir -p "$STAGE/lib/arm64-v8a" "$STAGE/assets" "$STAGE/dex" "$STAGE/classes"
+# Hooks must be extracted to Android nativeLibraryDir (manifest extractNativeLibs=true).
+for name in libadrenotools.so libmain_hook.so libhook_impl.so libfile_redirect_hook.so libgsl_alloc_hook.so; do
+ source_so="$(find "$ADRENO_BUILD" -type f -name "$name" -print -quit)"
+ cp -L "$source_so" "$STAGE/lib/arm64-v8a/$name"
+done
 for so in "$SDL_SO" "$SHADERC_SO" "$RUNTIME" "$LIB/libmain.so" \
  "$LIB/liblasrecomp_prepare.so" "$LIB/liblasrecomp_probe.so"; do
  cp -L "$so" "$STAGE/lib/arm64-v8a/$(basename "$so")"
