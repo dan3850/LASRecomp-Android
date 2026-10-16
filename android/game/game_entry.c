@@ -52,18 +52,24 @@ int SDL_main(int argc, char **argv) {
 // Keep the engine in the process-wide symbol group on Android.
     void *engine = dlopen("liblasrecomp_runtime.so", RTLD_NOW | RTLD_GLOBAL);
     if (!engine) {
+        const char *reason = dlerror();
         boot_mark(files, "dlopen motor failed", 2);
+        if (reason) boot_mark(files, reason, 2);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "LASRecomp: native game runtime not packaged: %s", dlerror());
+                     "LASRecomp: native game runtime load failed: %s",
+                     reason ? reason : "unknown error");
         return 2;
     }
 
     boot_mark(files, "motor loaded", 0);
     LASRecompStart start = (LASRecompStart)dlsym(engine, "lasrecomp_android_start");
     if (!start) {
+        const char *reason = dlerror();
         boot_mark(files, "start symbol missing", 3);
+        if (reason) boot_mark(files, reason, 3);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "LASRecomp: game entry point missing: %s", dlerror());
+                     "LASRecomp: game entry point missing: %s",
+                     reason ? reason : "unknown error");
         dlclose(engine);
         return 3;
     }
