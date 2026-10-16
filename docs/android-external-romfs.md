@@ -67,8 +67,17 @@ bash compilar-lasrecomp-pasta-externa.sh
 Esse script completo atualiza somente a branch experimental por fast-forward,
 usa `compilar-lasrecomp-termux.sh`, preserva os caches existentes e verifica a
 assinatura. Para outro checkout, defina `LASRECOMP_PROJECT` com o caminho dele.
-Alterações rastreadas locais ou histórico divergente interrompem a atualização
-sem apagar trabalho. Backups não rastreados são preservados.
+Quando há alterações locais e uma atualização é necessária, o script salva
+patches do índice e da árvore de trabalho em `~/.local/state/lasrecomp/backups`,
+registra um stash de segurança, atualiza por fast-forward e reaplica as
+alterações. O stash permanece disponível como segundo backup. Caches e
+arquivos não rastreados ficam no lugar. Conflitos de conteúdo ou histórico
+divergente interrompem o processo antes da compilação. Se a atualização falha,
+o script tenta restaurar o checkout original e suas alterações.
+
+Quando o projeto já está atualizado, alterações locais não impedem a compilação.
+APKs e ZIPs com alterações locais recebem o sufixo `-local`; o ZIP contém os
+arquivos rastreados conforme foram compilados, incluindo os overrides locais.
 
 O script gera em `/storage/emulated/0/Download/LASRecomp`:
 
@@ -115,3 +124,15 @@ Teste no dispositivo ainda necessário: selecionar a pasta real via SAF,
 reabrir o app para confirmar a permissão persistente e iniciar o jogo com a
 `liblasgame.so` compatível. Testes sintéticos não comprovam o boot do Zelda,
 a compatibilidade de todos os provedores SAF nem o desempenho durante o jogo.
+
+
+A preservação de alterações pelo script pode ser verificada sem Android:
+
+```bash
+python3 tests/test_termux_update.py
+```
+
+Esses seis testes usam repositórios Git temporários e uma compilação simulada.
+Cobrem alterações staged/unstaged, backup, atualização, troca a partir da
+branch estável, conflitos, divergência de histórico, falha de fast-forward,
+preservação de caches e conteúdo do ZIP. Não são testes do compilador Termux.
