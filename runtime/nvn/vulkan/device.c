@@ -796,6 +796,18 @@ void backend_present(NvnTexture *t) {
         widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
         widescreen_set_factor((float)shape);
 #ifdef __ANDROID__
+        // The widescreen crop can reduce the final presentation rectangle back to
+        // a centred 16:9 box (notably indoors). In Android's unlocked mode, the
+        // user explicitly requests a stretched full-surface presentation.
+        // Preserve the UV crop above: only change the destination rectangle.
+        if (g_settings.aspect != ASPECT_ORIGINAL) {
+            vx = 0.0;
+            vy = 0.0;
+            vw = dw;
+            vh = dh;
+        }
+#endif
+#ifdef __ANDROID__
         // Low-volume presentation telemetry: report the effective image, not just the UI selection.
         // Throttle to once every 5 seconds to avoid slowing the render thread with per-frame logs.
         {
