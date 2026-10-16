@@ -125,7 +125,21 @@ static uint64_t stat_counters_gpu;
 static int vk_counter_mode(void) {
     if (counter_mode < 0) {
         const char *e = getenv("LARECOMP_VK_COUNTER");
-        counter_mode = e && !strcmp(e, "cpu") ? 0 : e && !strcmp(e, "frozen") ? 1 : e && !strcmp(e, "legacy") ? 3 : 2;
+        // Android A/B test: GPU query results can arrive after the guest has already
+        // inspected a provisional host timestamp. That provisional timestamp includes
+        // translation latency, which can make Zelda select its internal 30 FPS mode
+        // even when the GPU's measured workload is under a 60 FPS frame budget.
+        // Frozen counters use one timestamp per presented frame, avoiding that
+        // provisional host-time penalty. This is an experiment, NOT an optimization:
+        // a genuinely slow frame may still run in slow motion.
+        // LARECOMP_VK_COUNTER=gpu restores the original GPU timestamp mode.
+#ifdef __ANDROID__
+        const int default_mode = 1;  // frozen: A/B test on Android only
+#else
+        const int default_mode = 2;  // gpu: unchanged on other platforms
+#endif
+        counter_mode = e && !strcmp(e, "cpu") ? 0 : e && !strcmp(e, "frozen") ? 1 : e && !strcmp(e, "legacy") ? 3
+                     : e && !strcmp(e, "gpu") ? 2 : default_mode;
         if (counter_mode == 2 && !g_vk.props.limits.timestampComputeAndGraphics) counter_mode = 0;
         LOG("[counter-pace] timestamp source=%s (LARECOMP_VK_COUNTER=%s)\n",
             counter_mode == 2 ? "gpu" : counter_mode == 0 ? "cpu" : counter_mode == 1 ? "frozen" : "legacy",
