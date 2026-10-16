@@ -26,6 +26,14 @@ public final class GameSDLActivity extends SDLActivity {
     private GameTouchControls touchControls;
     private android.net.Uri selectedGameTree;
 
+    /** Called by SDL's native entry point through JNI on the active Activity. */
+    public String getExternalGameRoot() {
+        if (selectedGameTree == null) return null;
+        // A document URI is not a POSIX directory. Native code must not
+        // pass it to fopen, stat or opendir.
+        return selectedGameTree.toString();
+    }
+
     /** Native JNI can call this method and then use the returned read-only fd. */
     public int openGameDocumentFd(String relativePath) throws java.io.IOException {
         if (selectedGameTree == null) throw new java.io.FileNotFoundException("No external game folder selected");
