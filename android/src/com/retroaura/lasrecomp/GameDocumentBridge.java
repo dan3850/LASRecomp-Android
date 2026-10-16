@@ -9,6 +9,8 @@ import android.provider.DocumentsContract;
 import android.database.Cursor;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * SAF bridge for native game file reads. A returned descriptor is seekable
@@ -50,6 +52,55 @@ public final class GameDocumentBridge {
             parentId = nextId;
         }
         return DocumentsContract.buildDocumentUriUsingTree(tree, parentId);
+    }
+
+    /**
+     * Enumerate original RomFS files without copying their contents.
+     * Each record is relative path, tab, byte length. A game-specific virtual
+     * storage layer can use this index to translate RomFS offsets into SAF reads.
+     */
+    public static List<String> indexRomfs(Context context, Uri tree) throws IOException {
+        if (!hasPermission(context, tree))
+            throw new SecurityException("Game folder permission expired");
+        Uri root = child(context, tree, "romfs");
+        List<String> files = new ArrayList<>();
+        indexDirectory(context.getContentResolver(), tree,
+            DocumentsContract.getDocumentId(root), "", 0, files);
+        return files;
+    }
+
+    private static void indexDirectory(ContentResolver resolver, Uri tree, String parentId,
+                                       String prefix, int depth, List<String> files)
+            throws IOException {
+        if (depth > 48) throw new IOException("RomFS folder depth exceeded");
+        Uri listing = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId);
+        String[] projection = {
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE
+        };
+        try (Cursor cursor = resolver.query(listing, projection, null, null, null)) {
+            if (cursor == null) throw new IOException("Cannot enumerate RomFS documents");
+            while (cursor.moveToNext()) {
+                String id = cursor.getString(0);
+                String name = cursor.getString(1);
+                String mime = cursor.getString(2);
+                if (name == null || name.isEmpty() || name.equals(".") ||
+                    name.equals("..") || name.indexOf('/') >= 0 ||
+                    name.indexOf('\\\\') >= 0 || name.indexOf('\\t') >= 0 ||
+                    name.indexOf('\\n') >= 0)
+                    throw new IOException("Invalid RomFS filename");
+                String relative = prefix + name;
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                    indexDirectory(resolver, tree, id, relative + "/", depth + 1, files);
+                } else {
+                    if (cursor.isNull(3) || cursor.getLong(3) < 0)
+                        throw new IOException("Missing file size: " + relative);
+                    files.add(relative + "\\t" + cursor.getLong(3));
+                }
+            }
+        }
     }
 
     public static int openReadFd(Context context, Uri tree, String relativePath) throws IOException {
