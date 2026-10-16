@@ -795,6 +795,24 @@ void backend_present(NvnTexture *t) {
         float crop[4];  // uv origin and size
         widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
         widescreen_set_factor((float)shape);
+#ifdef __ANDROID__
+        // Low-volume presentation telemetry: report the effective image, not just the UI selection.
+        // Throttle to once every 5 seconds to avoid slowing the render thread with per-frame logs.
+        {
+            static uint64_t next_display_log_ms = 0;
+            uint64_t display_now_ms = SDL_GetTicks();
+            if (display_now_ms >= next_display_log_ms) {
+                LOG("[display] aspect=%s res_mode=%d surface=%ux%u "
+                    "reshape_allowed=%d shape=%.4f scale=%.3fx%.3f "
+                    "viewport=%.0f,%.0f %.0fx%.0f frame=%llu\n",
+                    g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked",
+                    (int)g_settings.res_mode, g_vk.sc_extent.width, g_vk.sc_extent.height,
+                    (int)widescreen_allowed(), shape, sx, sy, vx, vy, vw, vh,
+                    (unsigned long long)total_frames);
+                next_display_log_ms = display_now_ms + 5000;
+            }
+        }
+#endif
         renderer_set_scale((float)sx, (float)sy);
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
