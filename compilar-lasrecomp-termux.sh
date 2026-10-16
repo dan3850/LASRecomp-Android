@@ -327,14 +327,42 @@ fi
 [[ -f "$ADRENO_SRC/lib/linkernsbypass/CMakeLists.txt" ]] ||
  (cd "$ADRENO_SRC" && git submodule update --init --recursive)
 ADRENO_BUILD="$WORK/adrenotools"
-cmake -S "$ADRENO_SRC" -B "$ADRENO_BUILD" -G Ninja \
- -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
- -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=ON
-cmake --build "$ADRENO_BUILD" --parallel "$JOBS"
-for name in libadrenotools.so libmain_hook.so libhook_impl.so libfile_redirect_hook.so libgsl_alloc_hook.so; do
- find "$ADRENO_BUILD" -type f -name "$name" -print -quit | grep -q . ||
-  fail "AdrenoTools não gerou $name"
-done
+# Avoid false failures from grep -q/pipefail, and check real ELF machine type.
+is_arm64_so() {
+ local header
+ header="$(llvm-readelf -h "$1" 2>/dev/null)" || return 1
+ [[ "$header" == *AArch64* ]]
+}
+build_adrenotools() {
+ cmake -S "$ADRENO_SRC" -B "$ADRENO_BUILD" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=ON
+ cmake --build "$ADRENO_BUILD" --parallel "$JOBS"
+}
+adrenotools_arm64_ok() {
+ local name source_so
+ for name in libadrenotools.so libmain_hook.so libhook_impl.so libfile_redirect_hook.so libgsl_alloc_hook.so; do
+  source_so="$(find "$ADRENO_BUILD" -type f -name "$name" -print -quit)"
+  if [[ -z "$source_so" || ! -s "$source_so" ]]; then
+   echo "AdrenoTools: biblioteca ausente: $name" >&2
+   return 1
+  fi
+  if ! is_arm64_so "$source_so"; then
+   echo "AdrenoTools: biblioteca com arquitetura inválida: $source_so" >&2
+   llvm-readelf -h "$source_so" 2>&1 | grep -E 'Class:|Machine:' || true
+   return 1
+  fi
+ done
+}
+build_adrenotools
+if ! adrenotools_arm64_ok; then
+ # Repair ONLY this isolated cache; keep FFmpeg/SDL/shaderc and game-code objects.
+ step "Regerando apenas AdrenoTools ARM64 (cache antigo/incompatível)"
+ [[ "$ADRENO_BUILD" == "$WORK/adrenotools" ]] || fail "Pasta de build AdrenoTools inesperada"
+ rm -rf -- "$ADRENO_BUILD"
+ build_adrenotools
+ adrenotools_arm64_ok || fail "AdrenoTools continua sem bibliotecas ARM64; confira clang -dumpmachine"
+fi
 
 step "Empacotando APK novo (sem modificar motor)"
 STAGE="$OUT/stage"
@@ -399,7 +427,11 @@ for so in "$LIBDIR"/*.so; do
 done
 for so in "$LIBDIR"/*.so; do
  patchelf --remove-rpath "$so"
- llvm-readelf -h "$so" | grep -q AArch64 || fail "Biblioteca nao ARM64: $so"
+ is_arm64_so "$so" || {
+  echo "Cabeçalho ELF da biblioteca rejeitada:" >&2
+  llvm-readelf -h "$so" 2>&1 | grep -E 'Class:|Machine:' || true
+  fail "Biblioteca nao ARM64: $so"
+ }
  soname="$(llvm-readelf -d "$so" | sed -n 's/.*(SONAME).*\[\([^]]*\)\].*/\1/p' | head -1)"
  [[ -z "$soname" || "$soname" == "$(basename "$so")" ]] || fail "SONAME errado: $so -> $soname"
  llvm-readelf -d "$so" | grep -Eq 'RUNPATH|RPATH' && fail "RPATH nao permitido: $so"
