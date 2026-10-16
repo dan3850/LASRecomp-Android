@@ -15,6 +15,7 @@
 #include "vk.h"
 #include "diagnostics.h"
 #include "gmem.h"
+#include "build_wait.h"
 #include "../bcn_decode.h"
 #include "../renderer.h"
 #include "../../settings.h"
@@ -593,7 +594,8 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
 }
 
 // ================================================================== worker threads (shader / pipeline builds)
-// First-use compiles run off the render thread; draws needing them are skipped until ready (as on Metal).
+// First-use compiles run off the render thread. Android waits for required
+// builds instead of discarding draws/dispatches; desktop retains async skipping.
 // LARECOMP_SYNC_SHADERS=1 builds on first use, blocking (deterministic tests).
 typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
 static Job *jobs_head, *jobs_tail;
@@ -645,7 +647,12 @@ static bool sync_shaders(void);
 static void run_translate(void (*fn)(void *), void *arg) {
     if (sync_shaders()) { fn(arg); return; }
     static bool started;
-    if (!started) { started = true; pthread_t t; pthread_create(&t, NULL, translator, NULL); }
+    if (!started) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, translator, NULL)) { fn(arg); return; }
+        pthread_detach(t);
+        started = true;
+    }
     Job *j = malloc(sizeof *j);
     j->fn = fn; j->arg = arg; j->next = NULL;
     pthread_mutex_lock(&tjobs_lock);
@@ -655,17 +662,22 @@ static void run_translate(void (*fn)(void *), void *arg) {
     pthread_mutex_unlock(&tjobs_lock);
 }
 
+static pthread_once_t workers_once = PTHREAD_ONCE_INIT;
+static bool workers_available;
+static void start_workers(void) {
+    // Both the translator and compute path can submit the first job.
+    int n = SDL_GetNumLogicalCPUCores() - 4;
+    if (n < 4) n = 4;
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; i++) {
+        pthread_t t;
+        if (!pthread_create(&t, NULL, worker, NULL)) { pthread_detach(t); workers_available = true; }
+    }
+}
 static void run_job(void (*fn)(void *), void *arg) {
     if (sync_shaders()) { fn(arg); return; }
-    static bool started;
-    if (!started) {
-        started = true;
-        // first entry into an area builds dozens of pipelines at once: use most of the CPU (draws wait for them)
-        int n = SDL_GetNumLogicalCPUCores() - 4;
-        if (n < 4) n = 4;
-        if (n > 16) n = 16;
-        for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, worker, NULL); }
-    }
+    pthread_once(&workers_once, start_workers);
+    if (!workers_available) { fn(arg); return; } // no worker can publish completion: build inline
     Job *j = malloc(sizeof *j);
     j->fn = fn; j->arg = arg; j->next = NULL;
     pthread_mutex_lock(&jobs_lock);
@@ -1216,7 +1228,7 @@ static void compile_program(void *arg) {
     size_t nv = 0, nf = 0;
     uint32_t *sv = vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv);
     uint32_t *sf = sv ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : NULL;
-    if (!sv || !sf) { free(sv); free(sf); atomic_store(&p->state, 2); return; }
+    if (!sv || !sf) { free(sv); free(sf); vk_build_complete(&p->state, 2); return; }
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
     p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
     p->vs = vk_module(sv, nv);
@@ -1225,7 +1237,7 @@ static void compile_program(void *arg) {
     free(sf);
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
     atomic_fetch_add(&stat_compiles, 1);
-    atomic_store(&p->state, p->vs && p->fs ? 1 : 2);
+    vk_build_complete(&p->state, p->vs && p->fs ? 1 : 2);
 }
 
 static void translate_program(void *arg) {
@@ -1241,12 +1253,12 @@ static void translate_program(void *arg) {
     pthread_mutex_unlock(&translate_lock);
     if (!p->vi->msl) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
-        atomic_store(&p->state, 2);
+        vk_build_complete(&p->state, 2);
         return;
     }
     if (!p->fi->msl) {
         LOG("[shader] FS translate failed: %s\n", p->fi->error);
-        atomic_store(&p->state, 2);
+        vk_build_complete(&p->state, 2);
         return;
     }
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
@@ -1553,7 +1565,7 @@ static void build_pipeline(void *arg) {
         vk_diag_event(VD_PIPELINE_ERROR, "graphics VkResult=%d color_targets=%u depth=%d stencil=%d", r, k->ncolor, k->depth, k->stencil);
     }
     atomic_fetch_add(&stat_compiles, 1);
-    atomic_store(&pp->state, r == VK_SUCCESS ? 1 : 2);
+    vk_build_complete(&pp->state, r == VK_SUCCESS ? 1 : 2);
 }
 
 // ================================================================== feedback snapshots (renderer.m resolve_feedback)
@@ -2680,7 +2692,7 @@ static void build_compute(void *arg) {
     CsProg *cp = arg;
     size_t n = 0;
     uint32_t *spv = vk_glsl_to_spirv(cp->si->msl, STAGE_COMPUTE, "cs", &n);
-    if (!spv) { atomic_store(&cp->p.state, 2); return; }
+    if (!spv) { vk_build_complete(&cp->p.state, 2); return; }
     cp->p.nbinds = vk_reflect(spv, n, cp->p.binds, MAX_BIND);
     VkShaderModule m = vk_module(spv, n);
     free(spv);
@@ -2694,7 +2706,7 @@ static void build_compute(void *arg) {
                                       .layout = cp->p.layout};
     VkResult r = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &cp->pipe);
     atomic_fetch_add(&stat_compiles, 1);
-    atomic_store(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
+    vk_build_complete(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
     if (r != VK_SUCCESS) {
         LOG("[compute] pipeline failed: %d\n", r);
         vk_diag_event(VD_PIPELINE_ERROR, "compute VkResult=%d local=%ux%ux%u", r, cp->local[0], cp->local[1], cp->local[2]);
@@ -2721,7 +2733,7 @@ static CsProg *compute_program(NvnProgram *np) {
     cp->p.vi = cp->si;
     if (!cp->si->msl) {
         LOG("[compute] translate failed: %s (code %llx)\n", cp->si->error, (unsigned long long)ss->code_addr);
-        atomic_store(&cp->p.state, 2);
+        vk_build_complete(&cp->p.state, 2);
         return cp;
     }
     for (int i = 0; i < 3; i++) {
@@ -2737,7 +2749,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
-    if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
+    if (!cp || !vk_build_ready(&cp->p.state)) { stat_skipped++; return; }
     {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
         static uint64_t skip = ~0ull;
         if (skip == ~0ull) { const char *e = getenv("LARECOMP_SKIP_CS"); skip = e ? strtoull(e, NULL, 16) : 0; }
@@ -2835,7 +2847,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
     Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+    if (!pr || !vk_build_ready(&pr->state)) { stat_skipped++; return; }
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
@@ -2849,7 +2861,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
-            if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+            if (!pr || !vk_build_ready(&pr->state)) { stat_skipped++; return; }
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
@@ -2968,7 +2980,7 @@ static void draw_(CmdRec *r, bool indexed) {
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
     }
-    if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
+    if (!vk_build_ready(&pp->state)) { stat_skipped++; return; }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;

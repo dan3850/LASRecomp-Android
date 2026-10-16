@@ -29,6 +29,14 @@ void texpatch_apply(int i, uint32_t l, uint8_t *b, uint32_t w, uint32_t h, uint3
     (void)i; (void)l; (void)b; (void)w; (void)h; (void)r;
 }
 uint64_t kernel_heap_size(void) { return 2 << 20; }
+int SDL_GetNumLogicalCPUCores(void) { return 8; }
+
+typedef struct { VkComputePipelineCreateInfo info; VkPipeline pipe; _Atomic int state; } PipelineBuild;
+static void build_test_pipeline(void *arg) {
+    PipelineBuild *p = arg;
+    VkResult r = vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &p->info, NULL, &p->pipe);
+    vk_build_complete(&p->state, r == VK_SUCCESS ? 1 : 2);
+}
 
 static uint64_t code[256];
 static unsigned nc;
@@ -185,7 +193,13 @@ static void run(const char *dir, unsigned test) {
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                   .module = mod, .pName = "main", .pSpecializationInfo = &spec}};
     VkPipeline pipe;
-    VK_CHECK(vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &ci, NULL, &pipe));
+    if (test == 0) {
+        PipelineBuild build = {.info = ci};
+        run_job(build_test_pipeline, &build);
+        assert(vk_build_wait(&build.state) == 1 && build.pipe);
+        pipe = build.pipe; // first dispatch uses the completed background pipeline
+        puts("First-use Vulkan pipeline: background build completed before the first dispatch PASS");
+    } else VK_CHECK(vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &ci, NULL, &pipe));
     VkCommandBuffer cb = vk_cmd();
     vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_COMPUTE,pipe);
     vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_COMPUTE,pl,0,1,&ds,0,NULL);
