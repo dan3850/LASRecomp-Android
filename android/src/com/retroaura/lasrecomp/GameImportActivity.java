@@ -25,6 +25,9 @@ import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipEntry;
+import org.json.JSONObject;
 
 /**
  * The real Android application entry point. Users import their own extracted
@@ -45,6 +48,7 @@ public final class GameImportActivity extends Activity {
     private static final int PICK_GAME_FOLDER = 101;
     private static final int PICK_GAME_CODE = 102;
     private static final int PICK_SYSTEM_FONT = 103;
+    private static final int PICK_VULKAN_DRIVER = 104;
     // Test route only: the final release will compile this file inside the app.
     private static final long MAX_LIBRARY_BYTES = 1024L * 1024L * 1024L;
     private TextView status;
@@ -176,6 +180,23 @@ public final class GameImportActivity extends Activity {
         graphicsLogButton.setText("SALVAR DIAGNÓSTICO GRÁFICO (ZIP)");
         graphicsLogButton.setOnClickListener(v -> GraphicsDiagnostics.chooseDestination(this));
         layout.addView(graphicsLogButton);
+        Button driverButton = new Button(this);
+        driverButton.setText("DRIVER VULKAN: IMPORTAR TURNIP (ZIP)");
+        driverButton.setOnClickListener(v -> {
+            Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            picker.setType("application/zip");
+            picker.addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(picker, PICK_VULKAN_DRIVER);
+        });
+        layout.addView(driverButton);
+        Button systemDriver = new Button(this);
+        systemDriver.setText("DRIVER VULKAN: VOLTAR AO QUALCOMM");
+        systemDriver.setOnClickListener(v -> {
+            new File(new File(getFilesDir(), "gpu_driver"), "driver.active").delete();
+            new AlertDialog.Builder(this).setMessage("Driver Qualcomm selecionado para a próxima inicialização.")
+                .setPositiveButton("OK", null).show();
+        });
+        layout.addView(systemDriver);
         ScrollView scroller = new ScrollView(this);
         scroller.setFillViewport(false);
         scroller.setVerticalScrollBarEnabled(true);
@@ -510,6 +531,21 @@ public final class GameImportActivity extends Activity {
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (GraphicsDiagnostics.handleResult(this, requestCode, resultCode, data)) return;
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PICK_VULKAN_DRIVER) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Uri zip = data.getData();
+                new Thread(() -> {
+                    String result;
+                    try { result = installVulkanDriver(zip); }
+                    catch (Exception e) { result = "Falha ao importar driver: " + e.getMessage(); }
+                    final String message = result;
+                    runOnUiThread(() -> new AlertDialog.Builder(this)
+                        .setTitle("Driver Vulkan").setMessage(message)
+                        .setPositiveButton("OK", null).show());
+                }, "LASRecompDriverImport").start();
+            }
+            return;
+        }
         if (requestCode == PICK_SYSTEM_FONT) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 importing = true;
@@ -552,6 +588,83 @@ public final class GameImportActivity extends Activity {
         playButton.setEnabled(false);
         status.setText("Verificando arquivos externos e preparando o jogo...");
         new Thread(() -> importTree(tree), "LASRecompImport").start();
+    }
+
+
+    /** Import only an ARM64 native driver into app-private storage; never touch the system driver. */
+    private String installVulkanDriver(Uri source) throws Exception {
+        File base = new File(getFilesDir(), "gpu_driver");
+        File candidate = new File(getFilesDir(), "gpu_driver_pending");
+        if (!candidate.exists() && !candidate.mkdirs()) throw new java.io.IOException("Sem diretório privado");
+        JSONObject meta = null;
+        long total = 0;
+        try (ZipInputStream zip = new ZipInputStream(getContentResolver().openInputStream(source))) {
+            ZipEntry entry;
+            int entries = 0;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (++entries > 128) throw new java.io.IOException("ZIP com arquivos demais");
+                String name = entry.getName();
+                if (name.startsWith("/") || name.contains("..") || name.contains("\\\\"))
+                    throw new java.io.IOException("Caminho inseguro no ZIP");
+                if (entry.isDirectory()) continue;
+                if (name.equals("meta.json")) {
+                    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                    byte[] buf = new byte[4096]; int n;
+                    while ((n = zip.read(buf)) != -1) {
+                        if (out.size() + n > 65536) throw new java.io.IOException("meta.json inválido");
+                        out.write(buf, 0, n);
+                    }
+                    meta = new JSONObject(out.toString("UTF-8"));
+                    continue;
+                }
+                if (!name.endsWith(".so") || name.contains("/")) continue;
+                File dst = new File(candidate, name);
+                try (FileOutputStream out = new FileOutputStream(dst)) {
+                    byte[] buf = new byte[65536]; int n;
+                    while ((n = zip.read(buf)) != -1) {
+                        total += n;
+                        if (total > 256L * 1024L * 1024L)
+                            throw new java.io.IOException("Driver maior que 256 MB");
+                        out.write(buf, 0, n);
+                    }
+                }
+            }
+        }
+        if (meta == null) throw new java.io.IOException("ZIP sem meta.json");
+        String library = meta.optString("libraryName", "");
+        if (library.isEmpty() || library.contains("/") || library.contains("..") ||
+            !library.endsWith(".so")) throw new java.io.IOException("Nome da biblioteca inválido");
+        File elf = new File(candidate, library);
+        if (!elf.isFile() || elf.length() < 64) throw new java.io.IOException("Biblioteca não encontrada: " + library);
+        try (FileInputStream in = new FileInputStream(elf)) {
+            byte[] header = new byte[20];
+            if (in.read(header) != header.length || (header[0] & 255) != 127 ||
+                header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
+                header[4] != 2 || (header[18] & 255) != 183)
+                throw new java.io.IOException("Driver não é ELF ARM64");
+        }
+        if (meta.optInt("minApi", 0) > android.os.Build.VERSION.SDK_INT)
+            throw new java.io.IOException("Driver exige Android mais recente");
+        if (!base.exists() && !base.mkdirs()) throw new java.io.IOException("Não foi possível criar destino");
+        File[] previous = base.listFiles();
+        if (previous != null) for (File old : previous)
+            if (!old.getName().equals("driver.active") && old.isFile()) old.delete();
+        File[] entries = candidate.listFiles();
+        if (entries != null) for (File entry : entries) {
+            File dst = new File(base, entry.getName());
+            try (InputStream in = new FileInputStream(entry); FileOutputStream out = new FileOutputStream(dst)) {
+                byte[] buf = new byte[65536]; int n;
+                while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+            }
+            entry.delete();
+        }
+        candidate.delete();
+        // This marker is written last, after every library is present.
+        try (FileOutputStream marker = new FileOutputStream(new File(base, "driver.active"))) {
+            marker.write((library + "\n").getBytes(StandardCharsets.UTF_8));
+        }
+        return "Driver importado: " + meta.optString("name", library) +
+               ". Ele será usado ao iniciar o jogo. Se não funcionar, selecione Qualcomm.";
     }
 
     private List<Entry> children(Uri tree, String parentId) {
