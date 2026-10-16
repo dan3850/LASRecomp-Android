@@ -115,26 +115,6 @@ public final class GameImportActivity extends Activity {
         libraryButton.setOnClickListener(v -> selectGameCodeFile());
         layout.addView(libraryButton);
 
-        Button modsButton = new Button(this);
-        modsButton.setText("MODS");
-        modsButton.setOnClickListener(v -> {
-            if (importing) return;
-            modsButton.setEnabled(false);
-            new Thread(() -> {
-                File code = privateGameCodeFile();
-                if (!code.isFile()) code = new File(getApplicationInfo().nativeLibraryDir, "liblasgame.so");
-                boolean compatible;
-                try { compatible = nativeSupportsModMenu(code.getAbsolutePath()); }
-                catch (Throwable error) { compatible = false; }
-                final boolean prepared = compatible;
-                runOnUiThread(() -> {
-                    modsButton.setEnabled(true);
-                    if (!isFinishing() && !isDestroyed()) GameMods.show(this, prepared);
-                });
-            }, "LASRecompModCompatibility").start();
-        });
-        layout.addView(modsButton);
-
         // System fonts are console-owned, not stored in Zelda's NSP or our APK.
         // Users may import their own legitimate Switch Standard/NintendoExt font.
         fontButton = new Button(this);
