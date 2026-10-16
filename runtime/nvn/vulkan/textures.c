@@ -537,9 +537,16 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (glyph_atlas) {
         static unsigned reported;
         if (reported < 12 && (!b->uploaded || b->data_hash != h)) {
-            LOG("[glyph] atlas CPU update frame=%llu fmt=%#x bytes=%llu uploaded=%d dynamic=%d\n",
+            // The existence of an upload alone does not mean there are
+            // visible glyph pixels; report the actual CPU coverage.
+            uint64_t nonzero = 0;
+            if (t->format == 0x01) {
+                for (uint64_t j = 0; j < total; ++j)
+                    if (mem[j]) ++nonzero;
+            }
+            LOG("[glyph] atlas CPU update frame=%llu fmt=%#x bytes=%llu nonzero=%llu uploaded=%d dynamic=%d\n",
                 (unsigned long long)frame, t->format, (unsigned long long)total,
-                b->uploaded, b->dynamic);
+                (unsigned long long)nonzero, b->uploaded, b->dynamic);
             reported++;
         }
     }
@@ -749,6 +756,22 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         } else if (fmt_of(t->format).alpha_one) {
             sw.a = VK_COMPONENT_SWIZZLE_ONE;
         }
+    }
+    // The game's glyph atlas is a single-channel R8 coverage mask.
+    // On Vulkan the default R8 sample returns (R,0,0,1), so shaders
+    // consuming its G/B/A component cannot see the mask at all. Export
+    // the coverage in all channels for this specific atlas only.
+    // Other NVN textures, including scenery and UI images, are unchanged.
+    if (!render && t->format == 0x01 && t->width == 1024 && t->height == 2048) {
+        static unsigned glyph_swizzle_logged;
+        if (glyph_swizzle_logged++ < 3) {
+            const uint8_t *req = v && (v->setmask & 8) ? v->swizzle : t->swizzle;
+            LOG("[glyph] R8 atlas requested NVN swizzle=%u,%u,%u,%u; "
+                "Vulkan coverage swizzle=R,R,R,R (alpha from R)\n",
+                req[0], req[1], req[2], req[3]);
+        }
+        sw = (VkComponentMapping){VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
+                                  VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R};
     }
     VkImageViewType want = view_type_for(want_textype);
     VkImageViewType have = b->base_type;
