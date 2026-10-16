@@ -229,7 +229,7 @@ LC_ALL=C tr -d '\r' < third_party/smaa/SMAA.hlsl \
  | LC_ALL=C tr '\200-\377' '?' \
  | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$/\\n"/' \
  > "$OBJ/inc/smaa_hlsl.inc"
-INC=(-I"$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Ithird_party/imgui \
+INC=(-idirafter "$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Ithird_party/imgui \
  -Ithird_party/imgui/backends -Ithird_party/smaa/Textures \
  -I"$SDL_HEADERS" -I"$DEPS/shaderc/libshaderc/include" \
  -I"$DEPS/vma/include" -I"$DEPS/volk" -I"$OBJ/inc")
@@ -261,7 +261,7 @@ for src in "$ROOT"/runtime/ui/*.mm; do
  obj="$OBJ/ui/$(basename "$src").o"
  compile "$src" "$obj" clang++ -x c++ -std=c++17 \
   -DVK_NO_PROTOTYPES -DIMGUI_IMPL_VULKAN_USE_VOLK \
-  -I"$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Iruntime/ui -Ithird_party/imgui \
+  -idirafter "$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Iruntime/ui -Ithird_party/imgui \
   -Ithird_party/imgui/backends -I"$SDL_HEADERS" \
   -I"$FFDEST/include" -I"$DEPS/vma/include" -I"$DEPS/volk"
  UI+=("$obj")
