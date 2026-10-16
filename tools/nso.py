@@ -1,7 +1,6 @@
 """NSO loader: decompress segments, build the memory image, parse MOD0/dynamic info."""
 import struct
 import sys
-import lz4.block
 
 DT_NULL, DT_NEEDED, DT_PLTRELSZ, DT_HASH, DT_STRTAB, DT_SYMTAB, DT_RELA, DT_RELASZ = 0, 1, 2, 4, 5, 6, 7, 8
 DT_STRSZ, DT_JMPREL, DT_RELACOUNT = 10, 23, 0x6FFFFFF9
@@ -9,8 +8,9 @@ R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE = 2
 
 
 class Nso:
-    def __init__(self, path):
-        raw = open(path, 'rb').read()
+    def __init__(self, path, decompress=None):
+        with open(path, 'rb') as f:
+            raw = f.read()
         assert raw[:4] == b'NSO0', path
         flags = struct.unpack_from('<I', raw, 0xC)[0]
         self.build_id = raw[0x40:0x60].rstrip(b'\0').hex()
@@ -20,7 +20,11 @@ class Nso:
             comp_size = struct.unpack_from('<I', raw, 0x60 + i * 4)[0]
             data = raw[file_off:file_off + comp_size]
             if flags & (1 << i):
-                data = lz4.block.decompress(data, uncompressed_size=dec_size)
+                if decompress is None:
+                    import lz4.block
+                    data = lz4.block.decompress(data, uncompressed_size=dec_size)
+                else:
+                    data = decompress(data, dec_size)
             segs.append((mem_off, data))
         self.bss_size = struct.unpack_from('<I', raw, 0x3C)[0]
         self.text = (segs[0][0], len(segs[0][1]))

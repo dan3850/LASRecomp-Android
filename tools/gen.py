@@ -14,12 +14,7 @@ import sys
 import time
 from collections import Counter
 
-import unicorn as uc
-from unicorn import arm64_const as A
-
-from analyze import eh_frame_functions
 from lifter import Insn, Lifter, Unsupported, bits, emit_asm_batch, hx, sext
-from nso import Nso, R_AARCH64_RELATIVE
 
 SCRATCH_MEM = 0x7300000000
 
@@ -38,9 +33,12 @@ def sanitize(sym):
 
 
 class Module:
-    def __init__(self, name, path, base, simd='asm'):
+    def __init__(self, name, path, base, simd='asm', *, nso=None):
         self.name = name
-        self.nso = Nso(path)
+        if nso is None:
+            from nso import Nso
+            nso = Nso(path)
+        self.nso = nso
         self.base = base
         n = self.nso
         self.lo = base + n.text[0]
@@ -69,6 +67,8 @@ class Module:
         return ins
 
     def boundaries(self):
+        from analyze import eh_frame_functions
+        from nso import R_AARCH64_RELATIVE
         n, b = self.nso, self.base
         starts = set()
         for a in eh_frame_functions(n):
@@ -85,6 +85,8 @@ class Module:
     # ------------------------------------------------------------ jump tables
 
     def emu(self):
+        import unicorn as uc
+        from unicorn import arm64_const as A
         if self.mu is None:
             mu = uc.Uc(uc.UC_ARCH_ARM64, uc.UC_MODE_ARM)
             n = self.nso
@@ -130,11 +132,14 @@ class Module:
         return sorted(regs)
 
     def _set_index(self, mu, regs, i):
+        from unicorn import arm64_const as A
         for r in regs:
             mu.reg_write(A.UC_ARM64_REG_X0 + r if r < 29 else A.UC_ARM64_REG_X29, i)
 
     def _emulate_table(self, br_pc, entry, end, start, idx, count, set_at):
         """Run start..br for each index value (set at address set_at), collect targets."""
+        import unicorn as uc
+        from unicorn import arm64_const as A
         mu = self.emu()
         rn = bits(self.word(br_pc), 5, 5)
 
@@ -236,6 +241,8 @@ class Module:
         while start - 4 >= entry and cmp - (start - 4) <= 4 * 12 and self.lift(start - 4).kind in ('op', 'asm'):
             start -= 4
         idx_regs = self._index_regs(start, cmp, idx)
+        import unicorn as uc
+        from unicorn import arm64_const as A
         mu = self.emu()
         targets = []
 
