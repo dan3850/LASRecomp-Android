@@ -161,23 +161,37 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/las-fonttools"
           "$RUNNER_TEMP/las-fonttools/bin/pip" install --disable-pip-version-check -q "fonttools==4.60.1"
           export FONTTOOLS_PYTHON="$RUNNER_TEMP/las-fonttools/bin/python"
+          # Use Eden's synthesized emulator fonts, pinned to a reviewed
+          # upstream revision. They are GPL-2.0-or-later data: see
+          # docs/eden-built-in-fonts.md for distribution obligations.
+          EDEN_REF=d8c6c59b679867d2595fdc0953df033475e23380
+          EDEN_RAW="https://raw.githubusercontent.com/eden-emulator/mirror/$EDEN_REF/src/core/file_sys/system_archive/data"
+          mkdir -p "$RUNNER_TEMP/eden-fonts"
+          curl -fsSL --retry 3 "$EDEN_RAW/font_standard.cpp" -o "$RUNNER_TEMP/eden-fonts/font_standard.cpp"
+          curl -fsSL --retry 3 "$EDEN_RAW/font_nintendo_extended.cpp" -o "$RUNNER_TEMP/eden-fonts/font_nintendo_extended.cpp"
+          "$FONTTOOLS_PYTHON" tools/eden-builtin-fonts.py \
+            --standard-source "$RUNNER_TEMP/eden-fonts/font_standard.cpp" \
+            --extended-source "$RUNNER_TEMP/eden-fonts/font_nintendo_extended.cpp" \
+            --standard-output "$RUNNER_TEMP/eden-fonts/standard.ttf" \
+            --extended-output "$RUNNER_TEMP/eden-fonts/extension.ttf"
+          export LASRECOMP_EDEN_STANDARD_TTF="$RUNNER_TEMP/eden-fonts/standard.ttf"
+          export LASRECOMP_EDEN_EXTENDED_TTF="$RUNNER_TEMP/eden-fonts/extension.ttf"
           bash tools/build-android-termux.sh
-          # The existing com.retroaura.lasrecomp.bootdiag install uses a
-          # different CI-generated test signing key. Never tell users to
-          # uninstall it (their imported Zelda data belongs to that app).
-          # Build a parallel debug package from exactly the same engine.
-          sed -e 's/package="com.retroaura.lasrecomp.bootdiag"/package="com.retroaura.lasrecomp.bootdiag.controls"/' \
-              -e 's/LASRecomp Boot TESTE/LASRecomp Controles/g' \
-              android/bootstrap/AndroidManifest.xml > "$RUNNER_TEMP/las-controls-manifest.xml"
-          ANDROID_MANIFEST_OVERRIDE="$RUNNER_TEMP/las-controls-manifest.xml" \
+          # Isolate this font experiment from the installed .bootdiag and
+          # .bootdiag.controls test apps. CI signatures are ephemeral.
+          # Each Android package has its own private imported-game files.
+          sed -e 's/package="com.retroaura.lasrecomp.bootdiag"/package="com.retroaura.lasrecomp.bootdiag.fonts"/' \
+              -e 's/LASRecomp Boot TESTE/LASRecomp Fontes/g' \
+              android/bootstrap/AndroidManifest.xml > "$RUNNER_TEMP/las-fonts-manifest.xml"
+          ANDROID_MANIFEST_OVERRIDE="$RUNNER_TEMP/las-fonts-manifest.xml" \
             bash tools/build-android-termux.sh
           mv build/android-bootstrap/LASRecomp-Android.apk \
-            build/android-bootstrap/LASRecomp-Android-Controles-Paralelo.apk
+            build/android-bootstrap/LASRecomp-Android-Fontes-Eden-Paralelo.apk
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: LASRecomp-Android-Controles-ARM64-Paralelo
-          path: build/android-bootstrap/LASRecomp-Android-Controles-Paralelo.apk
+          name: LASRecomp-Android-Fontes-Eden-ARM64
+          path: build/android-bootstrap/LASRecomp-Android-Fontes-Eden-Paralelo.apk
           if-no-files-found: error
           retention-days: 14
