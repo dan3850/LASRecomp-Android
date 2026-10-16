@@ -215,6 +215,9 @@ clang -shared -fPIC -O2 -fvisibility=hidden -Wl,-z,max-page-size=16384 \
  android/prepare/loader_probe_module.c
 step "Empacotando APK novo (sem modificar motor)"
 STAGE="$OUT/stage"
+# Apaga somente o staging temporario do APK; nunca caches, fontes ou objetos.
+# Evita que uma liblasgame.so privada de uma rodada anterior vaze no APK atual.
+rm -rf -- "$STAGE"
 mkdir -p "$STAGE/lib/arm64-v8a" "$STAGE/assets" "$STAGE/dex" "$STAGE/classes"
 for so in "$SDL_SO" "$SHADERC_SO" "$RUNTIME" "$LIB/libmain.so" \
  "$LIB/liblasrecomp_prepare.so" "$LIB/liblasrecomp_probe.so"; do
@@ -259,6 +262,7 @@ for so in "$LIBDIR"/*.so; do
  done < <(llvm-readelf -d "$so" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
 done
 APK="$OUT/LASRecomp-Android-Termux.apk"
+rm -f -- "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml -o "$OUT/unsigned.apk"
 (cd "$STAGE" && zip -q -r "$OUT/unsigned.apk" lib assets)
 (cd "$STAGE/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
