@@ -12,6 +12,10 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = Path(__file__).resolve().parents[1]
+class Asset(C.Structure):
+    _fields_ = [("offset", C.c_uint64), ("size", C.c_uint64), ("original", C.c_bool)]
+
+
 OPEN = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_char_p, use_errno=True)
 
 
@@ -218,6 +222,10 @@ class StorageIntegrationTests(RomfsTestCase):
         cls.storage.test_storage_size.restype = C.c_uint64
         cls.storage.test_storage_read.argtypes = [C.c_void_p, C.c_uint64, C.c_uint64, C.c_uint64]
         cls.storage.test_storage_read.restype = C.c_uint32
+        cls.storage.romfs_asset_open.argtypes = [C.c_char_p, C.c_bool, C.POINTER(Asset)]
+        cls.storage.romfs_asset_open.restype = C.c_bool
+        cls.storage.romfs_asset_read.argtypes = [C.POINTER(Asset), C.c_void_p, C.c_size_t, C.c_uint64]
+        cls.storage.romfs_asset_read.restype = C.c_ssize_t
 
     def setUp(self):
         super().setUp()
@@ -321,6 +329,32 @@ class StorageIntegrationTests(RomfsTestCase):
                     "region_common/test": b"replacement longer than original",
                     "region_common/new-file": b"added file"})
                 self.storage.test_unmount()
+
+    def test_host_assets_for_movies_and_texture_references(self):
+        seed = Path(self.temp.name) / "seed"
+        (seed / "romfs/region_common").mkdir(parents=True)
+        (seed / "romfs/region_common/test").write_bytes(b"replacement data")
+        (seed / "romfs/region_common/added").write_bytes(b"new asset")
+        for directory in [True, False]:
+            if not directory:
+                (self.local / ".external-romfs-directory").unlink()
+                self.build_reference()
+            self.assertEqual(self.mount_storage(directory=directory, seed=seed), 0)
+            for original, expected in [(False, b"replacement data"), (True, b"original data")]:
+                asset = Asset()
+                self.assertTrue(self.storage.romfs_asset_open(b"region_common/test", original, C.byref(asset)))
+                self.assertEqual(asset.size, len(expected))
+                out = C.create_string_buffer(128)
+                self.assertEqual(self.storage.romfs_asset_read(C.byref(asset), out, 128, 0), len(expected))
+                self.assertEqual(out.raw[:asset.size], expected)
+                self.assertEqual(self.storage.romfs_asset_read(C.byref(asset), out, 5, asset.size), 0)
+                self.assertEqual(self.storage.romfs_asset_read(C.byref(asset), out, 5, asset.size + 1), -1)
+                self.assertEqual(self.storage.romfs_asset_read(C.byref(asset), out, 4, 3), 4)
+                self.assertEqual(out.raw[:4], expected[3:7])
+            self.assertTrue(self.storage.romfs_asset_open(b"region_common/added", False, C.byref(asset)))
+            self.assertFalse(self.storage.romfs_asset_open(b"region_common/added", True, C.byref(asset)))
+            self.assertFalse(self.storage.romfs_asset_open(b"region_common/missing", False, C.byref(asset)))
+            self.storage.test_unmount()
 
     def test_istorage_corrupt_image_rejected(self):
         (self.local / "romfs.bin").write_bytes(bytes(512))

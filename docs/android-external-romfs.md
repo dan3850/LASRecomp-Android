@@ -29,7 +29,8 @@ suportada. Quando a pasta selecionada já contém uma imagem, essa imagem é usa
    Diretórios vazios são preservados. A permissão persistente de leitura é
    obrigatória; permissão de escrita não é necessária.
 2. `GameSDLActivity.getGameRomfsIndex()` entrega somente o manifesto UTF-8 via
-   JNI. Mantém o mapa de nomes para URIs para não consultar cada ancestral a
+   JNI. Os callbacks SAF são registrados explicitamente no motor antes do boot,
+   sem depender da visibilidade de libmain via RTLD_DEFAULT. Mantém o mapa de nomes para URIs para não consultar cada ancestral a
    cada abertura de arquivo. O manifesto é reconstruído a cada montagem.
 3. `romfs_virtual.c` reproduz o formato e a ordem do gerador `romfs_build.c`:
    cabeçalho, área de dados em offsets virtuais, alinhamento de 16 bytes,
@@ -38,7 +39,11 @@ suportada. Quando a pasta selecionada já contém uma imagem, essa imagem é usa
 4. O IStorage usa a mesma função de leitura base para imagens e pastas. Uma
    leitura pode atravessar cabeçalho, vários arquivos, alinhamento e tabelas.
    Dados reais vêm de `pread` nos descritores originais fornecidos pelo SAF.
-5. Há cache LRU de até 32 descritores, protegido por mutex. Reset fecha todos
+5. Vídeos do jogo usam um AVIO com leitura e seek no mesmo backend, inclusive
+   quando os arquivos estão dentro de uma imagem legada. Texturas usadas como
+   referência também passam pelo backend, preservando o acesso aos originais
+   quando há um seed ativo. Nenhum desses consumidores exige uma cópia local.
+6. Há cache LRU de até 32 descritores, protegido por mutex. Reset fecha todos
    os descritores e libera mapas e tabelas. As camadas do randomizer continuam
    acima da leitura base, inclusive substituição e adição de arquivos.
 
@@ -84,13 +89,22 @@ CC=clang python3 tests/test_romfs_virtual.py
 bash -n compilar-lasrecomp-pasta-externa.sh
 ```
 
-Os 12 testes usam o backend C real e os handlers de produção de fsp-srv e
+Os 13 testes usam o backend C real e os handlers de produção de fsp-srv e
 IStorage. A ponte Android é substituída por descritores de arquivos sintéticos
 somente no harness dos testes. Cobrem igualdade byte a byte com o gerador
 existente, 1.200 leituras aleatórias, diretórios vazios, Unicode, arquivo
 esparso de 5.900.000.123 bytes, offsets acima de 4 GB, cache e concorrência,
 limites e overflow, arquivos alterados, permissão negada, pipes, remontagem,
-imagens antigas e overlays do randomizer.
+imagens antigas, overlays do randomizer e leitura dos arquivos usados por vídeos/texturas.
+
+O teste opcional abaixo usa o adaptador de vídeo de produção e FFmpeg real,
+com um WebM sintético de 16×16 pixels. Verifica abertura, demux, decodificação,
+seek, consulta de tamanho e EOF pelos dois backends. Requer FFmpeg CLI,
+headers/bibliotecas de desenvolvimento FFmpeg e Clang no host Linux.
+
+```bash
+CC=clang bash tests/test_movie_romfs.sh
+```
 
 A compilação Java é verificada com os headers Android 35 e a integração
 oficial SDL 3.2.22. O workflow `Android APK (arm64-v8a)` também executa os

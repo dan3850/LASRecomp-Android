@@ -5,6 +5,7 @@
  */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_system.h>
+#include "../../runtime/platform/android_documents.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -191,6 +192,18 @@ int SDL_main(int argc, char **argv) {
     }
 
     boot_mark(files, "motor loaded", 0);
+#ifdef __ANDROID__
+    typedef void (*SetDocumentBridge)(LasOpenDocument, LasRomfsManifest);
+    SetDocumentBridge set_documents = (SetDocumentBridge)dlsym(engine, "lasrecomp_android_set_document_bridge");
+    if (!set_documents) {
+        boot_mark(files, "engine missing SAF bridge registration", 4);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LASRecomp: incompatible engine; SAF bridge unavailable");
+        dlclose(engine);
+        return 4;
+    }
+    set_documents(lasrecomp_android_open_document_fd, lasrecomp_android_romfs_manifest);
+    boot_mark(files, "SAF document callbacks registered in engine", 0);
+#endif
     LASRecompStart start = (LASRecompStart)dlsym(engine, "lasrecomp_android_start");
     if (!start) {
         const char *reason = dlerror();

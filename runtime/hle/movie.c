@@ -13,6 +13,8 @@
 #include <libavformat/avformat.h>
 #include <libavutil/time.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/mem.h>
+#include <errno.h>
 #include <libswscale/swscale.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -20,6 +22,7 @@
 
 #include "../hle.h"
 #include "../settings.h"
+#include "../romfs_asset.h"
 
 #define MOVIE_EOS 4u
 
@@ -164,12 +167,68 @@ static void ok(Cpu *c) { c->x[0] = 0; }
 // ------------------------------------------------------------------ Extractor
 typedef struct {
     AVFormatContext *fmt;
+#ifdef __ANDROID__
+    AVIOContext *io;
+    RomfsAsset asset;
+    uint64_t cursor;
+#endif
     int map[16], ntracks;  // exposed track -> stream
     uint64_t selected;  // bitmask of streams
     AVPacket *pkt;
     bool have_pkt, eof;
     bool skippable;  // the launch opening (forced on the first launch, no save yet): A / B / + ends it
 } Extractor;
+
+static void ex_close_source(Extractor *e) {
+    if (!e) return;
+    if (e->fmt) avformat_close_input(&e->fmt);
+#ifdef __ANDROID__
+    if (e->io) {
+        av_freep(&e->io->buffer);
+        avio_context_free(&e->io);
+    }
+    e->cursor = 0;
+#endif
+    av_packet_free(&e->pkt);
+    e->ntracks = 0; e->selected = 0;
+    e->have_pkt = e->eof = false;
+}
+
+#ifdef __ANDROID__
+static int romfs_movie_read(void *opaque, uint8_t *buffer, int size) {
+    Extractor *e = opaque;
+    if (size <= 0) return AVERROR(EINVAL);
+    ssize_t n = romfs_asset_read(&e->asset, buffer, (size_t)size, e->cursor);
+    if (n < 0) return AVERROR(errno ? errno : EIO);
+    if (!n) return AVERROR_EOF;
+    e->cursor += (uint64_t)n;
+    return (int)n;
+}
+static int64_t romfs_movie_seek(void *opaque, int64_t offset, int whence) {
+    Extractor *e = opaque;
+    if (whence & AVSEEK_SIZE) return (int64_t)e->asset.size;
+    whence &= ~AVSEEK_FORCE;
+    int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? (int64_t)e->cursor :
+                   whence == SEEK_END ? (int64_t)e->asset.size : -1;
+    if (base < 0 || offset < -base || (offset > 0 && offset > INT64_MAX - base)) return AVERROR(EINVAL);
+    uint64_t target = (uint64_t)(base + offset);
+    if (target > e->asset.size) return AVERROR(EINVAL);
+    e->cursor = target;
+    return (int64_t)target;
+}
+static int ex_open_romfs(Extractor *e, const char *relative) {
+    if (!romfs_asset_open(relative, false, &e->asset)) return AVERROR(errno ? errno : EIO);
+    e->fmt = avformat_alloc_context();
+    uint8_t *buffer = av_malloc(64 * 1024);
+    if (!e->fmt || !buffer) { av_free(buffer); return AVERROR(ENOMEM); }
+    e->io = avio_alloc_context(buffer, 64 * 1024, 0, e, romfs_movie_read, NULL, romfs_movie_seek);
+    if (!e->io) { av_free(buffer); return AVERROR(ENOMEM); }
+    e->io->seekable = AVIO_SEEKABLE_NORMAL;
+    e->fmt->pb = e->io;
+    e->fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
+    return avformat_open_input(&e->fmt, relative, NULL, NULL);
+}
+#endif
 
 static bool g_skip_held;           // ex_fill: A / B held at the last look
 static double g_skip_pressed_at;    // when they were pressed (0 = not yet)
@@ -213,17 +272,26 @@ static void ex_fill(Extractor *e) {
 static void ex_set_data_source(Cpu *c) {
     Extractor *e = self_state(c);
     const char *path = (const char *)(uintptr_t)c->x[2];
-    // "rom:/region_common/movie/title.webm" -> extracted/romfs/region_common/movie/title.webm
     const char *rel = path && strstr(path, ":/") ? strstr(path, ":/") + 2 : path;
+    ex_close_source(e);
+    int opened;
+#ifdef __ANDROID__
+    LOG("[movie] open %s through mounted RomFS\n", path ? path : "(null)");
+    opened = rel ? ex_open_romfs(e, rel) : AVERROR(EINVAL);
+#else
     char host[1024];
     snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
-    if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
-        LOG("[movie] cannot open %s\n", host);
+    opened = avformat_open_input(&e->fmt, host, NULL, NULL);
+#endif
+    if (opened < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
+        LOG("[movie] cannot open %s\n", path ? path : "(null)");
+        ex_close_source(e);
         c->x[0] = 1;
         return;
     }
     e->pkt = av_packet_alloc();
+    if (!e->pkt) { ex_close_source(e); c->x[0] = 1; return; }
     e->ntracks = 0;
     // the opening at launch can always be skipped, vanilla and randomizer (with no save yet the game forces it)
     e->skippable = rel && strstr(rel, "movie/opening.webm");
@@ -345,7 +413,7 @@ static void movie_track(int kind, void *p, bool add) {
 
 static void ex_dtor(Cpu *c) {
     Extractor *e = self_state(c);
-    if (e && e->fmt) avformat_close_input(&e->fmt);
+    ex_close_source(e);
     if (e) movie_track(0, e, false);
     c->x[0] = 0;
 }
@@ -762,7 +830,7 @@ static void dec_dtor(Cpu *c) {
 RT_ON_RESET(movie_reset) {
     for (int i = 0; i < MAX_MOVIE_OBJS; i++) {
         Extractor *e = g_movie_objs[0][i];
-        if (e && e->fmt) avformat_close_input(&e->fmt);
+        ex_close_source(e);
         Decoder *d = g_movie_objs[1][i];
         if (d && d->ctx) avcodec_free_context(&d->ctx);
         g_movie_objs[0][i] = g_movie_objs[1][i] = NULL;

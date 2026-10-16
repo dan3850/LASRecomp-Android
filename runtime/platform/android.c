@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "../platform.h"
+#include "android_documents.h"
 
 #ifndef MAP_FIXED_NOREPLACE
 #define MAP_FIXED_NOREPLACE 0x100000
@@ -185,20 +186,22 @@ static bool remove_tree(const char *path) {
 }
 bool plat_remove_tree(const char *dir) { return dir && remove_tree(dir); }
 
-/* Resolve the SAF bridge exported by libmain.so at runtime. The returned
- * descriptor is owned by the caller. No content URI is used as a path. */
+static LasOpenDocument game_open_document;
+static LasRomfsManifest game_romfs_manifest;
+
+void lasrecomp_android_set_document_bridge(LasOpenDocument open_document, LasRomfsManifest manifest) {
+    game_open_document = open_document;
+    game_romfs_manifest = manifest;
+}
+
+/* The returned descriptor is owned by the caller. No content URI is a path. */
 int lasrecomp_external_open(const char *relative_path) {
     if (!relative_path || relative_path[0] == '/') { errno = EINVAL; return -1; }
-    typedef int (*OpenDocument)(const char *);
-    OpenDocument open_document = (OpenDocument)dlsym(RTLD_DEFAULT,
-                                      "lasrecomp_android_open_document_fd");
-    if (!open_document) { errno = ENOSYS; return -1; }
-    return open_document(relative_path);
+    if (!game_open_document) { errno = ENOSYS; return -1; }
+    return game_open_document(relative_path);
 }
 
 int lasrecomp_external_romfs_manifest(char **out, size_t *length) {
-    typedef int (*ReadManifest)(char **, size_t *);
-    ReadManifest read_manifest = (ReadManifest)dlsym(RTLD_DEFAULT, "lasrecomp_android_romfs_manifest");
-    if (!read_manifest) { errno = ENOSYS; return -1; }
-    return read_manifest(out, length);
+    if (!game_romfs_manifest) { errno = ENOSYS; return -1; }
+    return game_romfs_manifest(out, length);
 }

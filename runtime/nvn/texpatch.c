@@ -28,6 +28,7 @@
 #include "../input_bind.h"
 #include "../rando.h"
 #include "../settings.h"
+#include "../romfs_asset.h"
 #include "astc.h"
 #include "tegra.h"
 
@@ -68,9 +69,19 @@ static uint8_t *read_file(const char *p, size_t *len) {
 }
 
 static uint8_t *read_all(const char *rel, size_t *len) {  // (the game's own files, never a seed's)
+#ifdef __ANDROID__
+    RomfsAsset asset;
+    if (!romfs_asset_open(rel, true, &asset) || asset.size > (uint64_t)SIZE_MAX) return NULL;
+    *len = (size_t)asset.size;
+    uint8_t *data = malloc(*len ? *len : 1);
+    if (!data) return NULL;
+    if (romfs_asset_read(&asset, data, *len, 0) != (ssize_t)*len) { free(data); return NULL; }
+    return data;
+#else
     char p[1200];
     snprintf(p, sizeof p, "%s/%s", g_romfs_dir ? g_romfs_dir : "extracted/romfs", rel);
     return read_file(p, len);
+#endif
 }
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }

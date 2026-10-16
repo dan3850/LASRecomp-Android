@@ -13,6 +13,7 @@
 #include "../rando.h"
 #include "../ipc.h"
 #include "../romfs_virtual.h"
+#include "../romfs_asset.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -25,6 +26,7 @@ static RomfsVirtual *virtual_romfs;
 static uint64_t romfs_size;
 static bool romfs_mounted;
 static pthread_mutex_t romfs_mount_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t romfs_read_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Common base for the legacy image and the external directory. Randomizer
 // tables and IStorage must use this rather than bypassing the virtual backend.
@@ -439,7 +441,9 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b || size > b->size || size > (uint64_t)SSIZE_MAX || off > limit || size > limit - off) {
             resp->result = MAKE_RESULT(2, 6001); break;
         }
+        pthread_mutex_lock(&romfs_read_lock);
         ssize_t n = romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
+        pthread_mutex_unlock(&romfs_read_lock);
         if (n < 0 || (uint64_t)n != size) {
             LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
             resp->result = MAKE_RESULT(2, 4000);
@@ -475,7 +479,7 @@ static int open_external_romfs_file(void *context, const char *relative) {
 }
 #endif
 
-static Service *open_romfs_storage(void) {
+static bool ensure_romfs_mounted(void) {
     pthread_mutex_lock(&romfs_mount_lock);
     if (!romfs_mounted) {
         char path[1100];
@@ -521,16 +525,51 @@ static Service *open_romfs_storage(void) {
         if (!rom_index(romfs_fd)) goto failed;
         romfs_mounted = true;
     }
-    Storage *st = calloc(1, sizeof *st);
-    if (!st) goto failed;
-    st->fd = romfs_fd;
-    st->size = romfs_size;
     pthread_mutex_unlock(&romfs_mount_lock);
-    return service_new("IStorage(romfs)", storage, st);
+    return true;
 failed:
     fs_reset();
     pthread_mutex_unlock(&romfs_mount_lock);
-    return NULL;
+    return false;
+}
+
+static Service *open_romfs_storage(void) {
+    if (!ensure_romfs_mounted()) return NULL;
+    Storage *st = calloc(1, sizeof *st);
+    if (!st) return NULL;
+    st->fd = romfs_fd;
+    st->size = romfs_size;
+    return service_new("IStorage(romfs)", storage, st);
+}
+
+bool romfs_asset_open(const char *relative, bool original, RomfsAsset *asset) {
+    if (!relative || !asset) { errno = EINVAL; return false; }
+    if (!ensure_romfs_mounted()) return false;
+    for (int i = 0; i < rom_nfiles; i++) {
+        RomFile *file = rom_files + i;
+        if (strcmp(relative, file->path) || (original && file->off >= romfs_size)) continue;
+        *asset = (RomfsAsset){file->off, file->size, original};
+        if (!original && ov_meta && file->meta < ov_meta_size) {
+            uint64_t data;
+            memcpy(&data, ov_meta + file->meta + 8, 8);
+            memcpy(&asset->size, ov_meta + file->meta + 16, 8);
+            asset->offset = rom_data_off + data;
+        }
+        return true;
+    }
+    errno = ENOENT;
+    return false;
+}
+
+ssize_t romfs_asset_read(const RomfsAsset *asset, void *dst, size_t size, uint64_t off) {
+    if (!asset || (!dst && size) || off > asset->size || size > (size_t)SSIZE_MAX) { errno = EINVAL; return -1; }
+    if (size > asset->size - off) size = (size_t)(asset->size - off);
+    if (!size) return 0;
+    pthread_mutex_lock(&romfs_read_lock);
+    ssize_t n = asset->original ? romfs_base_read(romfs_fd, dst, size, asset->offset + off)
+                              : romfs_read(romfs_fd, dst, size, asset->offset + off);
+    pthread_mutex_unlock(&romfs_read_lock);
+    return n;
 }
 
 // ------------------------------------------------------------------ host-directory filesystem
