@@ -174,6 +174,12 @@ int SDL_main(int argc, char **argv) {
 
     // The engine is dlopen'ed after these environment values are populated.
     setenv("LASRECOMP_PRIVATE_FILES", files, 1);
+    // Use the same larecomp.ini edited by Android's video settings screen.
+    // Set before dlopen() and before the native engine calls settings_load().
+    char settings_path[PATH_MAX];
+    int settings_len = snprintf(settings_path, sizeof settings_path, "%s/larecomp.ini", files);
+    if (settings_len > 0 && settings_len < (int)sizeof settings_path)
+        setenv("LARECOMP_SETTINGS", settings_path, 1);
 #ifdef __ANDROID__
     JNIEnv *vkenv = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject vkactivity = SDL_GetAndroidActivity();
