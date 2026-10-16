@@ -163,7 +163,7 @@ static void counter_pace_diag_flush(void) {
     if (!counter_pace_diag.since_ns) counter_pace_diag.since_ns = now;
     if (now - counter_pace_diag.since_ns < 2000000000ull) return;
     if (counter_pace_diag.reports) {
-        LOG("[counter-pace] reports=%llu paired=%llu gpu-interval-avg=%.2fms peak=%.2fms >=16.67ms=%llu >=30ms=%llu pace-injection=%s\\n",
+        LOG("[counter-pace] reports=%llu paired=%llu gpu-interval-avg=%.2fms peak=%.2fms >=16.67ms=%llu >=30ms=%llu pace-injection=%s\n",
             (unsigned long long)counter_pace_diag.reports,
             (unsigned long long)counter_pace_diag.pairs,
             counter_pace_diag.pairs ? counter_pace_diag.sum_ms / counter_pace_diag.pairs : 0.0,
