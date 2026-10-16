@@ -141,7 +141,8 @@ static int vk_counter_mode(void) {
 // frames don't fit 60 (12 of the last 60 over 16.2 ms), the counters report a frame of at least PACE_SLOW_NS: the game
 // takes its 30 fps mode, at full speed. Back to the real times after 2 s with headroom (busy under 13 ms on average,
 // at most 2 of the last 60 frames over). The game itself also tries 60 again now and then.
-// LARECOMP_PACE=0: off.
+// Android test: leave the game's 30fps timing intervention disabled by default.
+// LARECOMP_PACE=1: opt in to the original behavior for A/B testing.
 #define PACE_SLOW_NS 20000000ull
 extern __thread uint64_t g_blocked_ns;  // kernel.c: this thread's time blocked in waits / sleeps
 static bool pace_slow;
@@ -149,7 +150,11 @@ static uint64_t stat_pace_over;
 
 void vk_pace_frame(void) {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("LARECOMP_PACE"); on = !e || atoi(e) != 0; }
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_PACE");
+        on = e && atoi(e) != 0;  // test build: default OFF; explicit 1 restores original intervention
+        LOG("[pace] 30fps timing intervention %s (LARECOMP_PACE=%s)\n", on ? "enabled" : "disabled", e ? e : "unset");
+    }
     static uint64_t last, last_wait;
     static uint8_t over[60];
     static int idx, nover, calm;
