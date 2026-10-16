@@ -52,8 +52,11 @@ echo "Compiled ${#OBJECTS[@]} real C++ UI sources for Android ARM64"
 # Require all the engine objects (including HLE section registries), not just
 # the small subset referenced by the entry point. The undefined-symbol check
 # catches missing renderer dependencies before packaging.
+# DF_1_GLOBAL also makes those exports visible to Bionic relocations when
+# liblasgame.so is dlopen'ed by the independent preparation/import library.
 LIB="$BUILDDIR/lib/arm64-v8a/liblasrecomp_runtime.so"
 "$CXX" -shared -Wl,-z,max-page-size=16384 -Wl,--no-undefined \
+    -Wl,-z,global \
     -Wl,-soname,liblasrecomp_runtime.so \
     -o "$LIB" "${OBJECTS[@]}" "$ROOT/build/android-runtime-objects/hle/movie.o" \
     -Wl,--whole-archive "$CORE" "$RENDER" -Wl,--no-whole-archive \
@@ -61,4 +64,11 @@ LIB="$BUILDDIR/lib/arm64-v8a/liblasrecomp_runtime.so"
     -lSDL3 -lshaderc_shared -lavformat -lavcodec -lavutil -lswscale \
     -llog -landroid -ldl -lz -lm
 "$READELF" -h "$LIB" | grep -q 'AArch64'
+"$READELF" -d "$LIB" | grep -E 'FLAGS_1.*GLOBAL' >/dev/null
+RUNTIME_EXPORTS="$("$TOOL/llvm-nm" -D --defined-only "$LIB")"
+for symbol in g_fnprof fnprof_hit rt_mod_nop; do
+    grep -Eq "[[:space:]]$symbol$" <<< "$RUNTIME_EXPORTS" || {
+        echo "Android runtime missing export: $symbol" >&2; exit 1;
+    }
+done
 echo "FULL_RUNTIME_LINKED=$LIB"

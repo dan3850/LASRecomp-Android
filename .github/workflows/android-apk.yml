@@ -30,6 +30,7 @@ jobs:
           bash -n tools/build-android-lasgame.sh
           bash -n tools/build-android-termux.sh
           python3 -m py_compile tools/gen.py
+          python3 tests/test_android_runtime_link.py
       # GitHub's Ubuntu runner already includes Android sdkmanager.
       - name: Install SDK platform, build tools, and NDK
         run: |

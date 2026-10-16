@@ -299,7 +299,10 @@ for src in "$ROOT"/runtime/ui/*.mm; do
  UI+=("$obj")
 done
 RUNTIME="$LIB/liblasrecomp_runtime.so"
+# Bionic's relocation group uses ELF DF_1_GLOBAL, not just dlopen's
+# RTLD_GLOBAL. The separate importer and game modules need these exports.
 clang++ -shared -Wl,-z,max-page-size=16384 -Wl,--no-undefined \
+ -Wl,-z,global \
  -Wl,-soname,liblasrecomp_runtime.so -o "$RUNTIME.tmp" "${UI[@]}" \
  -Wl,--whole-archive "$LIB/liblasrecomp-core.a" \
  "$LIB/liblasrecomp-renderer.a" -Wl,--no-whole-archive \
@@ -308,6 +311,13 @@ clang++ -shared -Wl,-z,max-page-size=16384 -Wl,--no-undefined \
  "$FFDEST/lib/libavformat.a" "$FFDEST/lib/libavcodec.a" \
  "$FFDEST/lib/libavutil.a" "$FFDEST/lib/libswscale.a" \
  "$FFDEST/lib/libswresample.a" -Wl,--end-group -llog -landroid -ldl -lz -lm
+llvm-readelf -d "$RUNTIME.tmp" | grep -E 'FLAGS_1.*GLOBAL' >/dev/null ||
+ fail "Motor sem DF_1_GLOBAL: a biblioteca do jogo nao resolveria os simbolos no Android."
+RUNTIME_EXPORTS="$(llvm-nm -D --defined-only "$RUNTIME.tmp")"
+for symbol in g_fnprof fnprof_hit rt_mod_nop; do
+ grep -Eq "[[:space:]]$symbol$" <<< "$RUNTIME_EXPORTS" ||
+  fail "Motor nao exporta $symbol; APK nao sera empacotado."
+done
 mv -f "$RUNTIME.tmp" "$RUNTIME"
 step "Compilando SDL_main e bibliotecas do app"
 clang -shared -fPIC -O2 -Wl,-z,max-page-size=16384 \

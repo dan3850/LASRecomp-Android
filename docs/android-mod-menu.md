@@ -39,6 +39,25 @@ Reutiliza os objetos completos e compila apenas os arquivos afetados e a
 identificacao de compatibilidade. Arquivos privados novos ficam na subpasta
 `build/private-android-lasgame-termux/stable60-menu` do workspace do jogador.
 
+### Se a importacao falhou com `cannot locate symbol "g_fnprof"`
+
+O motor dos APKs anteriores era aberto com `RTLD_GLOBAL`, mas nao continha
+a flag ELF `DF_1_GLOBAL`. O Bionic usa essa flag para incluir uma biblioteca
+no grupo global de relocacao. Assim, o importador separado nao conseguia
+resolver os simbolos do motor ao carregar o codigo do jogo. Referencia:
+[grupo global de relocacao do Bionic](https://android.googlesource.com/platform/bionic/+/refs/heads/main/linker/linker_namespaces.cpp#124).
+
+Os dois caminhos de compilacao do motor agora usam `-Wl,-z,global` e conferem
+a flag e os exports reais `g_fnprof`, `fnprof_hit` e `rt_mod_nop` antes de
+empacotar. Nao sao criadas copias privadas desses simbolos dentro do jogo.
+
+Atualize e compile o APK pelo comando acima, instale-o por cima da mesma
+instalacao, feche completamente e reabra. Importe novamente o mesmo
+`Download/LASRecomp/Mods-menu/liblasgame.so`. Esta correcao exige atualizar
+o **APK**, sem regenerar o NSO, o codigo C ou a biblioteca privada ja preparada.
+O APK assinado fica em `Download/LASRecomp/LASRecomp-pasta-externa-<commit>-signed.apk`.
+A tentativa recusada preservou a biblioteca que ja estava instalada.
+
 ## Integracao e diferencas para o Eden
 
 Referencia examinada: mirror publico do Eden, commit
@@ -76,6 +95,11 @@ Os enderecos do PCHTXT sao convertidos a partir dos offsets com cabecalho NSO:
 - `mod_library_test.c`: exercita as funcoes JNI de compatibilidade/validacao
   com handles de linker simulados, verificando biblioteca antiga, ABI errada,
   dependencia ausente, permissoes e arquitetura. Nao executa codigo do jogo.
+- `test_android_runtime_link.py`: usa as opcoes dos dois linkadores de producao,
+  verifica `DF_1_GLOBAL` no ELF e carrega C sintetico do gerador com o profiler
+  e hook reais em processos novos. Confere que ambos compartilham o mesmo
+  `g_fnprof`, sem substitutos no codigo do jogo. Falha com os dois scripts
+  anteriores. A execucao e no host, sem simular o linker Bionic.
 - Compilacao de todos os Java do app com SDL3 contra o Android SDK existente.
 - Verificacao de compilacao dos novos caminhos C/JNI no host com `__ANDROID__`.
 
