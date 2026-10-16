@@ -1,5 +1,6 @@
 // NSO loading, relocation, and symbol resolution.
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 #include "rt.h"
@@ -39,6 +40,21 @@ static size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, si
 
 static uint8_t *read_file(const char *path, size_t *len) {
     FILE *f = fopen(path, "rb");
+#ifdef __ANDROID__
+    if (!f) {
+        // NSO modules can be read from the persisted SAF game tree.
+        // The original path is <root>/exefs/{main,sdk,...}.
+        const char *part = strstr(path, "/exefs/");
+        if (part) {
+            extern int lasrecomp_external_open(const char *relative_path);
+            int fd = lasrecomp_external_open(part + 1);
+            if (fd >= 0) {
+                f = fdopen(fd, "rb");
+                if (!f) close(fd);
+            }
+        }
+    }
+#endif
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
     *len = ftell(f);
