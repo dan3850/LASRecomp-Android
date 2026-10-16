@@ -4,6 +4,7 @@
 #include <float.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -534,13 +535,16 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     // Glyph atlases are sparse CPU writes. Mark linear textures dynamic BEFORE
     // throttling so new characters are never missed by the strided hash.
     if (t->flags & 0x10) b->dynamic = true;
-    if (b->uploaded && b->checked_frame == frame) return;
+    uint64_t cpu_writes = t->flags & 0x10 ? vk_cpu_write_generation() : 0;
+    bool flushed = b->checked_cpu_writes != cpu_writes;
+    if (b->uploaded && b->checked_frame == frame && b->checked_cpu_writes == cpu_writes) return;
     if (b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb) return;
     VkFmt mf = fmt_of(t->format);
     uint64_t total = tegra_total_size(&t->layout);
     b->checked_frame = frame;
+    b->checked_cpu_writes = cpu_writes;
     prof_tex_checks++;
     if (t->flags & 0x10) b->dynamic = true;
     if (full_hash_budget_frame != frame) { full_hash_budget_frame = frame; full_hash_budget = 4 << 20; }
@@ -557,7 +561,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     // ~2.4 MB a frame in the overworld). The periodic full hash stays as a safety net. LARECOMP_VK_TEX_WATCH=0: off.
     static int watch = -1;
     if (watch < 0) { const char *e = getenv("LARECOMP_VK_TEX_WATCH"); watch = !e || atoi(e) != 0; }
-    if (watch && !always_full) {
+    if (watch && !always_full && !flushed) {
         extern int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now);
         uint32_t now = 0;
         int ch = vk_pages_changed(t->addr, total, b->wgen, &now);
@@ -581,6 +585,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (b->uploaded && h == b->data_hash && !restyle) return;
     if (b->uploaded && h != b->data_hash) b->dynamic = true;
     if (b->tp > 0) b->tp_gen = texpatch_generation();
+    bool replacing = b->uploaded;
     b->data_hash = h;
     b->uploaded = true;
     if (b->format != mf.vf && !b->astc_bw && !b->bcn_format) {
@@ -592,6 +597,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
         vk_diag_event(VD_GLYPH_UPLOAD, "R8 linear texture=%llu %ux%u stride=%llu hash=%llx",
             (unsigned long long)t->debug_id, t->width, t->height, (unsigned long long)t->stride, (unsigned long long)h);
     VkCommandBuffer cb = vk_upload_cmd();
+    if (replacing) vk_full_barrier(cb); // order repeated uploads of the same atlas, including within one submission
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers > b->layers && b->depth == 1) layers = b->layers;
     uint64_t layer_size = tegra_layer_size(&t->layout);
@@ -694,7 +700,13 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
 
 void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
-void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
+// NVN explicitly flushes CPU-rasterized glyphs. The texture/view memo must not
+// suppress that update merely because another string used the atlas this frame.
+static _Atomic uint64_t cpu_write_generation;
+uint64_t vk_cpu_write_generation(void) { return atomic_load(&cpu_write_generation); }
+void backend_pool_written(uint64_t addr, uint64_t size) {
+    if (addr && size) atomic_fetch_add(&cpu_write_generation, 1);
+}
 
 // Host-produced texel data (decoded video, any thread): applied on the render thread at the texture's next use.
 void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {

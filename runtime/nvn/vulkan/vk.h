@@ -82,6 +82,7 @@ typedef struct TexBackend {
     VkImageAspectFlags aspect;
     bool gpu_owned, uploaded, dynamic;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
+    uint64_t checked_cpu_writes; // explicit CPU flushes can update a glyph atlas within the same frame
     uint32_t wgen;  // page write tracking generation at the last upload check (textures.c)
     bool scalable, presented;
     uint64_t touched_frame, frame_cleared;
@@ -107,6 +108,7 @@ VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uin
 VkImageView vk_dummy_view(int textype);
 VkSampler vk_sampler(NvnSamplerDesc *d);
 VkSampler vk_default_sampler(bool linear);
+uint64_t vk_cpu_write_generation(void);
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);
 // Destruction once every submission that may use the object has completed.
 void vk_defer_image(VkImage img, VmaAllocation mem);

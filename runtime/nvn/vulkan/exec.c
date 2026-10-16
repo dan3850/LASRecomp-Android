@@ -14,6 +14,7 @@
 #include "shaders.h"
 #include "vk.h"
 #include "diagnostics.h"
+#include "gmem.h"
 #include "../bcn_decode.h"
 #include "../renderer.h"
 #include "../../settings.h"
@@ -74,6 +75,7 @@ static void wait_account(uint64_t ns) {
 }
 
 static void cq_resolve_done(uint64_t done);
+static void gmem_resolve_done(uint64_t done);
 
 void vk_wait_seq(uint64_t seq) {
     if (!seq) { wait_why = NULL; return; }
@@ -85,7 +87,10 @@ void vk_wait_seq(uint64_t seq) {
     cum_wait += SDL_GetTicksNS() - t0;
     wait_account(SDL_GetTicksNS() - t0);
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
-    else if (r == VK_SUCCESS) cq_resolve_done(seq);  // (the game reads its timing counters after waiting)
+    else if (r == VK_SUCCESS) {
+        gmem_resolve_done(seq); // guest-visible compute stores must precede the fence return
+        cq_resolve_done(seq);
+    }
     else {
         extern void vk_devlost_dump(void);
         vk_devlost_dump();
@@ -576,7 +581,7 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
 // Guest memory copied once per submission: draws binding the same range share the copy.
 #define GCOPY_TAB 4096
 static struct { uint64_t addr, size, seq; VkSpan span; } gcopy[GCOPY_TAB];
-static uint64_t gcopy_gen;  // bumped to drop every shared copy (guest memory written mid-list)
+static _Atomic uint64_t gcopy_gen;  // also invalidated by compute completion on a waiting CPU thread
 static void guest_copy_flush(void) { gcopy_gen++; }
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     uint64_t seq = vk_pending_seq() + (gcopy_gen << 40), h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
@@ -2019,28 +2024,9 @@ static void gfast_prepare(VkCommandBuffer cb) {
     memset(gmap_tab, 0, sizeof gmap_tab);
     gfast_n = 0;
     gmem_info();  // (the heap import, made on first use)
-    gfast_info();
-    if (!gmem_buf && st.program && st.program->stages[5].code_addr) {
-        static uint64_t seen[12];
-        static unsigned nseen;
-        uint64_t shader = st.program->stages[5].code_addr;
-        bool known = false;
-        for (unsigned k = 0; k < nseen; ++k)
-            if (seen[k] == shader) { known = true; break; }
-        if (!known && nseen < 12) {
-            seen[nseen++] = shader;
-            LOG("[gmem-compute] shader=%llx host_import=%d heap=%llu mapped=0",
-                (unsigned long long)shader, g_vk.host_import,
-                (unsigned long long)kernel_heap_size());
-            for (int i = 0; i < 16; ++i)
-                if (st.sbuf[5][i].addr && st.sbuf[5][i].size)
-                    LOG(" sb%d=%llx+%llx", i,
-                        (unsigned long long)st.sbuf[5][i].addr,
-                        (unsigned long long)st.sbuf[5][i].size);
-            LOG("\\n");
-        }
-    }
+    gmap_tab[GMAP_MAX * 4 + 1] = gmem_buf != VK_NULL_HANDLE;
     if (!on || !gmem_buf) return;
+    gfast_info();
     struct { uint64_t lo, hi; } r[16];
     int n = 0;
     for (int i = 0; i < 16; i++) {  // heap offsets of the bound storage buffers, 256-aligned
@@ -2093,6 +2079,139 @@ static void gfast_finish(VkCommandBuffer cb) {
     vkCmdCopyBuffer(cb, gfast_buf, gmem_buf, (uint32_t)gfast_n, back);
     vk_full_barrier(cb);
     gfast_n = 0;
+}
+
+// Portable GMEM: one immutable packed input per draw/dispatch. Storing compute
+// dispatches own host-cached output allocations until their timeline value is
+// complete. No shared scratch reuse and no unconditional wait after a dispatch.
+// A later CPU snapshot of an overlapping range resolves the dependency first.
+typedef struct GmemWrite {
+    struct GmemWrite *next;
+    uint64_t seq;
+    GmemPlan plan;
+    VkBuffer buf;
+    VmaAllocation mem;
+    uint8_t *before, *after;
+} GmemWrite;
+static GmemWrite *gmem_writes, **gmem_tail = &gmem_writes;
+static pthread_mutex_t gmem_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic bool gmem_pending;
+
+static void gmem_resolve_done(uint64_t done) {
+    pthread_mutex_lock(&gmem_lock);
+    while (gmem_writes && gmem_writes->seq <= done) {
+        GmemWrite *w = gmem_writes;
+        VK_CHECK(vmaInvalidateAllocation(g_vk.vma, w->mem, 0, w->plan.size));
+        for (unsigned i = 0; i < w->plan.tab[GMAP_MAX * 4]; ++i) {
+            uint64_t off = (uint64_t)w->plan.tab[i * 4 + 2] * 4;
+            gmem_apply((uint8_t *)(uintptr_t)(HEAP_BASE + w->plan.tab[i * 4]),
+                       w->before + off, w->after + off, w->plan.tab[i * 4 + 1]);
+            backend_pool_written(HEAP_BASE + w->plan.tab[i * 4], w->plan.tab[i * 4 + 1]);
+        }
+        guest_copy_flush();
+        gmem_writes = w->next;
+        vmaDestroyBuffer(g_vk.vma, w->buf, w->mem);
+        free(w->before);
+        free(w);
+    }
+    if (!gmem_writes) { gmem_tail = &gmem_writes; atomic_store(&gmem_pending, false); }
+    pthread_mutex_unlock(&gmem_lock);
+}
+
+static bool gmem_overlaps(uint64_t addr, uint64_t size) {
+    if (!addr || !size || !atomic_load(&gmem_pending)) return false;
+    bool overlap = false;
+    pthread_mutex_lock(&gmem_lock);
+    for (GmemWrite *w = gmem_writes; w && !overlap; w = w->next)
+        for (unsigned i = 0; i < w->plan.tab[GMAP_MAX * 4]; ++i) {
+            uint64_t start = HEAP_BASE + w->plan.tab[i * 4], len = w->plan.tab[i * 4 + 1];
+            if (addr >= start ? addr - start < len : start - addr < size) { overlap = true; break; }
+        }
+    pthread_mutex_unlock(&gmem_lock);
+    return overlap;
+}
+
+// Preflight only, before beginning a render pass or capturing its command buffer.
+// renderer_flush may switch submission slots, so never call this during a draw.
+static void gmem_read_range(uint64_t addr, uint64_t size) {
+    if (!gmem_overlaps(addr, size)) return;
+    wait_why = "compute -> CPU snapshot";
+    renderer_flush();
+    if (gmem_overlaps(addr, size)) FATAL("portable GMEM dependency did not complete after the GPU wait\n");
+}
+
+static void gmem_read_texture(NvnTexture *t) {
+    const TexBackend *b = t ? t->backend : NULL;
+    if (t && (!b || !b->gpu_owned))
+        gmem_read_range(t->addr, t->flags & 0x10 ? t->stride * t->height : tegra_total_size(&t->layout));
+}
+
+static void gmem_read_stage(int stage, ShaderInfo *si) {
+    if (st.program) {
+        NvnShaderStage *ss = &st.program->stages[stage];
+        gmem_read_range(ss->code_addr + ss->const_offset, ss->const_size);
+    }
+    if (si->uses_gmem)
+        for (int i = 0; i < 16; ++i) gmem_read_range(st.sbuf[stage][i].addr, st.sbuf[stage][i].size);
+    for (int i = 0; i < 18; ++i) gmem_read_range(st.ubuf[stage][i].addr, st.ubuf[stage][i].size);
+    for (int i = 0; i < si->ntex; ++i) {
+        gmem_read_texture(shader_texture_object(stage, &si->tex[i]));
+    }
+}
+
+static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t *tab) {
+    GmemRange ranges[GMAP_MAX] = {0};
+    for (int i = 0; i < 16; ++i) ranges[i] = (GmemRange){st.sbuf[stage][i].addr, st.sbuf[stage][i].size};
+    // NVN's compute driver constants also expose uniform-buffer GPU addresses.
+    // LDG through those addresses must see real data, just as with the imported
+    // heap; mapping only the storage bindings misses these legal reads.
+    for (int i = 0; i < 18; ++i) ranges[16 + i] = (GmemRange){st.ubuf[stage][i].addr, st.ubuf[stage][i].size};
+    if (st.program) {
+        NvnShaderStage *ss = &st.program->stages[stage];
+        ranges[34] = (GmemRange){ss->code_addr + ss->const_offset, ss->const_size};
+    }
+    GmemPlan plan;
+    if (!gmem_plan(&plan, ranges, GMAP_MAX, HEAP_BASE, kernel_heap_size(), g_vk.props.limits.maxStorageBufferRange))
+        FATAL("portable GMEM exceeds the device's storage-buffer range\n");
+    memcpy(tab, plan.tab, sizeof plan.tab);
+    if (!plan.size) return (VkDescriptorBufferInfo){0};
+    VkSpan span;
+    GmemWrite *w = NULL;
+    if (store) {
+        w = calloc(1, sizeof *w);
+        if (!w || !(w->before = malloc(plan.size))) FATAL("portable GMEM allocation failed\n");
+        w->plan = plan;
+        w->seq = vk_pending_seq();
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = plan.size,
+                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+            .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+        VmaAllocationInfo info;
+        VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &w->buf, &w->mem, &info));
+        w->after = info.pMappedData;
+        span = (VkSpan){w->buf, 0, w->after};
+    } else span = vk_transient(plan.size, 256);
+    for (unsigned i = 0; i < plan.tab[GMAP_MAX * 4]; ++i)
+        memcpy((uint8_t *)span.ptr + (uint64_t)plan.tab[i * 4 + 2] * 4,
+               (const void *)(uintptr_t)(HEAP_BASE + plan.tab[i * 4]), plan.tab[i * 4 + 1]);
+    if (w) {
+        memcpy(w->before, span.ptr, plan.size);
+        VK_CHECK(vmaFlushAllocation(g_vk.vma, w->mem, 0, plan.size));
+        pthread_mutex_lock(&gmem_lock);
+        *gmem_tail = w;
+        gmem_tail = &w->next;
+        atomic_store(&gmem_pending, true);
+        pthread_mutex_unlock(&gmem_lock);
+    }
+    return (VkDescriptorBufferInfo){span.buf, span.off, plan.size};
+}
+
+static void gmem_host_barrier(VkCommandBuffer cb) {
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &di);
 }
 
 // ---- vertex / index cache
@@ -2325,6 +2444,7 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    gmem_resolve_done(vk_completed_seq());
     memset(prog_tab, 0, sizeof prog_tab);
     memset(pipe_tab, 0, sizeof pipe_tab);
     g_cs_n = 0;
@@ -2366,15 +2486,17 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
             extern uint64_t vk_frame_counter(void);
             static int nomemo = -1;
             if (nomemo < 0) nomemo = getenv("LARECOMP_VK_NO_TEX_MEMO") != NULL;
-            static struct { NvnTexture *tex; uint64_t vh, frame; uint32_t gen; uint8_t type, has_view; VkImageView view; } memo[1024];
+            static struct { NvnTexture *tex; uint64_t vh, frame, cpu_writes; uint32_t gen; uint8_t type, has_view; VkImageView view; } memo[1024];
             uint64_t vh = e->has_view ? hash_words(0, &e->view, sizeof e->view) : 0, frame = vk_frame_counter();
+            uint64_t cpu_writes = e->tex->flags & 0x10 ? vk_cpu_write_generation() : 0;
             uint32_t ms = (uint32_t)((((uintptr_t)e->tex >> 4) ^ vh ^ (uint64_t)st_->type * 0x9E3779B97F4A7C15ull) & 1023);
             if (!nomemo && memo[ms].tex == e->tex && memo[ms].vh == vh && memo[ms].frame == frame && memo[ms].gen == vk_view_gen &&
-                memo[ms].type == st_->type && memo[ms].has_view == e->has_view) {
+                memo[ms].type == st_->type && memo[ms].has_view == e->has_view && memo[ms].cpu_writes == cpu_writes) {
                 view = memo[ms].view;
             } else {
                 view = vk_view(naliases ? alias_read(e->tex) : e->tex, &e->view, e->has_view, false, st_->type);
                 memo[ms].tex = e->tex; memo[ms].vh = vh; memo[ms].frame = frame; memo[ms].gen = vk_view_gen;
+                memo[ms].cpu_writes = cpu_writes;
                 memo[ms].type = (uint8_t)st_->type; memo[ms].has_view = e->has_view; memo[ms].view = view;
             }
             renderer_texture_scale(e->tex, &sc[0], &sc[1]);
@@ -2397,86 +2519,6 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     *out = (VkDescriptorImageInfo){smp, view, VK_IMAGE_LAYOUT_GENERAL};
 }
 
-// Per-draw read-only graphics mapping: each descriptor set owns a transient
-// snapshot, preventing later draws from overwriting its storage bytes.
-static VkDescriptorBufferInfo graphics_gmem_map(int stage, uint32_t tab[(GMAP_MAX + 1) * 4]) {
-    memset(tab, 0, sizeof(uint32_t) * (GMAP_MAX + 1) * 4);
-    uint64_t heap = kernel_heap_size();
-    struct { uint64_t start, end; } ranges[16];
-    unsigned nr = 0;
-    for (int i = 0; i < 16; ++i) {
-        uint64_t addr = st.sbuf[stage][i].addr, size = st.sbuf[stage][i].size;
-        if (!addr || !size || addr < HEAP_BASE || addr - HEAP_BASE >= heap ||
-            size > heap - (addr - HEAP_BASE)) continue;
-        uint64_t start = (addr - HEAP_BASE) & ~3ull;
-        uint64_t end = (addr - HEAP_BASE + size + 3) & ~3ull;
-        if (end > heap) end = heap & ~3ull;
-        if (end <= start) continue;
-        unsigned at = nr++;
-        while (at && ranges[at - 1].start > start) {
-            ranges[at] = ranges[at - 1];
-            --at;
-        }
-        ranges[at].start = start;
-        ranges[at].end = end;
-    }
-    // Merge overlapping or touching buffers: gfind() must never return an
-    // earlier, shorter alias of the same guest address range.
-    unsigned merged = 0;
-    for (unsigned i = 0; i < nr; ++i) {
-        if (merged && ranges[i].start <= ranges[merged - 1].end) {
-            if (ranges[i].end > ranges[merged - 1].end)
-                ranges[merged - 1].end = ranges[i].end;
-        } else {
-            ranges[merged++] = ranges[i];
-        }
-    }
-    uint64_t total = 0;
-    uint64_t omitted_bytes = 0;
-    unsigned omitted_ranges = 0;
-    unsigned mapped = 0;
-    for (unsigned i = 0; i < merged; ++i) {
-        uint64_t len = ranges[i].end - ranges[i].start;
-        if (len > (1024ull << 10) - total) {
-            omitted_bytes += len;
-            ++omitted_ranges;
-            continue;
-        }
-        tab[mapped * 4] = (uint32_t)ranges[i].start;
-        tab[mapped * 4 + 1] = (uint32_t)len;
-        tab[mapped * 4 + 2] = (uint32_t)(total >> 2);
-        total += len;
-        ++mapped;
-    }
-    // Diagnostic only: one record per shader/stage. This tracks declared
-    // storage-buffer coverage, not dynamic LDG misses inside the GPU.
-    if (!g_vk.host_import) {
-        static struct { uint64_t shader; int stage; } seen[32];
-        static unsigned nseen;
-        uint64_t shader = st.program ? st.program->stages[stage].code_addr : 0;
-        bool known = false;
-        for (unsigned k = 0; k < nseen; ++k)
-            if (seen[k].shader == shader && seen[k].stage == stage) { known = true; break; }
-        if (!known && nseen < 32) {
-            seen[nseen].shader = shader;
-            seen[nseen++].stage = stage;
-            LOG("[gmem-map-coverage] stage=%d shader=%llx declared=%u mapped=%u bytes=%llu omitted=%u omitted_bytes=%llu heap=%llu\n",
-                stage, (unsigned long long)shader, merged, mapped,
-                (unsigned long long)total, omitted_ranges,
-                (unsigned long long)omitted_bytes,
-                (unsigned long long)heap);
-        }
-    }
-    if (!mapped) return (VkDescriptorBufferInfo){0};
-    VkSpan span = vk_transient(total, 256);
-    for (unsigned i = 0; i < mapped; ++i)
-        memcpy((uint8_t *)span.ptr + (uint64_t)tab[i * 4 + 2] * 4,
-               (const void *)(uintptr_t)(HEAP_BASE + tab[i * 4]),
-               tab[i * 4 + 1]);
-    tab[GMAP_MAX * 4] = mapped;
-    return (VkDescriptorBufferInfo){span.buf, span.off, total};
-}
-
 // Writes the descriptor set of one stage. gx..gz: compute group counts (driver constants).
 // pre_ii: texture descriptors already resolved by the caller (draw: fragment textures, needed earlier for the
 // viewport decision), or NULL.
@@ -2488,25 +2530,13 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     VkWriteDescriptorSet w[MAX_BIND];
     VkDescriptorBufferInfo bi[MAX_BIND];
     VkDescriptorImageInfo ii[MAX_BIND];
-    uint32_t graphics_tab[(GMAP_MAX + 1) * 4];
-    // On Android without VK_EXT_external_memory_host, read-only compute shaders
-    // can use the same per-dispatch snapshot as vertex/fragment shaders.
-    // Never apply it to storing compute shaders: their output requires a
-    // separately synchronized GPU -> guest-memory writeback path.
-    bool graphics_map = (stage < 2 || stage == 5) && si->uses_gmem_map &&
-                        !si->uses_gmem_store && !g_vk.host_import;
-    VkDescriptorBufferInfo graphics_data = {0};
-    if (graphics_map) {
-        graphics_data = graphics_gmem_map(stage, graphics_tab);
-        if (stage == 5) {
-            static int logged;
-            if (logged++ < 8)
-                LOG("[gmem-compute-read] shader=%llx ranges=%u bytes=%llu\n",
-                    (unsigned long long)(st.program ? st.program->stages[5].code_addr : 0),
-                    graphics_tab[GMAP_MAX * 4],
-                    (unsigned long long)graphics_data.range);
-        }
-    }
+    uint32_t portable_tab[(GMAP_MAX + 1) * 4];
+    uint32_t direct_tab[(GMAP_MAX + 1) * 4] = {0};
+    if (si->uses_gmem) gmem_info();
+    direct_tab[GMAP_MAX * 4 + 1] = gmem_buf != VK_NULL_HANDLE;
+    bool portable_map = si->uses_gmem_map && !gmem_buf && (stage == 5 || !si->uses_gmem_store);
+    VkDescriptorBufferInfo portable_data = {0};
+    if (portable_map) portable_data = portable_gmem_map(stage, si->uses_gmem_store, portable_tab);
     int n = 0;
     int sg = stage == 1 ? 1 : 0;
     float rs[66][4] = {{1, 1, 0, 0}};  // ([65]: mirror mode, renderer.m)
@@ -2533,8 +2563,8 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
             bi[n] = b->binding == GFAST_BUFFER_INDEX ?
-                (graphics_map && graphics_data.buffer ? graphics_data : gfast_info()) : gmem_info();
-            if (b->binding == GMEM_BUFFER_INDEX && !gmem_buf)
+                (portable_map ? (portable_data.buffer ? portable_data : gmem_info()) : gfast_info()) : gmem_info();
+            if (b->binding == GMEM_BUFFER_INDEX && !gmem_buf && !portable_map)
                 vk_diag_event(VD_ZERO_GMEM, "stage=%d shader=%llx writes=%d extension=%d heap=%llu zero_descriptor=%llu",
                     stage, (unsigned long long)(st.program ? st.program->stages[stage].code_addr : 0),
                     si->uses_gmem_store, g_vk.host_import, (unsigned long long)kernel_heap_size(), (unsigned long long)bi[n].range);
@@ -2551,7 +2581,10 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
         if (b->binding == GMAP_BUFFER_INDEX) {  // (compute) this dispatch's fast-copy table: gfast_prepare
-            bi[n] = ubo_span(vk_transient_copy(graphics_map ? graphics_tab : gmap_tab, sizeof gmap_tab, 256), sizeof gmap_tab);
+            // Graphics with an imported heap read it directly; the preceding
+            // compute dispatch's shared scratch table is not a graphics snapshot.
+            const uint32_t *tab = portable_map ? portable_tab : stage == 5 ? gmap_tab : direct_tab;
+            bi[n] = ubo_span(vk_transient_copy(tab, sizeof gmap_tab, 256), sizeof gmap_tab);
         } else if (b->binding == 18) {
             for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
             bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
@@ -2649,6 +2682,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
             LOG("\n");
         }
     }
+    gmem_read_stage(5, cp->si);
     vk_end_pass();
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
@@ -2669,7 +2703,10 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     vkCmdDispatch(cb, gx, gy, gz);
-    if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) gfast_finish(cb);
+    if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) {
+        if (gmem_buf) gfast_finish(cb);
+        else gmem_host_barrier(cb);
+    }
     if (cp->si->uses_gmem_store) vc_mark_sbufs(5);
     stat_dispatches++;
 }
@@ -2742,6 +2779,10 @@ static void draw_(CmdRec *r, bool indexed) {
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
+    gmem_read_stage(0, pr->vi);
+    gmem_read_stage(1, pr->fi);
+    for (int i = 0; i < 16; ++i) gmem_read_range(st.vbuf[i].addr, st.vbuf[i].size);
+    if (indexed) gmem_read_range(r->x[3], (uint64_t)r->x[2] * (r->x[1] == 0 ? 1 : r->x[1] == 1 ? 2 : 4));
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
         uint64_t fs = st.program->stages[1].code_addr;
@@ -3262,6 +3303,8 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     uint64_t row, img;
     copy_region_dims(t, dst, &fi, rg, &level, &row, &img);
     if (!fi || !fi->bpb) return;
+    gmem_read_range(src, img * (uint32_t)rg[5]);
+    gmem_read_texture(t);
     TexBackend *b = vk_tex(t, false);  // prior CPU contents uploaded first
     renderer_mark_gpu_owned(t);
     if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) return;
@@ -3319,6 +3362,7 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
 static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     NvnTexture *t = (NvnTexture *)(uintptr_t)src->tex;
     if (!t || !dst || dst < HEAP_BASE) return;
+    gmem_read_texture(t);
     t = alias_read(t);
     vk_end_pass();
     const FormatInfo *fi;
@@ -3374,6 +3418,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     snap_reason = "tex2tex"; snapshots_invalidate(NULL);
     NvnTexture *st_ = (NvnTexture *)(uintptr_t)src->tex, *dt = (NvnTexture *)(uintptr_t)dst->tex;
     if (!st_ || !dt) return;
+    gmem_read_texture(st_);
     vk_end_pass();
     if (dl_on == 2) renderer_flush();  // (LARECOMP_VK_DEVLOST_TRACE=2: each copy its own submission, waited on)
     gp_mark(vk_cmd(), "copy texture %ux%u -> %ux%u", st_->width, st_->height, dt->width, dt->height);
@@ -3938,6 +3983,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_DRAW_ARRAYS: draw(r, false); break;
         case CMD_DRAW_ELEMENTS: draw(r, true); break;
         case CMD_UPDATE_UNIFORM_BUFFER:
+            gmem_read_range(r->x[0] + r->x[2], r->x[3]);
             memcpy((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3]);
             guest_copy_flush();  // (cbuf copies shared within the submission are stale now)
             break;

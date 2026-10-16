@@ -66,10 +66,10 @@ typedef struct {
     uint32_t out_mask;      // vertex: output varyings; fragment: render targets written
     bool writes_depth, uses_discard, writes_point_size;
     bool uses_gmem;         // global memory access: bind the guest heap at GMEM_BUFFER_INDEX
-    bool uses_gmem_map;     // (GLSL compute only) gmem loads look their address up in GMap (uniform, binding
-                            // GMAP_BUFFER_INDEX) and read GFast (storage, GFAST_BUFFER_INDEX) - a device-local copy of the
-                            // dispatch's storage buffers - when found, stores too (copied back after the dispatch).
-                            // runtime/nvn/vulkan/exec.c
+    bool uses_gmem_map;     // GLSL loads look their address up in GMap (uniform, binding
+                            // GMAP_BUFFER_INDEX) and read GFast (storage, GFAST_BUFFER_INDEX). Imported heaps use
+                            // device-local compute scratch; portable snapshots own their bytes until GPU completion.
+                            // Stores are returned to the guest at completion / before a dependent CPU snapshot.
     bool uses_gmem_store;   // writes global memory (STG)
     bool uses_tint;        // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render
@@ -81,11 +81,12 @@ typedef struct {
 
 // Global memory (LDG/STG) is addressed through one buffer that wraps the guest heap.
 #define GMEM_BUFFER_INDEX 17
-// (GLSL compute, Vulkan) the fast copy of a dispatch's storage buffers: its address table and its data
+// Vulkan packed storage buffers: address table and data, also used without host-memory import.
 #define GMAP_BUFFER_INDEX 20
 #define GFAST_BUFFER_INDEX 21
-#define GMAP_MAX 16  // ranges in the table (GMap { uvec4 gmap[GMAP_MAX + 1]; }: [i] = addr lo, addr hi, size, word offset;
-                     // [GMAP_MAX].x = count)
+#define GMAP_MAX 35  // 16 storage + 18 uniform + shader constants; overlapping ranges are merged.
+                     // GMap { uvec4 gmap[GMAP_MAX + 1]; }: [i] = heap offset, size, word offset, reserved;
+                     // [GMAP_MAX].x = count; .y = imported heap available (dummy buffers are never writable fallback memory).
 extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
