@@ -2381,35 +2381,54 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
 // snapshot, preventing later draws from overwriting its storage bytes.
 static VkDescriptorBufferInfo graphics_gmem_map(int stage, uint32_t tab[(GMAP_MAX + 1) * 4]) {
     memset(tab, 0, sizeof(uint32_t) * (GMAP_MAX + 1) * 4);
-    uint64_t heap = kernel_heap_size(), total = 0;
-    struct { uint64_t start, len, dest; } entries[16];
-    unsigned n = 0;
+    uint64_t heap = kernel_heap_size();
+    struct { uint64_t start, end; } ranges[16];
+    unsigned nr = 0;
     for (int i = 0; i < 16; ++i) {
         uint64_t addr = st.sbuf[stage][i].addr, size = st.sbuf[stage][i].size;
         if (!addr || !size || addr < HEAP_BASE || addr - HEAP_BASE >= heap ||
             size > heap - (addr - HEAP_BASE)) continue;
         uint64_t start = (addr - HEAP_BASE) & ~3ull;
-        uint64_t end = ((addr - HEAP_BASE + size + 3) & ~3ull);
+        uint64_t end = (addr - HEAP_BASE + size + 3) & ~3ull;
         if (end > heap) end = heap & ~3ull;
-        uint64_t len = end > start ? end - start : 0;
-        if (!len || total + len > (256ull << 10)) {
-            // Skip large/unavailable bindings instead of allocating unbounded
-            // transient memory for every draw.
-            continue;
+        if (end <= start) continue;
+        unsigned at = nr++;
+        while (at && ranges[at - 1].start > start) {
+            ranges[at] = ranges[at - 1];
+            --at;
         }
-        entries[n].start = start; entries[n].len = len; entries[n].dest = total;
-        tab[n * 4] = (uint32_t)start;
-        tab[n * 4 + 1] = (uint32_t)len;
-        tab[n * 4 + 2] = (uint32_t)(total >> 2);
-        total += len;
-        ++n;
+        ranges[at].start = start;
+        ranges[at].end = end;
     }
-    if (!n) return (VkDescriptorBufferInfo){0};
+    // Merge overlapping or touching buffers: gfind() must never return an
+    // earlier, shorter alias of the same guest address range.
+    unsigned merged = 0;
+    for (unsigned i = 0; i < nr; ++i) {
+        if (merged && ranges[i].start <= ranges[merged - 1].end) {
+            if (ranges[i].end > ranges[merged - 1].end)
+                ranges[merged - 1].end = ranges[i].end;
+        } else {
+            ranges[merged++] = ranges[i];
+        }
+    }
+    uint64_t total = 0;
+    unsigned mapped = 0;
+    for (unsigned i = 0; i < merged; ++i) {
+        uint64_t len = ranges[i].end - ranges[i].start;
+        if (len > (256ull << 10) - total) continue;
+        tab[mapped * 4] = (uint32_t)ranges[i].start;
+        tab[mapped * 4 + 1] = (uint32_t)len;
+        tab[mapped * 4 + 2] = (uint32_t)(total >> 2);
+        total += len;
+        ++mapped;
+    }
+    if (!mapped) return (VkDescriptorBufferInfo){0};
     VkSpan span = vk_transient(total, 256);
-    for (unsigned i = 0; i < n; ++i)
-        memcpy((uint8_t *)span.ptr + entries[i].dest,
-               (const void *)(uintptr_t)(HEAP_BASE + entries[i].start), entries[i].len);
-    tab[GMAP_MAX * 4] = n;
+    for (unsigned i = 0; i < mapped; ++i)
+        memcpy((uint8_t *)span.ptr + (uint64_t)tab[i * 4 + 2] * 4,
+               (const void *)(uintptr_t)(HEAP_BASE + tab[i * 4]),
+               tab[i * 4 + 1]);
+    tab[GMAP_MAX * 4] = mapped;
     return (VkDescriptorBufferInfo){span.buf, span.off, total};
 }
 
