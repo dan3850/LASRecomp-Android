@@ -100,6 +100,20 @@ cd "$ROOT"
 CMAKE_OPTS=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
  -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS=-fPIC -DCMAKE_CXX_FLAGS=-fPIC
  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,max-page-size=16384")
+# SDL 3.2.22 espera cpu-features.c em CMAKE_ANDROID_NDK/sources/android.
+# No Termux, clang ja mira Android, mas CMAKE_ANDROID_NDK fica vazio.
+# Usa uma arvore de compatibilidade isolada, sem modificar SDK ou fontes SDL.
+SDL_NDK_COMPAT="$WORK/sdl-ndk-compat"
+SDL_CPUFEATURES="$SDL_NDK_COMPAT/sources/android/cpufeatures"
+mkdir -p "$SDL_CPUFEATURES"
+if [[ ! -s "$SDL_CPUFEATURES/cpu-features.c" ]]; then
+ CPU_SRC="$(find "$ANDROID_HOME/ndk" "$DEPS/sdl3" "$PREFIX" -type f -name cpu-features.c 2>/dev/null | head -n 1 || true)"
+ [[ -n "$CPU_SRC" ]] || fail "SDL3 precisa de cpu-features.c; nao encontrado no NDK, SDL3 ou Termux. Nao vou criar stub falso."
+ cp "$CPU_SRC" "$SDL_CPUFEATURES/cpu-features.c"
+ CPU_HEADER="$(dirname "$CPU_SRC")/cpu-features.h"
+ [[ -f "$CPU_HEADER" ]] && cp "$CPU_HEADER" "$SDL_CPUFEATURES/cpu-features.h"
+fi
+CMAKE_OPTS+=("-DCMAKE_ANDROID_NDK=$SDL_NDK_COMPAT")
 step "SDL3 — compila do fonte"
 # O CMake anterior persistiu ANDROID=ON no cache do SDL3.
 # Limpa apenas a entrada obsoleta, sem remover objetos ou caches de outras libs.
