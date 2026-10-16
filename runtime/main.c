@@ -2,6 +2,7 @@
 #include <SDL3/SDL.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 #include "gamelib.h"
@@ -156,6 +157,16 @@ static void boot(const char *root) {
     uint32_t stack_size = 0x100000;
     int prio = 44;
     FILE *f = fopen(npdm_path, "rb");
+#ifdef __ANDROID__
+    if (!f) {
+        extern int lasrecomp_external_open(const char *relative_path);
+        int fd = lasrecomp_external_open("exefs/main.npdm");
+        if (fd >= 0) {
+            f = fdopen(fd, "rb");
+            if (!f) close(fd);
+        }
+    }
+#endif
     if (f) {
         uint8_t meta[0x80];
         if (fread(meta, 1, sizeof meta, f) == sizeof meta && !memcmp(meta, "META", 4)) {
