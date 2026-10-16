@@ -382,6 +382,80 @@ static void persistent_snapshots(void) {
     puts("GMEM persistent snapshots: 61 submissions upload 1 MiB instead of 61 MiB; mutation/in-flight isolation/write isolation PASS");
 }
 
+// Exercise eviction against real mapped Vulkan allocations: the cache must
+// borrow capacity from completed entries in other sets, never pending ones.
+static void snapshot_capacity_eviction(void) {
+    assert(!gmem_snap_bytes);
+    gmem_snap_enabled = 1;
+    uint8_t *guest = (uint8_t *)(uintptr_t)HEAP_BASE;
+    memset(guest, 0x6b, kernel_heap_size());
+    GmemPlan saved[GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS] = {0};
+    bool occupied[GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS] = {0};
+    unsigned n = 0;
+    // One completed 1 MiB snapshot per set, exactly filling the 32 MiB
+    // budget. Vary addresses (not contents), finding distinct hash sets.
+    for (unsigned off = 0; off <= (1 << 20) && n < GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS; off += 4096) {
+        GmemRange range[GMAP_MAX] = {{HEAP_BASE + off, 1 << 20}};
+        GmemPlan p;
+        assert(gmem_plan(&p, range, GMAP_MAX, HEAP_BASE, kernel_heap_size(),
+                         g_vk.props.limits.maxStorageBufferRange));
+        assert(p.size == 1 << 20);
+        unsigned set = hash_words(0, &p, sizeof p) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS);
+        if (occupied[set]) continue;
+        VkSpan s = gmem_read_snapshot(&p);
+        assert(s.buf);
+        occupied[set] = true;
+        saved[set] = p;
+        n++;
+        vk_cmd(); renderer_flush();
+    }
+    assert(n == GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS);
+    vk_wait_seq(submit_seq);
+    assert(gmem_snap_bytes == GMEM_SNAP_BUDGET);
+
+    GmemRange range[GMAP_MAX] = {{HEAP_BASE, 2 << 20}};
+    GmemPlan bigger;
+    assert(gmem_plan(&bigger, range, GMAP_MAX, HEAP_BASE, kernel_heap_size(),
+                     g_vk.props.limits.maxStorageBufferRange));
+    assert(bigger.size == 2 << 20);
+    unsigned target = hash_words(0, &bigger, sizeof bigger) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS);
+
+    // Mark all other sets as referenced by the still-recording submission.
+    // Only the victim inside the target set is completed. It frees 1 MiB
+    // but the 2 MiB request needs another 1 MiB from another set.
+    for (unsigned set = 0; set < GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS; ++set) {
+        if (set == target) continue;
+        VkSpan s = gmem_read_snapshot(&saved[set]);
+        assert(s.buf);
+    }
+    uint64_t blocked_before = stat_gmem_budget_bypass;
+    uint64_t evicted_before = stat_gmem_evictions;
+    assert(!gmem_read_snapshot(&bigger).buf);
+    assert(stat_gmem_budget_bypass == blocked_before + bigger.size);
+    assert(stat_gmem_evictions == evicted_before);
+    assert(gmem_snap_bytes == GMEM_SNAP_BUDGET);
+
+    // Complete the protected submission. The same request must now succeed
+    // by evicting one other completed entry, without increasing the budget.
+    vk_cmd(); renderer_flush();
+    vk_wait_seq(submit_seq);
+    VkSpan s = gmem_read_snapshot(&bigger);
+    assert(s.buf);
+    assert(gmem_snap_bytes == GMEM_SNAP_BUDGET);
+    assert(stat_gmem_evictions == evicted_before + 1);
+    struct GmemSnapshot *chosen = NULL;
+    for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i)
+        if (gmem_snap[i].buf == s.buf) chosen = &gmem_snap[i];
+    assert(chosen && chosen->plan.size == bigger.size);
+    assert(!memcmp(chosen->shadow, guest, (size_t)bigger.size));
+    assert(!memcmp(chosen->mapped, guest, (size_t)bigger.size));
+    vk_cmd(); renderer_flush();
+    vk_wait_seq(submit_seq);
+    gmem_snap_clear();
+    assert(!gmem_snap_bytes);
+    puts("GMEM cache capacity: pending buffers protected, completed cross-set LRU reclaimed within 32 MiB PASS");
+}
+
 static void buffer_reuse(void) {
     uint8_t *src = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x80000);
     memset(src, 0x35, 8192);
@@ -528,6 +602,7 @@ int main(int argc, char **argv) {
     snapshots();
     split_counter_pairs();
     persistent_snapshots();
+    snapshot_capacity_eviction();
     buffer_reuse();
     write_pool_limits();
     atlas(argv[1]);
