@@ -46,6 +46,7 @@ class Module:
         self.words = struct.unpack(f'<{n.text[1] // 4}I', bytes(n.image[n.text[0]:n.text[0] + n.text[1]]))
         self.lifter = Lifter(base, simd)
         self.cache = {}
+        self.runtime_nops = set()  # explicit supported sites for the Android mod menu
         self.stats = Counter()
         self.mu = None
 
@@ -401,6 +402,12 @@ class Module:
             if a in labels:
                 flush()
                 out.append(f'L_{a:x}:;')
+            if a in self.runtime_nops:
+                flush()
+                original = ' '.join(self.render_single(ins, a, jump, refs))
+                out.append(f'    {{ extern int rt_mod_nop(uint64_t); if (!rt_mod_nop({hx(a)})) {{ {original} }} }}')
+                last = 'op'
+                continue
             if a - self.base in RANDO_CODE:  # randomizer patch site: the active seed picks the instruction
                 flush()
                 out.append(f'    {{ extern uint32_t rando_word(uint64_t); uint32_t rw = rando_word({hx(a)});')

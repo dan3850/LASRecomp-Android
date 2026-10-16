@@ -181,6 +181,29 @@ class Stable60(unittest.TestCase):
         # Specifically reject the erroneous +0x100 header shift.
         self.assertNotIn("main+0x1019708", patched)
 
+    def test_menu_variant_reversibly_selects_original_calls_and_nops(self):
+        nso = fixture(self.root)
+        changes, _ = mod.plan_sources(self.root, nso, menu_compatible=True)
+        source = next(iter(changes.values()))
+        self.assertEqual(source.count("if (!rt_mod_nop("), 2)
+        source += ('\nstatic int selected;\nint rt_mod_nop(uint64_t pc) { return selected; }\n'
+                   '__attribute__((visibility("default"))) void select_mod(int value) { selected = value; }\n')
+        path = self.root / "menu.c"
+        path.write_text(source)
+        library = self.root / "menu.so"
+        subprocess.run([*CC, "-std=gnu11", "-O1", "-fPIC", "-shared", "-I" + str(ROOT / "runtime"),
+                        str(path), "-o", str(library)], check=True, capture_output=True)
+        loaded = ctypes.CDLL(str(library))
+        output = (ctypes.c_uint64 * 6)()
+        for selected in (0, 1, 0, 1):
+            loaded.select_mod(selected)
+            loaded.test_run(output)
+            self.assertEqual(tuple(output)[1:3], (0, 0) if selected else (30, 60))
+            self.assertEqual(output[3], 7)
+            self.assertEqual(output[5], 0xa0000000)
+            if selected:
+                self.assertEqual(output[4], 0x12345678) # skipping BL also skips its LR write
+
     def test_non_call_instructions_and_two_separate_chunks(self):
         nso = fixture(self.root, branch=True, split=True)
         changes, _ = mod.plan_sources(self.root, nso)
@@ -287,6 +310,26 @@ class Stable60(unittest.TestCase):
         result = (ctypes.c_uint64 * 6)()
         loaded.test_run(result)
         self.assertEqual(tuple(result), (0, 0, 0, 7, 0x12345678, 0xa0000000))
+        for path, (data, mtime) in preserved.items():
+            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), (data, mtime), str(path))
+
+        # A prepared library must link and execute with the real selection hook.
+        runtime_hook = self.root / "runtime-hook.so"
+        subprocess.run([*CC, "-std=gnu11", "-shared", "-fPIC", "-O1",
+                        str(ROOT / "runtime/mods.c"), "-o", str(runtime_hook)], check=True)
+        ctypes.CDLL(str(runtime_hook), mode=ctypes.RTLD_GLOBAL)
+        menu_changes, _ = mod.plan_sources(self.root, nso, menu_compatible=True)
+        with patch.object(mod.platform, "machine", return_value="aarch64"), \
+             patch.dict(os.environ, PREFIX="/data/data/com.termux/files/usr"), \
+             patch.object(mod, "check_object"), patch.object(mod.subprocess, "run", side_effect=host_run):
+            menu_library = mod.build(self.root, menu_changes, private / "stable60-menu", menu_compatible=True)
+        menu = ctypes.CDLL(str(menu_library))
+        menu.lasgame_mod_menu_v1.restype = ctypes.c_char_p
+        self.assertEqual(menu.lasgame_mod_menu_v1().decode(), mod.MENU_CAPABILITY)
+        # No enabled marker: original behavior, rather than an always-on patch.
+        with patch.dict(os.environ, LARECOMP_DATA_ROOT=str(self.root)):
+            menu.test_run(result)
+        self.assertEqual(tuple(result)[1:3], (30, 60))
         for path, (data, mtime) in preserved.items():
             self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), (data, mtime), str(path))
 

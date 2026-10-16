@@ -26,6 +26,7 @@ BASE = 0x7000000000
 # accounts for the NSO header in IPS files; it MUST NOT shift these PCs.
 OFFSETS = (0x01019608, 0x01019628)
 NOP = 0xd503201f  # little-endian bytes: 1F2003D5
+MENU_CAPABILITY = "stable60-v2:" + BUILD_ID.upper() + ":01019608,01019628"
 FLAGS = ("-std=gnu11", "-O1", "-g0", "-fPIC", "-fno-strict-aliasing",
          "-fvisibility=hidden", "-Wno-unused-label", "-Wno-return-type",
          '-DGAMELIB_ID="dev"')
@@ -150,7 +151,7 @@ def read_nso(path):
     return Nso(path, decompress=lz4_block)
 
 
-def plan_sources(workspace, nso_path):
+def plan_sources(workspace, nso_path, menu_compatible=False):
     """Validate both sites and reproduce original C BEFORE preparing any output."""
     nso = read_nso(nso_path)
     folder = workspace / "build/gamecode/main"
@@ -191,7 +192,10 @@ def plan_sources(workspace, nso_path):
                 pc = BASE + offset
                 if entry <= pc < end:
                     # A NOP changes neither registers (including LR) nor flags.
-                    module.cache[pc] = Insn("op", f"; /* Stable 60fps v2: main+{offset:#x} -> NOP */")
+                    if menu_compatible:
+                        module.runtime_nops.add(pc)
+                    else:
+                        module.cache[pc] = Insn("op", f"; /* Stable 60fps v2: main+{offset:#x} -> NOP */")
             patched = "\n".join(module.emit_function(entry, end, labels, tables, {}))
             found[entry] = (path, text, definition.start(), definition.end(), patched)
     if set(found) != set(entries):
@@ -226,7 +230,7 @@ def check_object(path):
         raise ValueError(f"objeto nao e ELF Android ARM64: {path}")
 
 
-def build(workspace, changes, output):
+def build(workspace, changes, output, menu_compatible=False):
     """Reuse complete private objects; compile ONLY changed chunks and a mod tag."""
     if platform.machine() != "aarch64" or os.environ.get("PREFIX") != "/data/data/com.termux/files/usr":
         raise ValueError("compile no Termux ARM64, fora do proot")
@@ -264,8 +268,12 @@ def build(workspace, changes, output):
     write_changed(stamp, json.dumps(flags))
     replacements = {}
     tag = output / "sources/stable60_tag.c"
-    write_changed(tag, '__attribute__((visibility("default")))\n'
-                  f'const char *lasgame_mod_stable60_v2(void) {{ return "{BUILD_ID}"; }}\n')
+    tag_code = ('__attribute__((visibility("default")))\n'
+                f'const char *lasgame_mod_stable60_v2(void) {{ return "{BUILD_ID}"; }}\n')
+    if menu_compatible:
+        tag_code += ('__attribute__((visibility("default")))\n'
+                     f'const char *lasgame_mod_menu_v1(void) {{ return "{MENU_CAPABILITY}"; }}\n')
+    write_changed(tag, tag_code)
     compile_sources = [(path, output / "sources" / path.relative_to(source_root)) for path in changes]
     for original, patched in compile_sources:
         write_changed(patched, changes[original])
@@ -294,7 +302,11 @@ def build(workspace, changes, output):
     exported = symbols(temporary, "--defined-only")
     if not {"lasgame_tables", "lasgame_mod_stable60_v2"} <= exported:
         raise ValueError("biblioteca do mod sem as tabelas/marcador esperados")
+    if menu_compatible and "lasgame_mod_menu_v1" not in exported:
+        raise ValueError("biblioteca sem identificador de compatibilidade com o menu")
     added = symbols(temporary, "--undefined-only") - symbols(original_lib, "--undefined-only")
+    if menu_compatible:
+        added -= {"rt_mod_nop"}  # the new APK exports this exact, supported hook
     if added:
         raise ValueError("o mod introduziu dependencias novas: " + ", ".join(sorted(added)))
     temporary.replace(library)
@@ -306,7 +318,9 @@ def main():
     parser.add_argument("--workspace", type=Path, default=Path.home() / "lasrecomp-android-gen")
     parser.add_argument("--nso", type=Path, help="main NSO original da versao 1.0.0")
     parser.add_argument("--output", type=Path, help="diretorio separado para os arquivos privados do mod")
-    parser.add_argument("--copy-to", type=Path, default=Path("/storage/emulated/0/Download/LASRecomp/Stable60-v2/liblasgame.so"))
+    parser.add_argument("--copy-to", type=Path)
+    parser.add_argument("--menu-compatible", action="store_true",
+                        help="mantem o original e os dois NOPs selecionaveis pelo novo menu Mods do APK")
     args = parser.parse_args()
     workspace = args.workspace.expanduser().resolve()
     nso = args.nso or find_nso(workspace)
@@ -314,14 +328,16 @@ def main():
         parser.error("main v1.0.0 nao encontrado nas pastas acessiveis do Termux. "
                      "Indique --nso com o arquivo main da pasta exefs do seu jogo; nada foi alterado")
     print(f"MAIN LOCALIZADO: {nso}", flush=True)
-    output = args.output or workspace / "build/private-android-lasgame-termux/stable60-v2"
+    variant = "stable60-menu" if args.menu_compatible else "stable60-v2"
+    output = args.output or workspace / "build/private-android-lasgame-termux" / variant
     output = output.expanduser().resolve()
     reserved = [workspace / "build/gamecode", workspace / "build/private-android-lasgame-termux/objects",
                 workspace / "runtime", workspace / "tools", nso.expanduser().resolve(),
                 workspace / "build/private-android-lasgame-termux/liblasgame.so"]
     if any(output.is_relative_to(path) or path.is_relative_to(output) for path in reserved):
         parser.error("--output deve ser uma pasta separada dos originais")
-    destination = args.copy_to.expanduser().resolve()
+    destination = (args.copy_to or Path("/storage/emulated/0/Download/LASRecomp") /
+                   ("Mods-menu" if args.menu_compatible else "Stable60-v2") / "liblasgame.so").expanduser().resolve()
     if destination.name != "liblasgame.so":
         parser.error("--copy-to deve terminar em liblasgame.so, o nome aceito pelo importador do app")
     if destination.is_relative_to(workspace) and not destination.is_relative_to(output):
@@ -329,20 +345,24 @@ def main():
     if destination == nso.expanduser().resolve():
         parser.error("--copy-to nao pode substituir o NSO original")
     try:
-        changes, words = plan_sources(workspace, nso.expanduser().resolve())
+        changes, words = plan_sources(workspace, nso.expanduser().resolve(), args.menu_compatible)
         print(f"Build ID v1.0.0 confirmado: {BUILD_ID.upper()}", flush=True)
         for offset, word in words.items():
-            print(f"main+0x{offset}: {word} -> D503201F (NOP)", flush=True)
-        library = build(workspace, changes, output)
+            selected = "original/NOP selecionaveis pelo menu" if args.menu_compatible else "D503201F (NOP)"
+            print(f"main+0x{offset}: {word} -> {selected}", flush=True)
+        library = build(workspace, changes, output, args.menu_compatible)
         write_changed(destination, library.read_bytes())
         write_changed(output / "mod.json", json.dumps({
             "mod": "theboy181 Stable 60fps v2", "nso_build_id": BUILD_ID,
+            "menu_compatible": args.menu_compatible,
             "original_words": words, "patched_chunks": [p.name for p in changes],
             "sha256": hashlib.sha256(library.read_bytes()).hexdigest(),
         }, indent=2) + "\n")
         print(f"\nBIBLIOTECA COM MOD: {destination}\n"
               "No aplicativo, importe esse .so pela opcao de codigo do jogo e reinicie.\n"
               "A biblioteca original foi preservada. O FPS real ainda precisa ser testado no celular.")
+        if args.menu_compatible:
+            print("Modo menu: o mod comeca DESATIVADO. Use o APK atualizado e importe/ative o .pchtxt em MODS.")
     except (OSError, ValueError, AssertionError, IndexError, struct.error,
             subprocess.CalledProcessError, ModuleNotFoundError) as error:
         parser.exit(1, f"ERRO: {error}\nNenhum NSO, C, objeto ou liblasgame.so original foi substituido.\n")
