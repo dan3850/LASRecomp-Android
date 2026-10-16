@@ -13,6 +13,7 @@
 #include <dlfcn.h>
 #include <android/log.h>
 #include <android/native_window.h>
+#include "android_window.h"
 #endif
 
 #include "../../paths.h"
@@ -31,6 +32,9 @@ static VkDebugUtilsMessengerEXT messenger;
 // A lost VkSurfaceKHR needs a new SDL/Vulkan surface, not just a new swapchain.
 static bool surface_rebuild_needed;
 static Uint64 last_surface_rebuild_attempt_ns;
+#ifdef __ANDROID__
+static ANativeWindow *surface_window; // owned reference for the recovered VkSurfaceKHR's lifetime
+#endif
 static void mark_surface_lost(const char *op) {
     if (!surface_rebuild_needed) LOG("[vk] surface lost at %s; suspending presentation until surface recovery\n", op);
     surface_rebuild_needed = true;
@@ -505,10 +509,18 @@ static bool recover_lost_surface(void) {
         LOG("[vk] recovery postponed: window extent %dx%d\n", w, h);
         return false;
     }
-    if (!android_window_surface_ready("surface recovery")) return false;
+    // SDL's borrowed native-window property can outlive surfaceDestroyed.
+    // Retain a fresh Java Surface BEFORE releasing the old Vulkan resources;
+    // acquiring the old pointer afterwards can crash in RefBase::incStrong.
+    ANativeWindow *native_window = vk_android_acquire_window();
+    if (!native_window) { LOG("[vk] recovery postponed: current Java surface unavailable\n"); return false; }
     LOG("[vk] recovery: waiting for all submitted GPU work\n");
     VkResult idle = vkDeviceWaitIdle(g_vk.dev);
-    if (idle != VK_SUCCESS) { LOG("[vk] surface recovery device wait failed: %d\n", idle); return false; }
+    if (idle != VK_SUCCESS) {
+        ANativeWindow_release(native_window);
+        LOG("[vk] surface recovery device wait failed: %d\n", idle);
+        return false;
+    }
     LOG("[vk] recovery: GPU idle; releasing %u image views and old swapchain\n", g_vk.sc_count);
     for (uint32_t i = 0; i < g_vk.sc_count; ++i) {
         if (g_vk.sc_views[i]) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
@@ -519,7 +531,8 @@ static bool recover_lost_surface(void) {
     g_vk.swapchain = VK_NULL_HANDLE;
     if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
     g_vk.surface = VK_NULL_HANDLE;
-    if (!android_window_surface_ready("new SDL Vulkan surface")) return false;
+    if (surface_window) ANativeWindow_release(surface_window);
+    surface_window = NULL;
     // SDL_Vulkan_CreateSurface crashes on some Android SDL3 resume paths
     // even with a non-NULL native window. Use the already enabled
     // VK_KHR_android_surface instance extension directly for recovery.
@@ -531,29 +544,26 @@ static bool recover_lost_surface(void) {
     } AndroidSurfaceInfo;
     typedef VkResult (VKAPI_PTR *CreateAndroidSurfaceFn)(
         VkInstance, const AndroidSurfaceInfo *, const VkAllocationCallbacks *, VkSurfaceKHR *);
-    void *native_window = SDL_GetPointerProperty(
-        SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
     CreateAndroidSurfaceFn create_android_surface =
         (CreateAndroidSurfaceFn)vkGetInstanceProcAddr(g_vk.inst, "vkCreateAndroidSurfaceKHR");
-    if (!native_window || !create_android_surface) {
+    if (!create_android_surface) {
         LOG("[vk] recovery postponed: native window=%p vkCreateAndroidSurfaceKHR=%p\n",
             native_window, (void *)create_android_surface);
+        ANativeWindow_release(native_window);
         return false;
     }
     // VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR = 1000008000,
     // defined by VK_KHR_android_surface (avoid dependence on platform header defines).
     AndroidSurfaceInfo sci = {.sType = (VkStructureType)1000008000, .native_window = native_window};
-    // Hold a strong reference while the driver creates the VkSurfaceKHR.
-    // SDL's property is a borrowed ANativeWindow pointer.
-    ANativeWindow_acquire((ANativeWindow *)native_window);
     LOG("[vk] recovery: creating Android Vulkan surface directly, window=%p\n", native_window);
     VkResult surface_result = create_android_surface(g_vk.inst, &sci, NULL, &g_vk.surface);
-    ANativeWindow_release((ANativeWindow *)native_window);
     if (surface_result != VK_SUCCESS || !g_vk.surface) {
+        ANativeWindow_release(native_window);
         LOG("[vk] recovery: vkCreateAndroidSurfaceKHR failed: %d\n", surface_result);
         g_vk.surface = VK_NULL_HANDLE;
         return false;
     }
+    surface_window = native_window; // release only after destroying this surface
     LOG("[vk] recovery: creating replacement swapchain\n");
     create_swapchain();
     if (!g_vk.swapchain) { LOG("[vk] new surface not yet ready for swapchain\n"); return false; }

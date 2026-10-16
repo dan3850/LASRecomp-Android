@@ -151,3 +151,55 @@ gerado inclui apenas os trechos selecionados e suas chamadas diretas, e deve fic
 fora do Git. Seis testes verificam seleção e extração, inclusive um ELF real com
 ZIP sintético e rejeição de crash mais recente sem símbolos. A recuperação de FPS, a ausência de regressão
 visual e o encerramento do jogo ainda precisam ser avaliados no aparelho.
+
+## Fontes importadas e recuperação da tela: ZIP de 16/10/2026, 11:04:04
+
+O APK registrado é `673f3b66d6ac`. Nas duas sessões posteriores à importação,
+o runtime rejeita tanto `nintendo_udsg-r_std_003.bfttf` quanto
+`nintendo_ext_003.bfttf` e usa `android_fallback.ttf` para os seis tipos de fonte.
+Portanto, a mensagem de importação concluída não garantia que o jogo estivesse
+usando esses arquivos. O ZIP contém registros; não contém as fontes importadas.
+
+Foi reproduzido um erro no decoder: depois do XOR, o tamanho do contêiner BFTTF é
+big-endian, enquanto o código o interpretava como inteiro nativo little-endian.
+Uma fonte aberta Roboto empacotada nesse formato era rejeitada pelo código
+anterior. Agora o tamanho é interpretado corretamente, os bytes finais também
+são decodificados e a tabela sfnt precisa caber integralmente no tamanho escolhido.
+Contêineres anteriores com tamanho nativo continuam aceitos quando válidos. Os
+bytes das fontes são preservados; nenhum arquivo proprietário foi acrescentado.
+
+O teste `python3 tests/test_font_loader.py` chama o decoder e o carregador reais
+de `pl.c`. Antes da correção, a rejeição e a escolha indevida da fonte substituta
+foram reproduzidas. Depois passaram nove testes, também com ASan/UBSan:
+tamanho big-endian, duas ordens de bytes do XOR, tamanho antigo, ambiguidade de
+tamanhos dentro dos limites, último word parcial, rejeição de truncamentos e
+tabelas inválidas, carregamento TTF/BFTTF, escolha de Standard/NintendoExt e
+preservação do fallback quando necessário. Todos usam apenas a Roboto já no
+repositório. O formato foi conferido contra a implementação de
+[BFTTFutil](https://github.com/hadashisora/BFTTFutil/blob/master/Program.cs).
+
+O mesmo ZIP distingue dois fechamentos. O acesso nulo anterior do jogo é agora
+identificado corretamente como `f_70010cce50+0x34`, chamado de
+`f_70013c21e0+0x144`. A última sessão termina em `RefBase::incStrong`, depois de
+`surface lost at acquire` e da destruição do swapchain, antes da criação da nova
+superfície. Esse segundo caso coincide com `ANativeWindow_acquire` sobre a
+propriedade emprestada da janela SDL: a referência pode já ter sido liberada em
+`surfaceDestroyed`.
+
+A recuperação agora obtém a Surface Java atual e uma referência própria via
+`ANativeWindow_fromSurface`, antes de destruir os recursos antigos. Mantém essa
+referência durante a vida da nova `VkSurfaceKHR` e a libera depois de destruir a
+superfície. Ausência da Surface e exceções JNI adiam a recuperação com limpeza
+das referências. Não depende do ponteiro antigo da propriedade SDL.
+
+`python3 tests/test_android_window.py` testa o helper real com JNI/NDK simulados:
+substituição da janela, referências, Surface ausente e falhas JNI. Passou com
+ASan/UBSan; isso não é uma execução de WSI Android. O módulo `device.c` também foi
+compilado no host com `__ANDROID__`, headers JNI reais e declarações NDK mínimas
+para verificar os condicionais. Os testes Vulkan/Maxwell/GMEM e R8 em Lavapipe
+continuam passando. Não foi gerado APK neste ambiente.
+
+Ainda falta confirmar no aparelho que as fontes já importadas passam a ser
+selecionadas e que o jogo atravessa a porta da casa, mantém a imagem corrigida e
+retoma a tela sem fechar. O erro BFTTF foi comprovado e corrigido; atribuir a ele
+todo acesso nulo do jogo ou prometer recuperação de FPS exige esse teste real.
