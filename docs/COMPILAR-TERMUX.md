@@ -7,9 +7,11 @@ Script **independente** do GBAura e de `tools/build-android-termux.sh`, baseado 
 No Termux normal (fora de PRoot/Ubuntu), instale **apenas o que estiver faltando**:
 
 ```sh
-pkg install git clang cmake ninja make python openjdk-21 android-sdk aapt2 d8 zip zipalign apksigner patchelf
+pkg install git clang cmake ninja make python openjdk-21 android-sdk aapt2 zip zipalign apksigner patchelf
 pkg install python-fonttools
 ```
+
+O `d8` não precisa ser um comando separado: o script usa automaticamente `build-tools/*/lib/d8.jar` do SDK existente, ou um `r8-*.jar` já presente no cache Gradle. Se necessário, configure `LASRECOMP_D8_JAR` com o caminho do arquivo `.jar` existente, sem reinstalar o SDK.
 
 Use o SDK Android que já estiver no celular. O script procura `ANDROID_HOME` e depois o SDK do Termux. O SDK precisa conter uma plataforma com `android.jar` e uma pasta NDK com `libc++_shared.so`. O script **não executa o NDK Linux x86-64**.
 
