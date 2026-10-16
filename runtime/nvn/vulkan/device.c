@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <errno.h>
 #ifdef __ANDROID__
 #include <dlfcn.h>
 #include <android/log.h>
@@ -67,12 +68,16 @@ static void create_instance(void) {
     // Never change Android's system driver.
     bool custom_loaded = false;
     const char *files = getenv("LASRECOMP_PRIVATE_FILES");
+    LOG("[vk] custom driver paths: private=%s nativeLib=%s\n", files ? files : "(missing)",
+        getenv("LASRECOMP_NATIVE_LIB_DIR") ? getenv("LASRECOMP_NATIVE_LIB_DIR") : "(missing)");
     if (files && files[0]) {
         char marker[1024], driver_dir[1024], hook_dir[1024];
         snprintf(marker, sizeof marker, "%s/gpu_driver/driver.active", files);
         snprintf(driver_dir, sizeof driver_dir, "%s/gpu_driver", files);
         const char *native_lib_dir = getenv("LASRECOMP_NATIVE_LIB_DIR");
-        if (native_lib_dir && access(marker, R_OK) == 0) {
+        int marker_status = access(marker, R_OK);
+        LOG("[vk] driver activation marker=%s readable=%d errno=%d\n", marker, marker_status == 0, marker_status == 0 ? 0 : errno);
+        if (native_lib_dir && marker_status == 0) {
             FILE *f = fopen(marker, "r");
             char soname[128] = {0};
             if (f) { fgets(soname, sizeof soname, f); fclose(f); }
@@ -82,6 +87,7 @@ static void create_instance(void) {
                 typedef void *(*DriverOpen)(int, int, const char *, const char *,
                                              const char *, const char *, const char *, void **);
                 DriverOpen open_driver = adreno ? (DriverOpen)dlsym(adreno, "adrenotools_open_libvulkan") : NULL;
+                if (!open_driver) LOG("[vk] adrenotools dlopen/dlsym: %s\n", dlerror() ? "failed" : "symbol absent");
                 if (open_driver) {
                     snprintf(hook_dir, sizeof hook_dir, "%s", native_lib_dir);
                     void *loader = open_driver(RTLD_NOW | RTLD_LOCAL, 1, files,
@@ -94,9 +100,9 @@ static void create_instance(void) {
                         LOG("[vk] custom driver loader ready: %s\n", soname);
                     } else LOG("[vk] custom driver failed; using system Vulkan\n");
                 } else LOG("[vk] adrenotools unavailable; using system Vulkan\n");
-            }
-        }
-    }
+            } else LOG("[vk] custom driver marker has invalid library name\n");
+        } else if (!native_lib_dir) LOG("[vk] custom driver disabled: native library path missing\n");
+    } else LOG("[vk] custom driver disabled: private files path missing\n");
     VkResult vr = custom_loaded ? VK_SUCCESS : volkInitialize();
     if (vr != VK_SUCCESS) FATAL("volkInitialize: Vulkan loader unavailable: %d\n", vr);
 #endif
