@@ -48,7 +48,7 @@ public final class GameImportActivity extends Activity {
     private static final int PICK_GAME_FOLDER = 101;
     private static final int PICK_GAME_CODE = 102;
     private static final int PICK_SYSTEM_FONT = 103;
-    private static final int PICK_VULKAN_DRIVER = 104;
+    private static final int PICK_VULKAN_DRIVER = 105;
     // Test route only: the final release will compile this file inside the app.
     private static final long MAX_LIBRARY_BYTES = 1024L * 1024L * 1024L;
     private TextView status;
