@@ -167,10 +167,11 @@ public final class GameImportActivity extends Activity {
                         }).setNegativeButton("Cancelar", null).show();
                 } else {
                     // Opt-in only: the native GPU/CPU profiler may add overhead.
-                    final String[] labels = {"Ligado: medir CPU, GPU e esperas", "Desligado (padrão)"};
+                    // AlertDialog cannot display setMessage together with its single-choice list:
+                    // message takes precedence, hiding the on/off radio buttons on Android.
+                    final String[] labels = {"Ligado — medir CPU/GPU (pode reduzir FPS)", "Desligado (padrão)"};
                     boolean enabled = new File(getFilesDir(), "perf_diagnostics.enabled").isFile();
                     new AlertDialog.Builder(this).setTitle("Diagnóstico de desempenho")
-                        .setMessage("Ative somente para capturar um log. O perfilador pode reduzir o FPS durante a medição. Reinicie o jogo após mudar.")
                         .setSingleChoiceItems(labels, enabled ? 0 : 1, (choiceDialog, index) -> {
                             File marker = new File(getFilesDir(), "perf_diagnostics.enabled");
                             try {
@@ -183,6 +184,10 @@ public final class GameImportActivity extends Activity {
                                     throw new java.io.IOException("Não foi possível desativar o diagnóstico");
                                 }
                                 choiceDialog.dismiss();
+                                android.widget.Toast.makeText(this,
+                                    index == 0 ? "Diagnóstico ligado. Reinicie o jogo, jogue e gere o ZIP."
+                                               : "Diagnóstico desligado. Reinicie o jogo.",
+                                    android.widget.Toast.LENGTH_LONG).show();
                             } catch (Exception error) {
                                 new AlertDialog.Builder(this).setTitle("Diagnóstico de desempenho")
                                     .setMessage("Não foi possível salvar: " + error.getMessage())
