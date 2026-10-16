@@ -11,6 +11,7 @@
 #ifdef __ANDROID__
 #include <dlfcn.h>
 #include <android/log.h>
+#include <android/native_window.h>
 #endif
 
 #include "../../paths.h"
@@ -123,6 +124,7 @@ static void create_instance(void) {
     if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.3 driver installed?)\n", r);
 #ifdef __ANDROID__
     volkLoadInstance(g_vk.inst);
+    LOG("[vk] loader requested=%s instance created\n", custom_loaded ? "custom" : "system");
 #endif
     if (validate) {
         PFN_vkCreateDebugUtilsMessengerEXT f =
@@ -153,6 +155,9 @@ static void pick_device(void) {
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
+        LOG("[vk] physical device[%u] name=%s vendor=0x%x device=0x%x driverVersion=%u api=%u.%u.%u driverID=%u\n",
+            i, p.deviceName, p.vendorID, p.deviceID, p.driverVersion,
+            VK_VERSION_MAJOR(p.apiVersion), VK_VERSION_MINOR(p.apiVersion), VK_VERSION_PATCH(p.apiVersion), 0u);
         LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
         if (p.apiVersion < VK_API_VERSION_1_3) continue;
@@ -531,8 +536,12 @@ static bool recover_lost_surface(void) {
     // VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR = 1000008000,
     // defined by VK_KHR_android_surface (avoid dependence on platform header defines).
     AndroidSurfaceInfo sci = {.sType = (VkStructureType)1000008000, .native_window = native_window};
-    LOG("[vk] recovery: creating Android Vulkan surface directly\n");
+    // Hold a strong reference while the driver creates the VkSurfaceKHR.
+    // SDL's property is a borrowed ANativeWindow pointer.
+    ANativeWindow_acquire((ANativeWindow *)native_window);
+    LOG("[vk] recovery: creating Android Vulkan surface directly, window=%p\n", native_window);
     VkResult surface_result = create_android_surface(g_vk.inst, &sci, NULL, &g_vk.surface);
+    ANativeWindow_release((ANativeWindow *)native_window);
     if (surface_result != VK_SUCCESS || !g_vk.surface) {
         LOG("[vk] recovery: vkCreateAndroidSurfaceKHR failed: %d\n", surface_result);
         g_vk.surface = VK_NULL_HANDLE;
