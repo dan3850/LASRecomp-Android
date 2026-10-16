@@ -2020,6 +2020,26 @@ static void gfast_prepare(VkCommandBuffer cb) {
     gfast_n = 0;
     gmem_info();  // (the heap import, made on first use)
     gfast_info();
+    if (!gmem_buf && st.program && st.program->stages[5].code_addr) {
+        static uint64_t seen[12];
+        static unsigned nseen;
+        uint64_t shader = st.program->stages[5].code_addr;
+        bool known = false;
+        for (unsigned k = 0; k < nseen; ++k)
+            if (seen[k] == shader) { known = true; break; }
+        if (!known && nseen < 12) {
+            seen[nseen++] = shader;
+            LOG("[gmem-compute] shader=%llx host_import=%d heap=%llu mapped=0",
+                (unsigned long long)shader, g_vk.host_import,
+                (unsigned long long)kernel_heap_size());
+            for (int i = 0; i < 16; ++i)
+                if (st.sbuf[5][i].addr && st.sbuf[5][i].size)
+                    LOG(" sb%d=%llx+%llx", i,
+                        (unsigned long long)st.sbuf[5][i].addr,
+                        (unsigned long long)st.sbuf[5][i].size);
+            LOG("\\n");
+        }
+    }
     if (!on || !gmem_buf) return;
     struct { uint64_t lo, hi; } r[16];
     int n = 0;
