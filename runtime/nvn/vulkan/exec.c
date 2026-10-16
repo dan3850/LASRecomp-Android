@@ -2013,21 +2013,25 @@ static VkDescriptorBufferInfo gfast_info(void) {
     return (VkDescriptorBufferInfo){gfast_buf, 0, GFAST_SIZE};
 }
 
-static void gfast_prepare(VkCommandBuffer cb) {
+static void gfast_prepare(VkCommandBuffer cb, bool writes_gmem) {
     static int on = -1;
     if (on < 0) { const char *e = getenv("LARECOMP_VK_GMEM_FAST"); on = !e || atoi(e) != 0; }
     memset(gmap_tab, 0, sizeof gmap_tab);
     gfast_n = 0;
     gmem_info();  // (the heap import, made on first use)
     gfast_info();
-    if (!on || !gmem_buf) return;
+    // A host-import-less GPU can still consume the guest storage-buffer data
+    // through a transient upload. Do not enable this for storing shaders until
+    // there is a coherent GPU-to-guest writeback path.
+    if (!on || (!gmem_buf && writes_gmem)) return;
     struct { uint64_t lo, hi; } r[16];
     int n = 0;
     for (int i = 0; i < 16; i++) {  // heap offsets of the bound storage buffers, 256-aligned
         uint64_t a = st.sbuf[5][i].addr, sz = st.sbuf[5][i].size;
-        if (!a || !sz || a < HEAP_BASE || a - HEAP_BASE + sz > gmem_size) continue;
+        uint64_t heap_limit = gmem_buf ? gmem_size : kernel_heap_size();
+        if (!a || !sz || a < HEAP_BASE || a - HEAP_BASE >= heap_limit || sz > heap_limit - (a - HEAP_BASE)) continue;
         uint64_t lo = (a - HEAP_BASE) & ~255ull, hi = (a - HEAP_BASE + sz + 255) & ~255ull;
-        if (hi > gmem_size) hi = gmem_size;
+        if (hi > heap_limit) hi = heap_limit;
         int k = n++;
         while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }  // (insertion sort by start)
         r[k].lo = lo; r[k].hi = hi;
@@ -2057,7 +2061,22 @@ static void gfast_prepare(VkCommandBuffer cb) {
             LOG("\n");
         }
     }
-    vkCmdCopyBuffer(cb, gmem_buf, gfast_buf, (uint32_t)m, cp);
+    if (gmem_buf) {
+        vkCmdCopyBuffer(cb, gmem_buf, gfast_buf, (uint32_t)m, cp);
+    } else {
+        for (int i = 0; i < m; i++) {
+            // Snapshot guest bytes into the upload arena, without importing
+            // host memory as a Vulkan storage buffer.
+            VkSpan src = guest_copy(HEAP_BASE + cp[i].srcOffset, cp[i].size);
+            VkBufferCopy upload = {src.off, cp[i].dstOffset, cp[i].size};
+            vkCmdCopyBuffer(cb, src.buf, gfast_buf, 1, &upload);
+        }
+        static bool reported;
+        if (!reported) {
+            LOG("[vk] global memory fallback: transient guest uploads for read-only compute (no host import)\\n");
+            reported = true;
+        }
+    }
     vk_full_barrier(cb);
     gmap_tab[GMAP_MAX * 4] = (uint32_t)m;
     memcpy(gfast_cp, cp, (size_t)m * sizeof cp[0]);
@@ -2544,7 +2563,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
         }
         LOG("\n");
     }
-    if (cp->si->uses_gmem_map) gfast_prepare(cb);
+    if (cp->si->uses_gmem_map) gfast_prepare(cb, cp->si->uses_gmem_store);
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
