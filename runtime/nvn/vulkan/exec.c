@@ -2040,7 +2040,71 @@ static void gfast_prepare(VkCommandBuffer cb) {
             LOG("\\n");
         }
     }
-    if (!on || !gmem_buf) return;
+    if (!on) return;
+    if (!gmem_buf) {
+        // Android: stage the bound compute storage ranges explicitly because
+        // VK_EXT_external_memory_host is unavailable. Keep the same gmap
+        // layout used by the PC GLSL translator.
+        uint64_t heap = kernel_heap_size();
+        struct { uint64_t lo, hi; } ranges[16];
+        int nr = 0;
+        for (int i = 0; i < 16; ++i) {
+            uint64_t addr = st.sbuf[5][i].addr, size = st.sbuf[5][i].size;
+            if (!addr || !size || addr < HEAP_BASE || addr - HEAP_BASE >= heap ||
+                size > heap - (addr - HEAP_BASE)) continue;
+            uint64_t lo = (addr - HEAP_BASE) & ~3ull;
+            uint64_t hi = (addr - HEAP_BASE + size + 3) & ~3ull;
+            if (hi > heap) hi = heap & ~3ull;
+            if (hi <= lo) continue;
+            int k = nr++;
+            while (k && ranges[k - 1].lo > lo) {
+                ranges[k] = ranges[k - 1]; --k;
+            }
+            ranges[k] = (typeof(ranges[0])){lo, hi};
+        }
+        int merged = 0;
+        for (int i = 0; i < nr; ++i) {
+            if (merged && ranges[i].lo <= ranges[merged - 1].hi) {
+                if (ranges[i].hi > ranges[merged - 1].hi)
+                    ranges[merged - 1].hi = ranges[i].hi;
+            } else ranges[merged++] = ranges[i];
+        }
+        uint64_t total = 0;
+        for (int i = 0; i < merged; ++i) {
+            uint64_t len = ranges[i].hi - ranges[i].lo;
+            if (len > GFAST_SIZE - total || i >= GMAP_MAX) {
+                LOG("[gmem-compute] snapshot too large; dispatch remains unmapped\n");
+                memset(gmap_tab, 0, sizeof gmap_tab);
+                return;
+            }
+            gfast_cp[i] = (VkBufferCopy){ranges[i].lo, total, len};
+            gmap_tab[i * 4] = (uint32_t)ranges[i].lo;
+            gmap_tab[i * 4 + 1] = (uint32_t)len;
+            gmap_tab[i * 4 + 2] = (uint32_t)(total >> 2);
+            total = (total + len + 255) & ~255ull;
+        }
+        if (!merged) return;
+        VkSpan source = vk_transient(total, 256);
+        memset(source.ptr, 0, total);
+        VkBufferCopy copies[GMAP_MAX];
+        for (int i = 0; i < merged; ++i) {
+            memcpy((uint8_t *)source.ptr + gfast_cp[i].dstOffset,
+                   (const void *)(uintptr_t)(HEAP_BASE + gfast_cp[i].srcOffset),
+                   gfast_cp[i].size);
+            copies[i] = (VkBufferCopy){source.off + gfast_cp[i].dstOffset,
+                                        gfast_cp[i].dstOffset, gfast_cp[i].size};
+        }
+        vkCmdCopyBuffer(cb, source.buf, gfast_buf, merged, copies);
+        vk_full_barrier(cb);
+        gmap_tab[GMAP_MAX * 4] = (uint32_t)merged;
+        gfast_n = merged;
+        static unsigned logged;
+        if (logged++ < 8) LOG("[gmem-compute-copy] shader=%llx ranges=%d bytes=%llu store-ready\n",
+            (unsigned long long)st.program->stages[5].code_addr, merged,
+            (unsigned long long)total);
+        return;
+    }
+    if (!gmem_buf) return;
     struct { uint64_t lo, hi; } r[16];
     int n = 0;
     for (int i = 0; i < 16; i++) {  // heap offsets of the bound storage buffers, 256-aligned
@@ -2087,6 +2151,31 @@ static void gfast_prepare(VkCommandBuffer cb) {
 // After a storing dispatch: its ranges back to the heap (before anything else reads them: draws, the CPU after the fence).
 static void gfast_finish(VkCommandBuffer cb) {
     if (!gfast_n) return;
+    if (!gmem_buf) {
+        uint64_t total = 0;
+        for (int i = 0; i < gfast_n; ++i) {
+            uint64_t end = gfast_cp[i].dstOffset + gfast_cp[i].size;
+            if (end > total) total = end;
+        }
+        VkSpan rb = vk_readback(total);
+        VkBufferCopy back[GMAP_MAX];
+        for (int i = 0; i < gfast_n; ++i)
+            back[i] = (VkBufferCopy){gfast_cp[i].dstOffset,
+                                     rb.off + gfast_cp[i].dstOffset,
+                                     gfast_cp[i].size};
+        vk_full_barrier(cb);
+        vkCmdCopyBuffer(cb, gfast_buf, rb.buf, gfast_n, back);
+        // The guest CPU and subsequent dispatches must see the stores. A
+        // blocking submit is conservative but correct for this first port.
+        renderer_flush();
+        vk_readback_invalidate();
+        for (int i = 0; i < gfast_n; ++i)
+            memcpy((void *)(uintptr_t)(HEAP_BASE + gfast_cp[i].srcOffset),
+                   (const uint8_t *)rb.ptr + gfast_cp[i].dstOffset,
+                   gfast_cp[i].size);
+        gfast_n = 0;
+        return;
+    }
     VkBufferCopy back[GMAP_MAX];
     for (int i = 0; i < gfast_n; i++) back[i] = (VkBufferCopy){gfast_cp[i].dstOffset, gfast_cp[i].srcOffset, gfast_cp[i].size};
     vk_full_barrier(cb);
