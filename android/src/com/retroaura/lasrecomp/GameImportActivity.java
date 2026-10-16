@@ -640,26 +640,14 @@ public final class GameImportActivity extends Activity {
             boolean externalImage = hasNamedFile(root, "romfs.bin");
             if (!hasPersistedReadGrant(tree))
                 throw new IllegalStateException("Permissão permanente necessária para a pasta do jogo");
-            if (!externalImage) {
-                boolean canWrite = false;
-                for (android.content.UriPermission grant : getContentResolver().getPersistedUriPermissions())
-                    if (tree.equals(grant.getUri()) && grant.isWritePermission()) canWrite = true;
-                if (!canWrite)
-                    throw new IllegalStateException("Autorize a escrita na pasta para criar romfs.bin sem copiar o jogo");
-                runOnUiThread(() -> status.setText("Gerando romfs.bin diretamente na pasta selecionada..."));
-                Uri created = DocumentsContract.createDocument(getContentResolver(),
-                    DocumentsContract.buildDocumentUriUsingTree(tree, rootId),
-                    "application/octet-stream", "romfs.bin");
-                if (created == null) throw new IllegalStateException("Falha ao criar romfs.bin externo");
-                try {
-                    new SafRomfsBuilder(this, tree).build(romfs.uri, created);
-                    externalImage = true;
-                } catch (Exception failure) {
-                    try { DocumentsContract.deleteDocument(getContentResolver(), created); }
-                    catch (Exception ignored) {}
-                    throw failure;
-                }
-            }
+            // Never synthesize a multi-gigabyte image without explicit consent.
+            // Until the native RomFS directory backend is implemented, fail
+            // safely instead of silently consuming another ~6 GB.
+            if (!externalImage)
+                throw new IllegalStateException(
+                    "Leitura direta da pasta romfs ainda não implementada. " +
+                    "Nenhum romfs.bin será criado automaticamente. " +
+                    "Esta versão requer um romfs.bin já existente.");
             copyTree(tree, exefs, new File(stage, "exefs"), 0);
             if (externalImage) {
                 try (FileOutputStream marker = new FileOutputStream(new File(stage, ".external-romfs"))) {
