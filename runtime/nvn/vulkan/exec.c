@@ -2067,13 +2067,13 @@ static void gfast_prepare(VkCommandBuffer cb, bool writes_gmem) {
         for (int i = 0; i < m; i++) {
             // Snapshot guest bytes into the upload arena, without importing
             // host memory as a Vulkan storage buffer.
-            VkSpan src = guest_copy(HEAP_BASE + cp[i].srcOffset, cp[i].size);
+            VkSpan src = vk_transient_copy((const void *)(uintptr_t)(HEAP_BASE + cp[i].srcOffset), cp[i].size, 256);
             VkBufferCopy upload = {src.off, cp[i].dstOffset, cp[i].size};
             vkCmdCopyBuffer(cb, src.buf, gfast_buf, 1, &upload);
         }
         static bool reported;
         if (!reported) {
-            LOG("[vk] global memory fallback: transient guest uploads for read-only compute (no host import)\\n");
+            LOG("[vk] global memory fallback: transient guest uploads for read-only compute (no host import)\n");
             reported = true;
         }
     }
