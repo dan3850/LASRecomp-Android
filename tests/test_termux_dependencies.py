@@ -9,6 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = (ROOT / "compilar-lasrecomp-termux.sh").read_text()
 COMPILE = "compile(){" + SCRIPT.split("compile(){", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+BUILD_ID = "write_build_id(){" + SCRIPT.split("write_build_id(){", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
 
 
 class Dependencies(unittest.TestCase):
@@ -33,6 +34,26 @@ class Dependencies(unittest.TestCase):
         self.header.write_text(text)
         # Avoid sleeps and filesystem timestamp resolution dependencies.
         os.utime(self.obj, ns=(1_000_000_000, 1_000_000_000))
+        os.utime(self.source, ns=(0, 0))
+        os.utime(self.stamp, ns=(0, 0)) # the header alone must require rebuilding
+
+    def test_build_id_header_changes_only_when_revision_changes(self):
+        def write_id(revision):
+            subprocess.run(["bash", "-c", 'set -euo pipefail\n' + BUILD_ID + '\nwrite_build_id "$1" "$2"',
+                "test", str(self.header), revision], check=True)
+        self.source.write_text('#include "layout.h"\nconst char *build_id(void) { return LASRECOMP_BUILD_SHA; }\n')
+        write_id("abcdef123456")
+        self.compile()
+        original = self.obj.read_bytes()
+        header_time = self.header.stat().st_mtime_ns
+        write_id("abcdef123456")
+        self.assertEqual(header_time, self.header.stat().st_mtime_ns)
+        self.assertNotIn("CC ", self.compile().stdout)
+        write_id("123456abcdef")
+        os.utime(self.source, ns=(0, 0)); os.utime(self.stamp, ns=(0, 0))
+        os.utime(self.obj, ns=(1_000_000_000, 1_000_000_000))
+        self.compile()
+        self.assertNotEqual(original, self.obj.read_bytes())
 
     def test_struct_change_rebuilds_reader_and_preserves_other_objects(self):
         self.compile()

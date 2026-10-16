@@ -203,3 +203,50 @@ Ainda falta confirmar no aparelho que as fontes já importadas passam a ser
 selecionadas e que o jogo atravessa a porta da casa, mantém a imagem corrigida e
 retoma a tela sem fechar. O erro BFTTF foi comprovado e corrigido; atribuir a ele
 todo acesso nulo do jogo ou prometer recuperação de FPS exige esse teste real.
+
+## Transições e primeiro uso de shaders: ZIP de 16/10/2026, 11:26:44
+
+O usuário informou que fechou o aplicativo manualmente e conseguiu atravessar a
+porta sem crash. Essa sessão não tem SIGSEGV. `surface lost` no encerramento não
+é evidência de um novo fechamento inesperado. A fonte registrada ainda é
+`android_fallback.ttf`; não há carregamento de Standard/NintendoExt importadas
+nesse ZIP.
+
+Ao entrar em `Field`, o contador registra 8.140 e depois 10.826 operações
+descartadas por intervalo de aproximadamente dois segundos, enquanto novos
+programas/pipelines são preparados. `stat_skipped` agrega causas diferentes;
+esses números sozinhos não atribuem cada descarte à compilação, nem medem por
+quanto tempo os pixels apresentados ficaram pretos.
+
+O código, porém, descartava explicitamente draws e dispatches cujo programa ou
+pipeline ainda estava compilando. Isso também pode perder passes de profundidade,
+composição e escritas compute executadas uma única vez. No Android, os quatro
+pontos de consumo agora aguardam o estado final do recurso necessário. A
+compilação continua nas filas existentes, e publica sucesso ou falha numa condição
+de espera; uma falha também acorda o consumidor, que não tenta usar handles
+inválidos. Recursos prontos continuam com o atalho atômico. Se não for possível
+criar threads de compilação, o trabalho é executado inline. A inicialização dos
+workers usa `pthread_once`, pois tanto tradução quanto compute podem iniciá-los.
+A política assíncrona anterior permanece nos outros sistemas.
+
+Os testes `python3 tests/test_build_wait.py` passaram nas políticas Android e
+desktop, também com ASan/UBSan: espera por sucesso e erro, publicação de dados,
+notificações de outro recurso e conclusão anterior à espera. A integração
+`tests/test_vulkan_gmem.py` cria um pipeline compute Vulkan real na fila de
+workers, aguarda a conclusão e verifica o primeiro dispatch pelo resultado no
+heap. Os 13 casos Maxwell/GMEM, snapshots e amostragem/atualização R8 continuam
+passando em Lavapipe. `exec.c` também compilou no host com `__ANDROID__`/Volk.
+
+O identificador de build do relatório podia continuar antigo porque
+`diagnostics.c` não era recompilado ao mudar apenas o HEAD. No Termux, um header
+gerado, dependência apenas desse módulo, agora atualiza o identificador e mantém
+seu timestamp se o HEAD não mudou. Os testes de dependências verificam isso e
+que somente a alteração de um header é suficiente para recompilar seu consumidor.
+
+Esta correção impede a perda de comandos por compilação pendente. Não acelera,
+por si só, toda leitura de arquivos ou a compilação inicial: o primeiro encontro
+com shaders novos pode provocar uma pausa. Não foram alterados fades, lógica,
+temporização ou controles do jogo. A redução da tela preta e o desempenho nas
+transições ainda precisam ser comparados no Adreno, incluindo uma segunda
+passagem pela mesma porta com os pipelines já prontos. Não houve validação visual
+do jogo nem geração de APK neste ambiente.
