@@ -109,16 +109,16 @@ public final class GameImportActivity extends Activity {
                         for (String line : new String(bytes, 0, len, StandardCharsets.UTF_8).split("\\r?\\n")) {
                             String[] pair = line.trim().split("\\s*=\\s*", 2);
                             if (pair.length == 2 && pair[0].equals(key)) {
-                                if (!replaced) out.append(key).append(" = ").append(value).append('\\n');
+                                if (!replaced) out.append(key).append(" = ").append(value).append('\n');
                                 replaced = true;
                             } else {
-                                out.append(line).append('\\n');
+                                out.append(line).append('\n');
                             }
                         }
                     }
                 }
             }
-            if (!replaced) out.append(key).append(" = ").append(value).append('\\n');
+            if (!replaced) out.append(key).append(" = ").append(value).append('\n');
             File temporary = new File(getFilesDir(), "larecomp.ini.tmp");
             try (FileOutputStream stream = new FileOutputStream(temporary)) {
                 stream.write(out.toString().getBytes(StandardCharsets.UTF_8));
