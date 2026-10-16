@@ -25,6 +25,9 @@ import java.nio.charset.StandardCharsets;
 public final class GameSDLActivity extends SDLActivity {
     private static native boolean nativeRequestGraphicsCapture();
     /** Exact native-library folder required by AdrenoTools hooks. */
+    public String getVulkanDriverFilesDirectory() {
+        return getFilesDir().getAbsolutePath();
+    }
     public String getVulkanHookLibraryDirectory() {
         return getApplicationInfo().nativeLibraryDir;
     }
