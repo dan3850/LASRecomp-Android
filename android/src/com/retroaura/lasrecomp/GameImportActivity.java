@@ -672,7 +672,13 @@ public final class GameImportActivity extends Activity {
                 String prepareError = nativePrepareGame(stage.getAbsolutePath());
                 if (prepareError != null) throw new IllegalStateException(prepareError);
             }
-            if (!hasGameFiles(stage))
+            boolean stageValid = new File(stage, "exefs/main").isFile()
+                && new File(stage, "exefs/sdk").isFile()
+                && new File(stage, "exefs/main.npdm").isFile()
+                && (externalImage
+                    ? new File(stage, ".external-romfs").isFile() && hasPersistedReadGrant(tree)
+                    : new File(stage, "romfs.bin").isFile());
+            if (!stageValid)
                 throw new IllegalStateException("Não foi possível preparar todos os arquivos do jogo");
 
             // Do not erase a previous valid game until the new import is complete.
