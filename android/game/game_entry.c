@@ -180,6 +180,20 @@ int SDL_main(int argc, char **argv) {
     int settings_len = snprintf(settings_path, sizeof settings_path, "%s/larecomp.ini", files);
     if (settings_len > 0 && settings_len < (int)sizeof settings_path)
         setenv("LARECOMP_SETTINGS", settings_path, 1);
+    // Optional, user-controlled CPU/GPU performance trace. Off during normal play:
+    // Vulkan timestamp queries and per-category timers can affect frame pacing.
+    char profile_path[PATH_MAX];
+    int profile_len = snprintf(profile_path, sizeof profile_path, "%s/perf_diagnostics.enabled", files);
+    if (profile_len > 0 && profile_len < (int)sizeof profile_path) {
+        FILE *marker = fopen(profile_path, "rb");
+        if (marker) {
+            fclose(marker);
+            setenv("LARECOMP_VK_PROF", "1", 1);
+            boot_mark(files, "CPU/GPU profiler enabled for this run", 1);
+        } else {
+            unsetenv("LARECOMP_VK_PROF");
+        }
+    }
 #ifdef __ANDROID__
     JNIEnv *vkenv = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject vkactivity = SDL_GetAndroidActivity();
