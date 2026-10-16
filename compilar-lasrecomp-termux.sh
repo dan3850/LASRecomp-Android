@@ -99,11 +99,11 @@ cd "$ROOT"
 # Clang do Termux e Android/Bionic; bibliotecas sao validadas antes do APK.
 CMAKE_OPTS=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
  -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS=-fPIC -DCMAKE_CXX_FLAGS=-fPIC
- -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,max-page-size=16384" -DANDROID=ON)
+ -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,max-page-size=16384")
 step "SDL3 — compila do fonte"
 cmake -S "$DEPS/sdl3" -B "$WORK/sdl3" "${CMAKE_OPTS[@]}" \
  -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF \
- -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_ANDROID=ON
+ -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
 cmake --build "$WORK/sdl3" --parallel "$JOBS"
 SDL_SO="$(find "$WORK/sdl3" -name libSDL3.so -type f -print -quit)"
 [[ -s "$SDL_SO" ]] || fail "SDL3 nao gerou libSDL3.so"
