@@ -52,7 +52,7 @@ find_sdk_tool(){
  local tool="$1" candidate
  if command -v "$tool" >/dev/null 2>&1; then command -v "$tool"; return; fi
  candidate="$(find "$ANDROID_HOME/build-tools" -type f -name "$tool" 2>/dev/null | sort -V | tail -1 || true)"
- [[ -n "$candidate" && -x "$candidate" ]] && { printf '%s\\n' "$candidate"; return; }
+ [[ -n "$candidate" && -x "$candidate" ]] && { printf '%s\n' "$candidate"; return; }
  return 1
 }
 ZIPALIGN_CMD="$(find_sdk_tool zipalign || true)"
