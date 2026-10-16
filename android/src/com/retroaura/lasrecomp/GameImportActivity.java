@@ -432,8 +432,9 @@ public final class GameImportActivity extends Activity {
         return new File(root, "exefs/main").isFile()
             && new File(root, "exefs/sdk").isFile()
             && new File(root, "exefs/main.npdm").isFile()
-            && new File(root, "romfs/region_common").isDirectory()
-            && new File(root, "romfs.bin").isFile();
+            && (new File(root, "romfs.bin").isFile()
+                || (new File(root, ".external-romfs").isFile()
+                    && rememberedGameFolder() != null));
     }
 
     private boolean hasGameCode() {
@@ -526,7 +527,7 @@ public final class GameImportActivity extends Activity {
         libraryButton.setEnabled(false);
         verifyButton.setEnabled(false);
         playButton.setEnabled(false);
-        status.setText("Copiando e preparando os arquivos do jogo...");
+        status.setText("Verificando arquivos externos e preparando o jogo...");
         new Thread(() -> importTree(tree), "LASRecompImport").start();
     }
 
@@ -628,15 +629,49 @@ public final class GameImportActivity extends Activity {
                 !hasNamedFile(exefsFiles, "sdk") ||
                 !hasNamedFile(exefsFiles, "main.npdm"))
                 throw new IllegalStateException("Pasta exefs incompleta: main, sdk ou main.npdm ausente");
-            if (namedFolder(children(tree, documentId(romfs)), "region_common") == null)
+            if (!hasNamedFile(root, "romfs.bin") &&
+                namedFolder(children(tree, documentId(romfs)), "region_common") == null)
                 throw new IllegalStateException("Pasta romfs incompleta: region_common ausente");
+            // Fast path: the user's folder already contains a prepared RomFS
+            // image. Keep that large image outside the APK's private storage.
+            // Only the relatively small executable files are staged locally.
+            boolean externalImage = hasNamedFile(root, "romfs.bin");
+            if (externalImage && !hasPersistedReadGrant(tree))
+                throw new IllegalStateException("Permissão permanente necessária para ler romfs.bin");
             copyTree(tree, exefs, new File(stage, "exefs"), 0);
-            copyTree(tree, romfs, new File(stage, "romfs"), 0);
+            if (externalImage) {
+                try (FileOutputStream marker = new FileOutputStream(new File(stage, ".external-romfs"))) {
+                    marker.write(1);
+                }
+            } else {
+                copyTree(tree, romfs, new File(stage, "romfs"), 0);
+            }
             // Prepare the actual binary RomFS image the guest reads. The bridge
             // also validates the exact v1.0.0 build ID before accepting the game.
             runOnUiThread(() -> status.setText("Criando romfs.bin a partir da ROMFS..."));
-            String prepareError = nativePrepareGame(stage.getAbsolutePath());
-            if (prepareError != null) throw new IllegalStateException(prepareError);
+            if (externalImage) {
+                // Native preparation builds a second huge image; avoid it when
+                // a ready-to-read external image was supplied. Validate NSO ID.
+                try (RandomAccessFile main = new RandomAccessFile(new File(stage, "exefs/main"), "r")) {
+                    byte[] id = new byte[8];
+                    main.seek(0x40);
+                    main.readFully(id);
+                    byte[] expected = {(byte)0xae,0x16,(byte)0xf7,0x1e,0x00,0x2a,(byte)0xf8,(byte)0xcb};
+                    if (!java.util.Arrays.equals(id, expected))
+                        throw new IllegalStateException("Versão do jogo incompatível (necessária v1.0.0)");
+                }
+                try (android.os.ParcelFileDescriptor fd = getContentResolver().openFileDescriptor(
+                        GameDocumentBridge.child(this, tree, "romfs.bin"), "r")) {
+                    if (fd == null || fd.getStatSize() < 512)
+                        throw new IllegalStateException("romfs.bin externo ausente ou vazio");
+                    if (android.system.Os.lseek(fd.getFileDescriptor(), 0,
+                            android.system.OsConstants.SEEK_CUR) < 0)
+                        throw new IllegalStateException("romfs.bin não permite acesso aleatório");
+                }
+            } else {
+                String prepareError = nativePrepareGame(stage.getAbsolutePath());
+                if (prepareError != null) throw new IllegalStateException(prepareError);
+            }
             if (!hasGameFiles(stage))
                 throw new IllegalStateException("Não foi possível preparar todos os arquivos do jogo");
 
@@ -650,9 +685,7 @@ public final class GameImportActivity extends Activity {
                 throw new IllegalStateException("Não foi possível finalizar a importação");
             }
             if (previous.exists()) removeTree(previous);
-            // Keep the SAF grant for future external-file loading; the current
-            // engine still uses the prepared private copy until its file I/O
-            // bridge supports content URIs.
+            // Keep the SAF grant so external RomFS remains readable on next launch.
             if (hasPersistedReadGrant(tree))
                 getPreferences(MODE_PRIVATE).edit().putString(GAME_TREE_PREF, tree.toString()).apply();
         } catch (Exception e) {
