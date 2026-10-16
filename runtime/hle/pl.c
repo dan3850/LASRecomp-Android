@@ -31,6 +31,8 @@ static uint8_t *read_file(const char *path, size_t *len) {
     return p;
 }
 
+static bool valid_sfnt(const uint8_t *d, size_t len);
+
 // .bfttf -> TTF in place (returns the new length, 0 if it isn't one)
 static size_t bfttf_decode(uint8_t *d, size_t len) {
     static const uint32_t KEY = 0x49621806;
@@ -39,16 +41,27 @@ static size_t bfttf_decode(uint8_t *d, size_t len) {
         uint32_t k = swap ? __builtin_bswap32(KEY) : KEY;
         uint32_t w0, w1, w2;
         memcpy(&w0, d, 4); memcpy(&w1, d + 4, 4); memcpy(&w2, d + 8, 4);
-        uint32_t size = w1 ^ k, ver = w2 ^ k;
-        if (size == 0 || size > len - 8 || (ver != 0x00000100u && ver != 0x4F54544Fu)) continue;  // sfnt 1.0 / OTTO
+        // The XOR stream restores sfnt bytes, but the container length is a
+        // big-endian integer. Reading it as a native u32 rejected normal Switch
+        // BFTTF files even though Android's importer accepted their signature.
+        uint32_t legacy_size = w1 ^ k, size = __builtin_bswap32(legacy_size), ver = w2 ^ k;
+        bool legacy_ok = legacy_size && legacy_size <= len - 8;
+        if (!size || size > len - 8) size = legacy_ok ? legacy_size : 0;
+        if (!size || (ver != 0x00000100u && ver != 0x4F54544Fu)) continue;  // sfnt 1.0 / OTTO
         (void)w0;
-        for (size_t i = 0; i + 4 <= size; i += 4) {
+        size_t payload = len - 8, i = 0;
+        for (; i + 4 <= payload; i += 4) {
             uint32_t w;
             memcpy(&w, d + 8 + i, 4);
             w ^= k;
             memcpy(d + i, &w, 4);
         }
-        return size;
+        const uint8_t *key_bytes = (const uint8_t *)&k;
+        for (; i < payload; ++i) d[i] = d[8 + i] ^ key_bytes[i & 3];
+        if (valid_sfnt(d, size)) return size;
+        // Retain older native-endian containers only when their entire sfnt
+        // directory also fits; never hand the guest a silently truncated font.
+        return legacy_ok && valid_sfnt(d, legacy_size) ? legacy_size : 0;
     }
     return 0;
 }
