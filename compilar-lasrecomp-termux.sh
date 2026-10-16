@@ -155,6 +155,15 @@ cmake -S "$DEPS/shaderc" -B "$WORK/shaderc" "${CMAKE_OPTS[@]}" \
 cmake --build "$WORK/shaderc" --target shaderc_shared --parallel "$JOBS"
 SHADERC_SO="$(find "$WORK/shaderc" -name libshaderc_shared.so -type f -print -quit)"
 [[ -s "$SHADERC_SO" ]] || fail "Shaderc nao gerou libshaderc_shared.so"
+# FFmpeg ARM64: assembler NEON gera relocacoes nao-PIC em libavutil.a.
+# Compila apenas o FFmpeg com assembler desativado; nao toca no motor.
+FFMPEG_PIC_STAMP="$WORK/ffmpeg-pic-noasm.stamp"
+if [[ ! -f "$FFMPEG_PIC_STAMP" ]]; then
+ if [[ -f "$DEPS/ffmpeg/ffbuild/config.mak" ]]; then
+  make -C "$DEPS/ffmpeg" distclean || fail "Falhou ao reconfigurar somente FFmpeg"
+ fi
+ touch "$FFMPEG_PIC_STAMP"
+fi
 step "FFmpeg estatico ARM64"
 FFDEST="$WORK/ffmpeg-install"
 mkdir -p "$FFDEST"
@@ -162,7 +171,7 @@ if [[ ! -s "$DEPS/ffmpeg/ffbuild/config.mak" ]]; then
  (cd "$DEPS/ffmpeg" && ./configure --prefix="$FFDEST" --target-os=android \
    --arch=aarch64 --cpu=armv8-a --cc=clang --cxx=clang++ \
    --ar=llvm-ar --nm=llvm-nm --ranlib=llvm-ranlib --strip=llvm-strip \
-   --enable-pic --disable-doc --disable-programs --enable-static \
+   --enable-pic --disable-asm --disable-doc --disable-programs --enable-static \
    --disable-shared --disable-debug --disable-autodetect --disable-network \
    --disable-everything --enable-avcodec --enable-avformat --enable-avutil \
    --enable-swscale --enable-swresample \
