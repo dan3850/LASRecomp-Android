@@ -4,7 +4,9 @@ Script **independente** do GBAura e de `tools/build-android-termux.sh`, baseado 
 
 ## Executar
 
-No Termux normal (fora de PRoot/Ubuntu), instale **apenas o que estiver faltando**:
+No Termux normal (fora de PRoot/Ubuntu), o script verifica as ferramentas e instala automaticamente **somente `zipalign`, `apksigner`, `patchelf` ou `python-fonttools` que estiverem faltando**, usando `pkg install -y`. O SDK e caches existentes nao sao reinstalados.
+
+Se preferir instalar as ferramentas manualmente:
 
 ```sh
 pkg install git clang cmake ninja make python openjdk-21 android-sdk aapt2 zip zipalign apksigner patchelf
