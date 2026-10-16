@@ -457,10 +457,10 @@ public final class GameImportActivity extends Activity {
         if (files && code) {
             status.setText("Arquivos e código recompilado disponíveis.\nPronto para tentar iniciar o jogo.");
         } else if (files) {
-            status.setText("Arquivos do jogo importados.\nImporte sua liblasgame.so de teste para tentar iniciar o jogo.");
+            status.setText("Arquivos do jogo preparados.\nImporte sua liblasgame.so de teste para tentar iniciar o jogo.");
         } else {
             status.setText("Selecione a pasta com exefs e romfs da sua cópia do jogo v1.0.0.\n"
-                + "Os arquivos serão guardados apenas neste aplicativo."
+                + "Se houver romfs.bin na pasta, ele será lido diretamente, sem duplicação."
                 + (code ? "\nO código do jogo já está instalado neste APK." : ""));
         }
     }
