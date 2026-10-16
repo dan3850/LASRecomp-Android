@@ -196,7 +196,19 @@ if [[ -n "${LASRECOMP_EDEN_STANDARD_TTF:-}" && -n "${LASRECOMP_EDEN_EXTENDED_TTF
     test -s "$LASRECOMP_EDEN_EXTENDED_TTF"
     cp "$LASRECOMP_EDEN_STANDARD_TTF" "$OUT/assets/lasrecomp_eden_standard.ttf"
     cp "$LASRECOMP_EDEN_EXTENDED_TTF" "$OUT/assets/lasrecomp_eden_extended.ttf"
-    (cd "$OUT" && zip -q unsigned.apk assets/lasrecomp_eden_standard.ttf assets/lasrecomp_eden_extended.ttf)
+    # Include the full GPLv2 text and provenance alongside the font assets.
+    # Eden's GPL-2.0-or-later source/data is separate from LASRecomp's MIT code.
+    GPL2_TEXT="${LASRECOMP_GPL2_LICENSE:-/usr/share/common-licenses/GPL-2}"
+    [[ -s "$GPL2_TEXT" ]] || {
+        echo "ERRO: texto da licenca GPL-2.0 ausente: $GPL2_TEXT" >&2
+        exit 1
+    }
+    cp "$GPL2_TEXT" "$OUT/assets/Eden-Fonts-GPL-2.0.txt"
+    printf '%s\n' 'Eden fallback font data: Copyright 2019 yuzu Emulator Project' \
+        'License: GPL-2.0-or-later' \
+        'Source: https://github.com/eden-emulator/mirror/tree/d8c6c59b679867d2595fdc0953df033475e23380/src/core/file_sys/system_archive/data' \
+        > "$OUT/assets/Eden-Fonts-SOURCE.txt"
+    (cd "$OUT" && zip -q unsigned.apk assets/lasrecomp_eden_standard.ttf assets/lasrecomp_eden_extended.ttf assets/Eden-Fonts-GPL-2.0.txt assets/Eden-Fonts-SOURCE.txt)
     echo "Eden-style built-in Standard and Nintendo Extension fonts bundled."
 fi
 "$ZIPALIGN_BIN" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
