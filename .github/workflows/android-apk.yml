@@ -6,6 +6,7 @@ on:
       - android/phase1-termux-bootstrap
       - android/runtime-integration
       - android/on-device-auto-build
+      - android/eden-bundled-fonts-side-by-side
   pull_request:
     branches:
       - main
