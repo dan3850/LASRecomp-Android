@@ -36,6 +36,7 @@ uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)
 #define PROF_T0() uint64_t prof_t0_ = prof ? SDL_GetTicksNS() : 0
 #define PROF_ADD(v) do { if (prof) v += SDL_GetTicksNS() - prof_t0_; } while (0)
 static _Atomic int stat_compiles;
+static uint64_t stat_first_use_wait_ns, stat_first_use_waits, stat_first_use_timeouts, stat_first_use_failed;
 static uint64_t op_counts[CMD_COUNT];
 bool g_debug_frame;
 static char stats_text[2048];
@@ -791,7 +792,8 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
 }
 
 // ================================================================== worker threads (shader / pipeline builds)
-// First-use compiles run off the render thread; draws needing them are skipped until ready (as on Metal).
+// First-use compiles run on workers. Android waits for missing first-use builds
+// instead of displaying a partly rendered scene; other platforms may opt in.
 // LARECOMP_SYNC_SHADERS=1 builds on first use, blocking (deterministic tests).
 typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
 static Job *jobs_head, *jobs_tail;
@@ -871,6 +873,50 @@ static void run_job(void (*fn)(void *), void *arg) {
     jobs_tail = j;
     pthread_cond_signal(&jobs_cond);
     pthread_mutex_unlock(&jobs_lock);
+}
+
+// First-use rendering: do not silently drop draws/dispatches while their shaders
+// or pipelines are merely being compiled. A missed pre-pass can leave whole
+// portions of the scene black while the game simulation keeps advancing.
+// Jobs execute on independent workers, so waiting here does not block them.
+// A finite timeout preserves the old skip behavior if a worker becomes stuck.
+// LARECOMP_VK_WAIT_FIRST_USE=0 restores the old async/skip policy on Android.
+// LARECOMP_VK_WAIT_FIRST_USE=1 enables this policy on other platforms.
+static bool first_use_build_ready(_Atomic int *state, const char *kind) {
+    int s = atomic_load_explicit(state, memory_order_acquire);
+    if (s == 1) return true;
+    if (s == 2) { stat_first_use_failed++; return false; }
+    static int wait_enabled = -1;
+    if (wait_enabled < 0) {
+        const char *env = getenv("LARECOMP_VK_WAIT_FIRST_USE");
+#ifdef __ANDROID__
+        wait_enabled = !env || atoi(env) != 0;
+#else
+        wait_enabled = env && atoi(env) != 0;
+#endif
+        LOG("[vk] wait for first-use shader/pipeline builds: %s (max 5s per build)\n",
+            wait_enabled ? "enabled" : "disabled");
+    }
+    if (!wait_enabled) return false;
+
+    uint64_t start = SDL_GetTicksNS();
+    do {
+        SDL_Delay(1);
+        s = atomic_load_explicit(state, memory_order_acquire);
+    } while (s == 0 && SDL_GetTicksNS() - start < 5000000000ull);
+    uint64_t elapsed = SDL_GetTicksNS() - start;
+    stat_first_use_waits++;
+    stat_first_use_wait_ns += elapsed;
+    if (s == 0) {
+        stat_first_use_timeouts++;
+        static unsigned warnings;
+        if (warnings++ < 10)
+            LOG("[vk] first-use %s still compiling after %.0f ms; skipping to avoid a hang\n",
+                kind, elapsed / 1000000.0);
+    } else if (s == 2) {
+        stat_first_use_failed++;
+    }
+    return s == 1;
 }
 
 // ================================================================== state
@@ -960,6 +1006,16 @@ const char *renderer_stats(void) {
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     stat_gmem_size_bypass = stat_gmem_capacity_bypass = 0;
     stat_gmem_busy_bypass = stat_gmem_budget_bypass = stat_gmem_evicted_bytes = stat_gmem_evictions = 0;
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 ", first-use wait %.0fms/%llu timeout %llu failed %llu",
+                 stat_first_use_wait_ns / 1000000.0,
+                 (unsigned long long)stat_first_use_waits,
+                 (unsigned long long)stat_first_use_timeouts,
+                 (unsigned long long)stat_first_use_failed);
+        stat_first_use_wait_ns = stat_first_use_waits = stat_first_use_timeouts = stat_first_use_failed = 0;
+    }
     {
         extern void vk_alias_stats(void);
         vk_alias_stats();
@@ -3127,7 +3183,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
-    if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
+    if (!cp || !first_use_build_ready(&cp->p.state, "compute pipeline")) { stat_skipped++; return; }
     {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
         static uint64_t skip = ~0ull;
         if (skip == ~0ull) { const char *e = getenv("LARECOMP_SKIP_CS"); skip = e ? strtoull(e, NULL, 16) : 0; }
@@ -3225,7 +3281,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
     Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+    if (!pr || !first_use_build_ready(&pr->state, "graphics shader")) { stat_skipped++; return; }
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
@@ -3239,7 +3295,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
-            if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+            if (!pr || !first_use_build_ready(&pr->state, "mirror graphics shader")) { stat_skipped++; return; }
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
@@ -3358,7 +3414,7 @@ static void draw_(CmdRec *r, bool indexed) {
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
     }
-    if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
+    if (!first_use_build_ready(&pp->state, "graphics pipeline")) { stat_skipped++; return; }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
