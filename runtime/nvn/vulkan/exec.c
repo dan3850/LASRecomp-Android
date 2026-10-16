@@ -2435,7 +2435,7 @@ static VkDescriptorBufferInfo graphics_gmem_map(int stage, uint32_t tab[(GMAP_MA
     unsigned mapped = 0;
     for (unsigned i = 0; i < merged; ++i) {
         uint64_t len = ranges[i].end - ranges[i].start;
-        if (len > (256ull << 10) - total) continue;
+        if (len > (1024ull << 10) - total) continue;
         tab[mapped * 4] = (uint32_t)ranges[i].start;
         tab[mapped * 4 + 1] = (uint32_t)len;
         tab[mapped * 4 + 2] = (uint32_t)(total >> 2);
