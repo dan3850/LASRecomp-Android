@@ -271,6 +271,30 @@ static void snapshots(void) {
     puts("GMEM snapshots: 501 identical reads copy 1 MiB; CPU/inline/submission invalidation and safe compute reuse PASS");
 }
 
+static void split_counter_pairs(void) {
+    uint64_t records[10][2] = {{0}};
+    memset(&counter_pace_diag, 0, sizeof counter_pace_diag);
+    counter_pace_diag.since_ns = plat_now_ns();
+    counter_prev_out = 0;
+    // Ten submissions wrap the eight-slot ring. Each pair is split between
+    // submissions, matching the case the previous per-slot diagnostic lost.
+    for (unsigned i = 0; i < 10; ++i) {
+        VkCommandBuffer cb = vk_cmd();
+        CounterQ *q = &cq[cur_sub];
+        assert(q->pool && !q->n);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, q->pool, q->n);
+        q->out[q->n++] = records[i];
+        renderer_submit();
+    }
+    renderer_sync();
+    assert(counter_pace_diag.reports == 10 && counter_pace_diag.pairs == 9);
+    uint64_t pairs = counter_pace_diag.pairs;
+    counter_pace_record(records[0], counter_prev_tick, g_vk.props.limits.timestampPeriod);
+    assert(counter_pace_diag.pairs == pairs); // backwards/nonadjacent address
+    counter_prev_out = 0;
+    puts("GPU counter diagnostic: split submissions and ring wrap preserve adjacent intervals; nonadjacent records ignored PASS");
+}
+
 static void persistent_snapshots(void) {
     gmem_snap_enabled = 1;
     memset(st.sbuf, 0, sizeof st.sbuf);
@@ -423,6 +447,7 @@ int main(int argc, char **argv) {
     init();
     for (unsigned i = 0; i < 13; ++i) run(argv[1],i);
     snapshots();
+    split_counter_pairs();
     persistent_snapshots();
     write_pool_limits();
     atlas(argv[1]);

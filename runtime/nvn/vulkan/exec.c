@@ -197,6 +197,25 @@ static void counter_pace_diag_flush(void) {
     counter_pace_diag.since_ns = now;
 }
 
+// Counter records may straddle submissions (and the submission ring wraps).
+// Keep raw GPU time for the diagnostic difference: per-resolve host calibration
+// can change, and must not become part of the measured GPU interval.
+static uintptr_t counter_prev_out;
+static uint64_t counter_prev_tick;
+static void counter_pace_record(const uint64_t *out, uint64_t tick, double period) {
+    if (counter_prev_out && (uintptr_t)out == counter_prev_out + 16 && tick >= counter_prev_tick) {
+        double ms = (tick - counter_prev_tick) * period / 1000000.0;
+        counter_pace_diag.pairs++;
+        counter_pace_diag.sum_ms += ms;
+        if (ms > counter_pace_diag.peak_ms) counter_pace_diag.peak_ms = ms;
+        if (ms >= 16.67) counter_pace_diag.over_16ms++;
+        if (ms >= 30.0) counter_pace_diag.over_30ms++;
+    }
+    counter_prev_out = (uintptr_t)out;
+    counter_prev_tick = tick;
+    counter_pace_diag.reports++;
+}
+
 void vk_pace_frame(void) {
     static int on = -1;
     if (on < 0) {
@@ -260,21 +279,8 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
             if (log) LOG("[counter] seq %llu #%u at %llx host %.3f gpu %.3f ms\n", (unsigned long long)q->seq, k,
                          (unsigned long long)(uintptr_t)q->out[k], q->out[k][1] * 625.0 / 384 / 1e6, gpu * 625.0 / 384 / 1e6);
             uint64_t delivered = pace_end_counter(k ? q->out[k - 1] : NULL, q->out[k], gpu);
-            // Pairs use adjacent 16-byte NVN counter records. Count only genuine
-            // start/end pairs; unrelated timestamps must not be called frame times.
-            if (k && (uintptr_t)q->out[k] == (uintptr_t)q->out[k - 1] + 16) {
-                uint64_t start = q->out[k - 1][1];
-                if (delivered >= start) {
-                    double ms = (delivered - start) * (625.0 / 384.0 / 1000000.0);
-                    counter_pace_diag.pairs++;
-                    counter_pace_diag.sum_ms += ms;
-                    if (ms > counter_pace_diag.peak_ms) counter_pace_diag.peak_ms = ms;
-                    if (ms >= 16.67) counter_pace_diag.over_16ms++;
-                    if (ms >= 30.0) counter_pace_diag.over_30ms++;
-                }
-            }
+            counter_pace_record(q->out[k], t[k], per);
             q->out[k][1] = delivered;
-            counter_pace_diag.reports++;
         }
         stat_counters_gpu += q->n;
         counter_pace_diag_flush();
@@ -284,7 +290,15 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
 
 static void cq_resolve_done(uint64_t done) {  // every slot whose submission is done
     pthread_mutex_lock(&cq_lock);
-    for (int i = 0; i < SUBS; i++) if (cq[i].n && cq[i].seq <= done) cq_resolve(i);
+    // Resolve in queue order, not physical ring order. Otherwise cross-submit
+    // pairs are reversed when cur_sub wraps from SUBS-1 to zero.
+    for (;;) {
+        int oldest = -1;
+        for (int i = 0; i < SUBS; ++i)
+            if (cq[i].n && cq[i].seq <= done && (oldest < 0 || cq[i].seq < cq[oldest].seq)) oldest = i;
+        if (oldest < 0) break;
+        cq_resolve(oldest);
+    }
     pthread_mutex_unlock(&cq_lock);
 }
 
@@ -2784,6 +2798,8 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    counter_prev_out = 0;
+    counter_prev_tick = 0;
     gmem_snap_clear();
     vtx_snapshots_clear();  // backend reset occurs after GPU idle
     gmem_resolve_done(vk_completed_seq());
