@@ -55,7 +55,9 @@ find_sdk_tool(){
  [[ -n "$candidate" && -x "$candidate" ]] && { printf '%s\n' "$candidate"; return; }
  return 1
 }
-ZIPALIGN_CMD="$(find_sdk_tool zipalign || true)"
+# SDK zipalign costuma ser ELF x86_64 e nao executa em Termux ARM64.
+# Aceita somente zipalign instalado nativamente no PATH.
+ZIPALIGN_CMD="$(command -v zipalign || true)"
 APKSIGNER_CMD="$(find_sdk_tool apksigner || true)"
 if [[ -z "$ZIPALIGN_CMD" ]]; then
  echo "AVISO: zipalign nao existe como executavel ARM64; empacotamento prosseguira sem ele."
