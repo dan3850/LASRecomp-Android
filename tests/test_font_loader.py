@@ -11,6 +11,7 @@ import shlex
 import struct
 import subprocess
 import tempfile
+import threading
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,9 @@ class FontLoader(unittest.TestCase):
             fn.restype = ctypes.c_size_t
         cls.lib.font_test_decode.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
         cls.lib.font_test_decode.restype = ctypes.c_size_t
+        cls.lib.font_test_request.argtypes = [ctypes.c_uint, ctypes.c_uint]
+        cls.lib.font_test_request.restype = ctypes.c_uint64
+        cls.lib.font_test_set_allocation_hook.argtypes = [ctypes.c_void_p]
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="las-font-case-")
@@ -135,6 +139,61 @@ class FontLoader(unittest.TestCase):
                 self.assertEqual(ctypes.string_at(out, size), ROBOTO)
         finally:
             os.chdir(previous)
+
+    def test_parallel_first_requests_never_observe_partially_loaded_fonts(self):
+        fonts = self.folder / "fonts"
+        fonts.mkdir()
+        (fonts / "android_fallback.ttf").write_bytes(ROBOTO)
+        allocating, release = threading.Event(), threading.Event()
+        completed = [threading.Event() for _ in range(3)]
+        started = [threading.Event() for _ in range(3)]
+        values, first, failures = {}, {}, []
+
+        @ctypes.CFUNCTYPE(None)
+        def pause_allocation():
+            allocating.set()
+            if not release.wait(5):
+                failures.append("font allocation was never released")
+
+        def initialize():
+            out = ctypes.c_void_p()
+            first["size"] = self.lib.font_test_shared(0, ctypes.byref(out))
+            first["address"] = out.value
+
+        def request(method):
+            started[method].set()
+            values[method] = self.lib.font_test_request(method, 5)
+            completed[method].set()
+
+        previous = Path.cwd()
+        threads = []
+        try:
+            os.chdir(self.folder)
+            self.lib.font_test_set_allocation_hook(pause_allocation)
+            threads.append(threading.Thread(target=initialize))
+            threads[-1].start()
+            self.assertTrue(allocating.wait(3), "first font did not reach allocation")
+            for method in range(3):
+                thread = threading.Thread(target=request, args=(method,))
+                threads.append(thread)
+                thread.start()
+            for event in started:
+                self.assertTrue(event.wait(3))
+            # The first allocation is still paused: no state/address/size call
+            # may advertise a ready font or return a zero pointer/size here.
+            early = [method for method, event in enumerate(completed) if event.wait(.05)]
+        finally:
+            release.set()
+            for thread in threads:
+                thread.join(3)
+            self.lib.font_test_set_allocation_hook(None)
+            os.chdir(previous)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertFalse(failures)
+        self.assertEqual(early, [], "shared-font calls returned before initialization completed")
+        self.assertEqual(values, {0: 1, 1: first["address"], 2: len(ROBOTO)})
+        self.assertEqual(first["size"], len(ROBOTO))
+        self.assertTrue(first["address"])
 
 
 if __name__ == "__main__":

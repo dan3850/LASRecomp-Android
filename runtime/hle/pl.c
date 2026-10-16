@@ -8,6 +8,8 @@
 // .bfttf is the console's obfuscated TTF: 8-byte header (magic, size) then every u32 XORed with a fixed key.
 // .ttc collections get face 0 copied out as a standalone font (the game's font engine wants one sfnt).
 #include <stdlib.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <strings.h>
 
@@ -145,11 +147,21 @@ static int load_one(const char *path, Font *ft) {
 }
 
 static int g_fonts_loaded;
-RT_ON_RESET(pl_reset) { g_fonts_loaded = 0; memset(fonts, 0, sizeof fonts); }  // (they were in the HLE heap)
+static pthread_mutex_t fonts_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t logged_types;
+RT_ON_RESET(pl_reset) {
+    pthread_mutex_lock(&fonts_lock);
+    g_fonts_loaded = 0;
+    memset(fonts, 0, sizeof fonts);  // (they were in the HLE heap)
+    atomic_store(&logged_types, 0);
+    pthread_mutex_unlock(&fonts_lock);
+}
 
 static void load_fonts(void) {
-    if (g_fonts_loaded) return;
-    g_fonts_loaded = 1;
+    // Address, size and load-state requests can come from different guest
+    // workers. Publish readiness only after BOTH fonts are fully initialized.
+    pthread_mutex_lock(&fonts_lock);
+    if (g_fonts_loaded) { pthread_mutex_unlock(&fonts_lock); return; }
     const char *env = getenv("LARECOMP_FONT");
     const char *std[] = {env, "fonts/nintendo_udsg-r_std_003.bfttf", "fonts/nintendo_udsg-r_std_003.ttf",
                          "fonts/nintendo_udsgr_std_003.ttf", "fonts/nintendo_udsgr_std_003.bfttf",
@@ -181,6 +193,8 @@ static void load_fonts(void) {
         if (std[i]) load_one(std[i], &fonts[0]);
     if (!fonts[0].addr) FATAL("no usable system font substitute\n");
     if (!load_one("fonts/nintendo_ext_003.bfttf", &fonts[1])) load_one("fonts/nintendo_ext_003.ttf", &fonts[1]);
+    g_fonts_loaded = 1;
+    pthread_mutex_unlock(&fonts_lock);
 }
 
 // SharedFontType: 0 Standard, 1 ChineseSimple, 2 ChineseSimpleExt, 3 ChineseTraditional, 4 Korean, 5 NintendoExt
@@ -189,10 +203,8 @@ static const Font *font_for(uint64_t type) {
     // Log each requested type once. Missing NintendoExt currently falls back
     // to Standard: seeing this in the log distinguishes substitution from a
     // real type-specific system font.
-    static uint64_t logged_types;
     const Font *f = type == 5 && fonts[1].addr ? &fonts[1] : &fonts[0];
-    if (type < 64 && !(logged_types & (1ull << type))) {
-        logged_types |= 1ull << type;
+    if (type < 64 && !(atomic_fetch_or(&logged_types, 1ull << type) & (1ull << type))) {
         LOG("[pl] shared font request type=%llu selected=%s addr=%#llx size=%llu\n",
             (unsigned long long)type, f == &fonts[1] ? "NintendoExt" : "Standard",
             (unsigned long long)f->addr, (unsigned long long)f->size);
@@ -200,6 +212,9 @@ static const Font *font_for(uint64_t type) {
     return f;
 }
 
-HLE_FUNC("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", pl_get_load_state) { c->x[0] = 1; }
+HLE_FUNC("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", pl_get_load_state) {
+    font_for(c->x[0]);
+    c->x[0] = 1;
+}
 HLE_FUNC("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", pl_get_address) { c->x[0] = font_for(c->x[0])->addr; }
 HLE_FUNC("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", pl_get_size) { c->x[0] = font_for(c->x[0])->size; }
