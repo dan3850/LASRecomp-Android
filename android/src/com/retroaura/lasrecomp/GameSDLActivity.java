@@ -24,6 +24,10 @@ import java.nio.charset.StandardCharsets;
  */
 public final class GameSDLActivity extends SDLActivity {
     private static native boolean nativeRequestGraphicsCapture();
+    /** Exact native-library folder required by AdrenoTools hooks. */
+    public String getVulkanHookLibraryDirectory() {
+        return getApplicationInfo().nativeLibraryDir;
+    }
     private android.widget.Button captureButton;
     private final android.os.Handler captureHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private GameTouchControls touchControls;
