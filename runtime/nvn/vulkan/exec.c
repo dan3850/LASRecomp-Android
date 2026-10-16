@@ -662,15 +662,16 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
     return s;
 }
 
-// Guest memory copied once per submission: draws binding the same range share the copy.
+// Guest memory copied once per submission: a larger snapshot also serves shorter
+// prefixes at the same address. Submission/inline-update invalidation is unchanged.
 #define GCOPY_TAB 4096
 static struct { uint64_t addr, size, seq; VkSpan span; } gcopy[GCOPY_TAB];
 static _Atomic uint64_t gcopy_gen;  // also invalidated by compute completion on a waiting CPU thread
 static void guest_copy_flush(void) { gcopy_gen++; }
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
-    uint64_t seq = vk_pending_seq() + (gcopy_gen << 40), h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
+    uint64_t seq = vk_pending_seq() + (gcopy_gen << 40), h = addr * 0x9E3779B97F4A7C15ull;
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
-    if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && gcopy[slot].size == size) return gcopy[slot].span;
+    if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && gcopy[slot].size >= size) return gcopy[slot].span;
     VkSpan s = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
     gcopy[slot].addr = addr; gcopy[slot].size = size; gcopy[slot].seq = seq; gcopy[slot].span = s;
     return s;
@@ -693,7 +694,7 @@ typedef struct {
     uint64_t addr, size, seq;
     VkBuffer buf;
     VmaAllocation alloc;
-    uint8_t *shadow;
+    uint8_t *shadow, *mapped;
 } VtxSnapshot;
 static VtxSnapshot vtx_snapshots[VTX_SNAPSHOT_SLOTS];
 static uint64_t vtx_snapshot_bytes;
@@ -742,6 +743,19 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
     // An older submitted or still-recording command may use this snapshot.
     // Avoid a wait: use the normal per-submission copy for the new contents.
     if (e->buf && e->seq > vk_completed_seq()) return guest_copy(addr, size);
+    if (e->buf && e->size == size) {
+        // Completion was checked above: preserve the allocation instead of
+        // destroying/recreating a Vulkan buffer for every changed snapshot.
+        // Only an equal-sized range is refreshed: never read beyond the
+        // current binding. A different address/size uses the path below.
+        if (e->addr == addr) {
+            memcpy(e->shadow, src, (size_t)e->size);
+            memcpy(e->mapped, e->shadow, (size_t)e->size);
+            VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc, 0, e->size));
+            e->seq = pending;
+            return (VkSpan){e->buf, 0, NULL};
+        }
+    }
     if (e->buf) {
         vmaDestroyBuffer(g_vk.vma, e->buf, e->alloc);
         free(e->shadow);
@@ -768,7 +782,7 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
     memcpy(info.pMappedData, shadow, (size_t)size);
     VK_CHECK(vmaFlushAllocation(g_vk.vma, alloc, 0, size));
     *e = (VtxSnapshot){.addr = addr, .size = size, .seq = pending,
-                       .buf = buf, .alloc = alloc, .shadow = shadow};
+                       .buf = buf, .alloc = alloc, .shadow = shadow, .mapped = info.pMappedData};
     vtx_snapshot_bytes += size;
     return (VkSpan){buf, 0, NULL};
 }

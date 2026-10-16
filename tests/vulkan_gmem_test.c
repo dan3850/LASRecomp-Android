@@ -346,6 +346,49 @@ static void persistent_snapshots(void) {
     puts("GMEM persistent snapshots: 61 submissions upload 1 MiB instead of 61 MiB; mutation/in-flight isolation/write isolation PASS");
 }
 
+static void buffer_reuse(void) {
+    uint8_t *src = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x80000);
+    memset(src, 0x35, 8192);
+    guest_copy_flush();
+    uint64_t before = stat_upload_bytes;
+    VkSpan large = guest_copy((uintptr_t)src, 8192);
+    for (int i = 0; i < 100; i++) {
+        VkSpan small = guest_copy((uintptr_t)src, 4096);
+        assert(small.buf == large.buf && small.off == large.off);
+    }
+    assert(stat_upload_bytes - before == 8192);
+    src[0] = 0x71;
+    guest_copy_flush();
+    VkSpan changed = guest_copy((uintptr_t)src, 4096);
+    assert(changed.ptr != large.ptr && ((uint8_t *)large.ptr)[0] == 0x35);
+    assert(((uint8_t *)changed.ptr)[0] == 0x71);
+
+    setenv("LARECOMP_VK_STATIC_VTX_CACHE", "1", 1);
+    VkSpan first = guest_vertex_copy((uintptr_t)src, 8192);
+    assert(first.buf);
+    src[0] = 0x19;
+    // Still recording: changed bytes must use another buffer, without waiting.
+    VkSpan inflight = guest_vertex_copy((uintptr_t)src, 8192);
+    assert(inflight.buf != first.buf);
+    vk_cmd(); renderer_flush();
+    VkSpan refreshed = guest_vertex_copy((uintptr_t)src, 8192);
+    assert(refreshed.buf == first.buf);
+    unsigned found = 0;
+    for (int i = 0; i < VTX_SNAPSHOT_SLOTS; i++) {
+        VtxSnapshot *e = &vtx_snapshots[i];
+        if (e->buf != first.buf) continue;
+        assert(!memcmp(e->shadow, src, 8192));
+        // Shadow is cached CPU memory; avoid reading write-combined mappings.
+        found++;
+    }
+    assert(found == 1);
+    VkSpan prefix = guest_vertex_copy((uintptr_t)src, 4096);
+    assert(prefix.buf == refreshed.buf);
+    vk_cmd(); renderer_flush();
+    vtx_snapshots_clear();
+    puts("Buffer reuse: 101 prefix requests copy 8192 bytes; invalidation, in-flight fallback and completed allocation reuse PASS");
+}
+
 static void write_pool_limits(void) {
     GmemWrite *w[10];
     for (unsigned i = 0; i < 10; ++i) w[i] = gmem_write_acquire(64);
@@ -449,6 +492,7 @@ int main(int argc, char **argv) {
     snapshots();
     split_counter_pairs();
     persistent_snapshots();
+    buffer_reuse();
     write_pool_limits();
     atlas(argv[1]);
     vkDeviceWaitIdle(g_vk.dev);
