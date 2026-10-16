@@ -31,6 +31,59 @@ FLAGS = ("-std=gnu11", "-O1", "-g0", "-fPIC", "-fno-strict-aliasing",
          '-DGAMELIB_ID="dev"')
 
 
+def matching_nso(path):
+    """Read only the header when locating the player's compatible main NSO."""
+    try:
+        if not path.is_file():
+            return False
+        with path.open("rb") as f:
+            header = f.read(0x60)
+        return (len(header) == 0x60 and header[:4] == b"NSO0" and
+                header[0x40:0x60] == bytes.fromhex(BUILD_ID).ljust(32, b"\0"))
+    except OSError:
+        return False
+
+
+def find_nso(workspace, roots=None):
+    """Find a matching NSO without extracting, copying or changing game data."""
+    for path in (workspace / "extracted/exefs/main", workspace / "exefs/main"):
+        if matching_nso(path):
+            return path.resolve()
+    if roots is None:
+        shared = Path(os.environ.get("EXTERNAL_STORAGE") or "/storage/emulated/0")
+        prefix = Path(os.environ.get("PREFIX") or "/data/data/com.termux/files/usr")
+        roots = [workspace, Path.home(), shared / "Download",
+                 prefix / "var/lib/proot-distro/installed-rootfs", shared]
+    skip = {".git", ".cache", ".gradle", ".npm", ".cargo", ".rustup",
+            "node_modules", "objects", "gamecode", "android-sdk", "ndk",
+            "Android", "proc", "sys", "dev", "usr"}
+    preferred = {"extracted", "exefs", "input", "download", "downloads",
+                 "games", "jogos", "switch", "root", "home"}
+    visited = set()
+    for root in roots:
+        try:
+            root = root.expanduser().resolve()
+            if not root.is_dir() or root in visited:
+                continue
+            print(f"Procurando main v1.0.0 em: {root}", flush=True)
+            for folder, dirs, files in os.walk(root, followlinks=False, onerror=lambda _: None):
+                current = Path(folder)
+                if current in visited:
+                    dirs[:] = []
+                    continue
+                visited.add(current)
+                dirs[:] = sorted((d for d in dirs if d not in skip), key=lambda d:
+                    (d.lower() not in preferred and "lasrecomp" not in d.lower(), d.lower()))
+                for name in ("main", "main.nso"):
+                    if name in files:
+                        candidate = current / name
+                        if matching_nso(candidate):
+                            return candidate.resolve()
+        except OSError:
+            continue
+    return None
+
+
 def lz4_block(data, size):
     """Bounded raw LZ4 decoder; avoids installing generator dependencies."""
     if not 0 <= size <= 128 * 1024 * 1024:
@@ -256,10 +309,11 @@ def main():
     parser.add_argument("--copy-to", type=Path, default=Path("/storage/emulated/0/Download/LASRecomp/Stable60-v2/liblasgame.so"))
     args = parser.parse_args()
     workspace = args.workspace.expanduser().resolve()
-    candidates = [workspace / "extracted/exefs/main", workspace / "exefs/main"]
-    nso = args.nso or next((path for path in candidates if path.is_file()), None)
+    nso = args.nso or find_nso(workspace)
     if nso is None:
-        parser.error("main original nao encontrado; use --nso /caminho/exefs/main (nada foi alterado)")
+        parser.error("main v1.0.0 nao encontrado nas pastas acessiveis do Termux. "
+                     "Indique --nso com o arquivo main da pasta exefs do seu jogo; nada foi alterado")
+    print(f"MAIN LOCALIZADO: {nso}", flush=True)
     output = args.output or workspace / "build/private-android-lasgame-termux/stable60-v2"
     output = output.expanduser().resolve()
     reserved = [workspace / "build/gamecode", workspace / "build/private-android-lasgame-termux/objects",

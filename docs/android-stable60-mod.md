@@ -24,9 +24,14 @@ git merge --ff-only FETCH_HEAD &&
 python3 tools/apply-stable60-mod.py
 ```
 
-O `main` original deve estar em
-`~/lasrecomp-android-gen/extracted/exefs/main` ou
-`~/lasrecomp-android-gen/exefs/main`. Se estiver em outra pasta, indique-o:
+O aplicador procura primeiro em
+`~/lasrecomp-android-gen/extracted/exefs/main` e
+`~/lasrecomp-android-gen/exefs/main`. Se nao estiver ali, procura automaticamente
+no home do Termux, em Downloads, nos rootfs do proot-distro e no armazenamento
+compartilhado. Aceita somente `main`/`main.nso` com cabecalho NSO e Build ID
+corretos; ignora caches, pastas do sistema e locais sem acesso. A procura le
+apenas cabecalhos e nao extrai ou modifica arquivos. Tambem pode indicar o
+arquivo explicitamente:
 
 ```sh
 python3 tools/apply-stable60-mod.py --nso /caminho/do/jogo/exefs/main

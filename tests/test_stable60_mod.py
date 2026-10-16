@@ -99,6 +99,60 @@ class Stable60(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
+    def test_find_main_in_shared_storage_and_skip_wrong_build(self):
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        shared = self.root / "storage/emulated/0"
+        wrong = workspace / "extracted/exefs/main"
+        wrong.parent.mkdir(parents=True)
+        wrong.write_bytes(b"NSO0" + bytes(0x100))
+        nsomain = shared / "Download/Zelda (Switch)/exefs/main"
+        nsomain.parent.mkdir(parents=True)
+        header = bytearray(0x100)
+        header[:4] = b"NSO0"
+        header[0x40:0x60] = bytes.fromhex(mod.BUILD_ID).ljust(32, b"\0")
+        nsomain.write_bytes(header)
+        originals = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (wrong, nsomain)}
+        self.assertEqual(mod.find_nso(workspace, [workspace, shared]), nsomain.resolve())
+        for path, expected in originals.items():
+            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), expected)
+
+    def test_find_proot_nso_and_leave_cache_directories_unvisited(self):
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        proot = self.root / "prefix/var/lib/proot-distro/installed-rootfs"
+        main = proot / "ubuntu/root/LASRecomp/extracted/exefs/main.nso"
+        main.parent.mkdir(parents=True)
+        header = bytearray(0x100)
+        header[:4] = b"NSO0"
+        header[0x40:0x60] = bytes.fromhex(mod.BUILD_ID).ljust(32, b"\0")
+        main.write_bytes(header)
+        decoy = workspace / ".cache/exefs/main"
+        decoy.parent.mkdir(parents=True)
+        decoy.write_bytes(header)
+        with patch.dict(os.environ, PREFIX=str(self.root / "prefix"),
+                        EXTERNAL_STORAGE=str(self.root / "missing-shared")), \
+             patch.object(mod.Path, "home", return_value=workspace):
+            self.assertEqual(mod.find_nso(workspace), main.resolve())
+        self.assertIsNone(mod.find_nso(workspace, [workspace]))
+
+    def test_find_does_not_follow_directory_links_and_prefers_known_path(self):
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        header = bytearray(0x100)
+        header[:4] = b"NSO0"
+        header[0x40:0x60] = bytes.fromhex(mod.BUILD_ID).ljust(32, b"\0")
+        outside = self.root / "outside/main"
+        outside.parent.mkdir()
+        outside.write_bytes(header)
+        (workspace / "loop").symlink_to(workspace, target_is_directory=True)
+        (workspace / "linked").symlink_to(outside.parent, target_is_directory=True)
+        self.assertIsNone(mod.find_nso(workspace, [workspace, self.root / "missing"]))
+        known = workspace / "extracted/exefs/main"
+        known.parent.mkdir(parents=True)
+        known.write_bytes(header)
+        self.assertEqual(mod.find_nso(workspace, []), known.resolve())
+
     def run_c(self, path, source):
         output = self.root / (path.stem + ("-mod" if "Stable 60fps" in source else "-original") + ".so")
         test_source = output.with_suffix(".c")
