@@ -64,7 +64,7 @@ static void create_instance(void) {
     // importer writes driver.active only after validating a complete ZIP.
     // Never change Android's system driver.
     bool custom_loaded = false;
-    const char *files = getenv("HOME");
+    const char *files = getenv("LASRECOMP_PRIVATE_FILES");
     if (files && files[0]) {
         char marker[1024], driver_dir[1024], hook_dir[1024];
         snprintf(marker, sizeof marker, "%s/gpu_driver/driver.active", files);
