@@ -93,6 +93,8 @@ public final class GameImportActivity extends Activity {
             if (!importing && hasGameFiles(extractedDir()) && hasGameCode()) {
                 Intent game = new Intent();
                 game.setClassName(this, "com.retroaura.lasrecomp.GameSDLActivity");
+                Uri tree = rememberedGameFolder();
+                if (tree != null) game.putExtra("game_tree_uri", tree.toString());
                 startActivity(game);
             }
         });
