@@ -471,6 +471,20 @@ static void create_swapchain(void) {
     VkResult create_r = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &next);
     if (create_r == VK_ERROR_SURFACE_LOST_KHR) { mark_surface_lost("swapchain create"); return; }
     VK_CHECK(create_r);
+#ifdef __ANDROID__
+    // Diagnostic only: record the presentation mode actually selected by the
+    // Android Vulkan surface, including MAILBOX -> FIFO fallback.
+    {
+        const char *requested = getenv("LARECOMP_VK_PRESENT");
+        if (!requested || !*requested) requested = "mailbox(default)";
+        const char *selected = ci.presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" :
+                               ci.presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "FIFO";
+        LOG("[vk] present mode requested=%s selected=%s requested_images=%u\n",
+            requested, selected, count);
+        vk_diag_info("present mode requested=%s selected=%s requested_images=%u",
+                     requested, selected, count);
+    }
+#endif
     g_vk.swapchain = next;
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
