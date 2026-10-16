@@ -110,7 +110,7 @@ public final class GameImportActivity extends Activity {
         // System fonts are console-owned, not stored in Zelda's NSP or our APK.
         // Users may import their own legitimate Switch Standard/NintendoExt font.
         fontButton = new Button(this);
-        fontButton.setText("IMPORTAR FONTE DO MEU SWITCH (OPCIONAL)");
+        fontButton.setText("FONTE DO SWITCH (OPCIONAL)");
         fontButton.setOnClickListener(v -> selectSystemFont());
         layout.addView(fontButton);
 
@@ -226,7 +226,7 @@ public final class GameImportActivity extends Activity {
         if (importing) return;
         new AlertDialog.Builder(this)
             .setTitle("Fonte de sistema do seu Switch")
-            .setMessage("A fonte padrão do APK é apenas uma substituta. Se você extraiu legalmente de seu próprio Switch os arquivos nintendo_udsg-r_std_003.bfttf ou nintendo_ext_003.bfttf (ou versões .ttf), pode importar um por vez. Esses arquivos não fazem parte do Zelda NSP, não são enviados e não serão incluídos no APK. Reinicie o jogo após importar.")
+            .setMessage("Este APK já contém fontes de substituição, como no Eden: NÃO é necessário importar nada. Para usar a fonte original extraída de seu próprio Switch, selecione nintendo_udsg-r_std_003.bfttf ou nintendo_ext_003.bfttf (ou versões .ttf). Reinicie o jogo após importar.")
             .setNegativeButton("Cancelar", null)
             .setPositiveButton("Selecionar fonte", (dialog, which) -> {
                 Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -288,12 +288,23 @@ public final class GameImportActivity extends Activity {
             }
             int sfnt = le32(h, 0);
             if (bfttf) {
-                int ver = le32(h, 8);
+                // Eden uses an 8-byte bfttf header with an XOR-obfuscated,
+                // BIG-endian font length. Check both size and sfnt marker.
+                if (le32(h, 0) != 0x1e1af836)
+                    throw new IllegalStateException("Cabeçalho .bfttf inválido");
                 int key = 0x49621806;
-                if (!((ver ^ key) == 0x00000100 || (ver ^ key) == 0x4F54544F
-                    || (ver ^ Integer.reverseBytes(key)) == 0x00000100
-                    || (ver ^ Integer.reverseBytes(key)) == 0x4F54544F))
-                    throw new IllegalStateException("Arquivo .bfttf inválido");
+                boolean valid = false;
+                for (int testKey : new int[] {key, Integer.reverseBytes(key)}) {
+                    long length = Integer.toUnsignedLong(
+                        Integer.reverseBytes(le32(h, 4) ^ testKey));
+                    int sfntTag = le32(h, 8) ^ testKey;
+                    if (length >= 12 && length <= copied - 8 &&
+                        (sfntTag == 0x00000100 || sfntTag == 0x4F54544F)) {
+                        valid = true;
+                        break;
+                    }
+                }
+                if (!valid) throw new IllegalStateException("Arquivo .bfttf inválido ou incompleto");
             } else if (!(sfnt == 0x00000100 || sfnt == 0x4F54544F || sfnt == 0x66637474)) {
                 // sfnt 1.0, OpenType (OTTO) or TTC (ttcf) in little endian.
                 throw new IllegalStateException("Arquivo .ttf não reconhecido");
