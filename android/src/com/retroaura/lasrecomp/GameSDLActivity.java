@@ -74,11 +74,45 @@ public final class GameSDLActivity extends SDLActivity {
         }
     }
 
+    // Follow Eden's built-in system-font approach: the two fallback TrueType
+    // files are shipped with the APK. Nothing needs to be imported manually.
+    private void installEdenFonts() {
+        File fonts = new File(getFilesDir(), "fonts");
+        if (!fonts.isDirectory() && !fonts.mkdirs()) {
+            markActivity("Eden fonts FAILED: cannot create fonts directory");
+            return;
+        }
+        String[][] packaged = {
+            {"lasrecomp_eden_standard.ttf", "eden_standard.ttf"},
+            {"lasrecomp_eden_extended.ttf", "eden_nintendo_ext.ttf"}
+        };
+        for (String[] entry : packaged) {
+            File target = new File(fonts, entry[1]);
+            try (InputStream in = getAssets().open(entry[0]);
+                 FileOutputStream out = new FileOutputStream(target)) {
+                byte[] buffer = new byte[16384];
+                int n;
+                while ((n = in.read(buffer)) >= 0) {
+                    if (n > 0) out.write(buffer, 0, n);
+                }
+                out.getFD().sync();
+                if (target.length() < 4096)
+                    throw new java.io.IOException("built-in font truncated");
+                markActivity("Eden built-in font ready: " + entry[1] + " " + target.length() + " bytes");
+            } catch (Exception e) {
+                // Older APK development builds still have the Apache 2.0 fallback.
+                if (target.exists()) target.delete();
+                markActivity("Eden built-in font FAILED: " + entry[0] + " " + e.getMessage());
+            }
+        }
+    }
+
     @Override
     public void onCreate(Bundle state) {
         markActivity("onCreate");
         enforceLandscapeFullscreen();
         installFallbackFont();
+        installEdenFonts();
         super.onCreate(state);
         enforceLandscapeFullscreen();
         if (mLayout != null) {
