@@ -74,6 +74,10 @@ def extract_font(source: Path, array_name: str, destination: Path) -> None:
                     found += 1
             if not found:
                 raise ValueError(f"{array_name}: cannot add unicode fallback glyph")
+            # New TTGlyphPen glyphs do not carry bounds automatically when
+            # TTFont(recalcBBoxes=False). Populate the bounding box before
+            # serializing, otherwise fontTools raises KeyError: 'xMin'.
+            font["glyf"][glyph].recalcBounds(font["glyf"])
             output = BytesIO()
             font.save(output)
             data = output.getvalue()
