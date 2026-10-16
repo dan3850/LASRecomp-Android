@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <stdio.h>
 #ifdef __ANDROID__
 #include <dlfcn.h>
 #include <android/log.h>
@@ -86,7 +87,8 @@ static void create_instance(void) {
                                                hook_dir, driver_dir, soname, NULL, NULL);
                     PFN_vkGetInstanceProcAddr gp = loader ?
                         (PFN_vkGetInstanceProcAddr)dlsym(loader, "vkGetInstanceProcAddr") : NULL;
-                    if (gp && volkInitializeCustom(gp) == VK_SUCCESS) {
+                    if (gp) {
+                        volkInitializeCustom(gp);
                         custom_loaded = true;
                         LOG("[vk] custom driver loader ready: %s\n", soname);
                     } else LOG("[vk] custom driver failed; using system Vulkan\n");
