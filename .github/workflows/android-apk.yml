@@ -6,6 +6,7 @@ on:
       - android/phase1-termux-bootstrap
       - android/runtime-integration
       - android/on-device-auto-build
+      - android/external-game-folder
   pull_request:
     branches:
       - main
@@ -37,6 +38,14 @@ jobs:
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
           test -x "$SDKMANAGER"
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+      - name: Test virtual RomFS and production IStorage with synthetic files
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CC="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          python3 tests/test_romfs_virtual.py
+          bash -n compilar-lasrecomp-pasta-externa.sh
+          bash -n compilar-lasrecomp-termux.sh
       # SDL3 is part of the actual LASRecomp UI/render runtime. Build for the
       # same Android ABI as the APK rather than relying on the host's SDL3.
       - name: Build SDL3 for Android ARM64
