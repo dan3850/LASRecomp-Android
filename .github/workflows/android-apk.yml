@@ -181,18 +181,18 @@ jobs:
           # Isolate this font experiment from the installed .bootdiag and
           # .bootdiag.controls test apps. CI signatures are ephemeral.
           # Each Android package has its own private imported-game files.
-          sed -e 's/package="com.retroaura.lasrecomp.bootdiag"/package="com.retroaura.lasrecomp.bootdiag.fontcheck"/' \
-              -e 's/LASRecomp Boot TESTE/LASRecomp Fontes CHECK/g' \
+          sed -e 's/package="com.retroaura.lasrecomp.bootdiag"/package="com.retroaura.lasrecomp.bootdiag.glyphatlas"/' \
+              -e 's/LASRecomp Boot TESTE/LASRecomp Glifos/g' \
               android/bootstrap/AndroidManifest.xml > "$RUNNER_TEMP/las-fonts-manifest.xml"
           ANDROID_MANIFEST_OVERRIDE="$RUNNER_TEMP/las-fonts-manifest.xml" \
             bash tools/build-android-termux.sh
           mv build/android-bootstrap/LASRecomp-Android.apk \
-            build/android-bootstrap/LASRecomp-Android-Fontes-Eden-Verificacao.apk
+            build/android-bootstrap/LASRecomp-Android-Glifos-Vulkan.apk
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: LASRecomp-Android-Fontes-Eden-Verificacao-ARM64
-          path: build/android-bootstrap/LASRecomp-Android-Fontes-Eden-Verificacao.apk
+          name: LASRecomp-Android-Glifos-Vulkan-ARM64
+          path: build/android-bootstrap/LASRecomp-Android-Glifos-Vulkan.apk
           if-no-files-found: error
           retention-days: 14

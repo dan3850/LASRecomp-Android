@@ -487,7 +487,13 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (!t->addr || t->target == 10) return;
     uint64_t frame = vk_frame_counter();
     if (b->uploaded && b->checked_frame == frame) return;
-    if (b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
+    // The game's 1024x2048 glyph cache can gain only a handful of pixels
+    // between frames. Its sparse 4096-point sample can miss those changes
+    // indefinitely, particularly when the cache exceeds the 4 MB full-hash
+    // safety-net budget. Check the entire atlas every eighth frame.
+    bool glyph_atlas = t->width == 1024 && t->height == 2048 && t->depth <= 1;
+    if (b->uploaded && (glyph_atlas || !b->dynamic) &&
+        ((frame + ((uintptr_t)b >> 6)) & 7)) return;
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb) return;
     VkFmt mf = fmt_of(t->format);
@@ -499,7 +505,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     const uint8_t *mem = (const uint8_t *)(uintptr_t)t->addr;
     static int always_full = -1;
     if (always_full < 0) always_full = getenv("LARECOMP_TEX_FULLHASH") ? 1 : 0;
-    bool full = b->dynamic || !b->uploaded || always_full;
+    bool full = glyph_atlas || b->dynamic || !b->uploaded || always_full;
     bool periodic = frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
     if (!full && periodic) { full = true; full_hash_budget -= total; }
     if (!b->tp) b->tp = texpatch_identify(t) + 1;  // (button prompts / Hero Mode icon: re-uploaded when their look changes)
@@ -528,6 +534,15 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     }
     prof_tex_full++; prof_tex_full_bytes += total; if (b->dynamic) prof_tex_dyn++;
     uint64_t h = hash_full(mem, total);
+    if (glyph_atlas) {
+        static unsigned reported;
+        if (reported < 12 && (!b->uploaded || b->data_hash != h)) {
+            LOG("[glyph] atlas CPU update frame=%llu fmt=%#x bytes=%llu uploaded=%d dynamic=%d\n",
+                (unsigned long long)frame, t->format, (unsigned long long)total,
+                b->uploaded, b->dynamic);
+            reported++;
+        }
+    }
     b->full_frame = frame;
     b->sample_hash = fnv_sample(mem, total);
     if (b->uploaded && h == b->data_hash && !restyle) return;
@@ -690,6 +705,16 @@ static const VkComponentMapping IDENTITY = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_CO
 // with the NVN component swizzle, converting between compatible types the way renderer.m does.
 VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool render, int want_textype) {
     TexBackend *b = vk_tex(t, render);
+    if (!render && t->width == 1024 && t->height == 2048) {
+        static unsigned sampled;
+        if (sampled++ < 8)
+            LOG("[glyph] atlas sampled fmt=%#x bytes=%llu gpu_owned=%d uploaded=%d "
+                "type=%d view=%d viewmask=%#x addr=%#llx\n",
+                t->format, (unsigned long long)tegra_total_size(&t->layout),
+                b->gpu_owned, b->uploaded, want_textype, has_view,
+                has_view ? v->setmask : 0,
+                (unsigned long long)t->addr);
+    }
     if (!has_view) v = NULL;
     VkFormat fmt = b->format;
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {

@@ -204,10 +204,10 @@ public final class GameImportActivity extends Activity {
         try (RandomAccessFile stream = new RandomAccessFile(file, "r")) {
             long limit = Math.min(stream.length(), 512 * 1024L);
             int matches = 0;
-            while (stream.getFilePointer() < limit && matches < 40) {
+            while (stream.getFilePointer() < limit && matches < 60) {
                 String line = stream.readLine();
                 if (line == null) break;
-                if (line.contains("[pl]")) {
+                if (line.contains("[pl]") || line.contains("[glyph]")) {
                     output.append(line).append('\n');
                     matches++;
                 }
@@ -226,7 +226,7 @@ public final class GameImportActivity extends Activity {
         String runtime = readLogTail(gameLog, 16000);
         String font = readFontServiceLog(gameLog);
         String output = "=== INICIO / SDL ===\n" + boot
-                      + "\n\n=== FONTES DO JOGO (nn::pl) ===\n" + font
+                      + "\n\n=== FONTES E TEXTURAS DE GLIFOS ===\n" + font
                       + "\n=== MOTOR NATIVO ===\n" + runtime;
         new AlertDialog.Builder(this)
             .setTitle("Diagnostico do boot")
