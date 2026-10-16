@@ -17,6 +17,39 @@ static void boot_mark(const char *files, const char *stage, int value);
 
 // SDL owns the Activity instance and Java VM. Keep the selected SAF URI
 // available to native integrations without treating it as a POSIX path.
+// Native read-only SAF descriptor bridge. The Java method transfers fd
+// ownership with ParcelFileDescriptor.detachFd(); caller must close(fd).
+static int open_game_document_fd(const char *relative_path) {
+    if (!relative_path || relative_path[0] == '/' ||
+        strstr(relative_path, "..") || strchr(relative_path, '\\')) return -1;
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    if (!env || !activity) return -1;
+    int fd = -1;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    if (cls) {
+        jmethodID method = (*env)->GetMethodID(env, cls, "openGameDocumentFd",
+                                               "(Ljava/lang/String;)I");
+        if (method) {
+            jstring path = (*env)->NewStringUTF(env, relative_path);
+            if (path) {
+                jint result = (*env)->CallIntMethod(env, activity, method, path);
+                if (!(*env)->ExceptionCheck(env)) fd = (int)result;
+                (*env)->DeleteLocalRef(env, path);
+            }
+        }
+        (*env)->DeleteLocalRef(env, cls);
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env, activity);
+    return fd;
+}
+
+__attribute__((visibility("default")))
+int lasrecomp_android_open_document_fd(const char *relative_path) {
+    return open_game_document_fd(relative_path);
+}
+
 static void log_selected_game_tree(const char *files) {
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject activity = (jobject)SDL_GetAndroidActivity();
