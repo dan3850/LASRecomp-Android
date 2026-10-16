@@ -15,10 +15,30 @@ fail(){ echo "ERRO: $*" >&2; exit 1; }
 step(){ printf '\n== %s ==\n' "$*"; }
 [[ "$(uname -m)" == aarch64 && "$PREFIX" == /data/data/com.termux/files/usr ]] || fail "Execute no Termux ARM64, fora de proot."
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || fail "LASRECOMP_JOBS invalido"
-for cmd in git clang clang++ cmake ninja make llvm-ar llvm-nm llvm-readelf llvm-ranlib llvm-strip python3 java javac jar keytool aapt2 zip zipalign apksigner patchelf; do
-  command -v "$cmd" >/dev/null 2>&1 || fail "Falta $cmd. pkg install git clang cmake ninja make python openjdk-21 android-sdk aapt2 zip zipalign apksigner patchelf"
+# Instala somente utilitarios pequenos realmente ausentes no Termux.
+# Preserva SDK, NDK, Gradle, fontes e caches ja existentes.
+MISSING_PKGS=()
+for cmd in zipalign apksigner patchelf; do
+ if ! command -v "$cmd" >/dev/null 2>&1; then
+  MISSING_PKGS+=("$cmd")
+ fi
 done
-python3 -c 'import fontTools' 2>/dev/null || fail "Instale pkg install python-fonttools"
+if command -v python3 >/dev/null 2>&1 && ! python3 -c 'import fontTools' >/dev/null 2>&1; then
+ MISSING_PKGS+=(python-fonttools)
+fi
+if (( ${#MISSING_PKGS[@]} )); then
+ command -v pkg >/dev/null 2>&1 || fail "Gerenciador pkg ausente; instale: ${MISSING_PKGS[*]}"
+ step "Instalando APENAS pacotes ausentes: ${MISSING_PKGS[*]}"
+ pkg install -y "${MISSING_PKGS[@]}" || fail "Nao foi possivel instalar: ${MISSING_PKGS[*]}"
+fi
+MISSING_CMDS=()
+for cmd in git clang clang++ cmake ninja make llvm-ar llvm-nm llvm-readelf llvm-ranlib llvm-strip python3 java javac jar keytool aapt2 zip zipalign apksigner patchelf; do
+ command -v "$cmd" >/dev/null 2>&1 || MISSING_CMDS+=("$cmd")
+done
+if (( ${#MISSING_CMDS[@]} )); then
+ fail "Ferramentas ausentes: ${MISSING_CMDS[*]}. Instale apenas os pacotes correspondentes; SDK e caches foram preservados."
+fi
+python3 -c 'import fontTools' >/dev/null 2>&1 || fail "Modulo Python fontTools ausente"
 ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$PREFIX/opt/android-sdk}}"
 [[ -d "$ANDROID_HOME/platforms" ]] || ANDROID_HOME="$HOME/android-sdk"
 ANDROID_JAR="${ANDROID_JAR:-$(find "$ANDROID_HOME/platforms" -name android.jar -type f 2>/dev/null | sort -V | tail -1)}"
