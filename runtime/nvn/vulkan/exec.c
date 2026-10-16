@@ -2464,9 +2464,24 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     VkDescriptorBufferInfo bi[MAX_BIND];
     VkDescriptorImageInfo ii[MAX_BIND];
     uint32_t graphics_tab[(GMAP_MAX + 1) * 4];
-    bool graphics_map = stage < 2 && si->uses_gmem_map && !si->uses_gmem_store && !g_vk.host_import;
+    // On Android without VK_EXT_external_memory_host, read-only compute shaders
+    // can use the same per-dispatch snapshot as vertex/fragment shaders.
+    // Never apply it to storing compute shaders: their output requires a
+    // separately synchronized GPU -> guest-memory writeback path.
+    bool graphics_map = (stage < 2 || stage == 5) && si->uses_gmem_map &&
+                        !si->uses_gmem_store && !g_vk.host_import;
     VkDescriptorBufferInfo graphics_data = {0};
-    if (graphics_map) graphics_data = graphics_gmem_map(stage, graphics_tab);
+    if (graphics_map) {
+        graphics_data = graphics_gmem_map(stage, graphics_tab);
+        if (stage == 5) {
+            static int logged;
+            if (logged++ < 8)
+                LOG("[gmem-compute-read] shader=%llx ranges=%u bytes=%llu\n",
+                    (unsigned long long)(st.program ? st.program->stages[5].code_addr : 0),
+                    graphics_tab[GMAP_MAX * 4],
+                    (unsigned long long)graphics_data.range);
+        }
+    }
     int n = 0;
     int sg = stage == 1 ? 1 : 0;
     float rs[66][4] = {{1, 1, 0, 0}};  // ([65]: mirror mode, renderer.m)
