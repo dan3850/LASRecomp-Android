@@ -185,6 +185,15 @@ static int lasrecomp_run(int argc, char **argv) {
     setvbuf(stderr, NULL, _IOLBF, 0);
 #endif
     const char *root = "extracted";  // (in the data root)
+#ifdef __ANDROID__
+    // External game folder bridge: a Java SAF provider can supply a mounted
+    // POSIX-readable root via this environment variable. Never interpret a
+    // content:// URI as a native filesystem path.
+    const char *external_root = getenv("LARECOMP_EXTERNAL_GAME_ROOT");
+    if (external_root && external_root[0] == '/' &&
+        access(external_root, R_OK | X_OK) == 0)
+        root = external_root;
+#endif
     bool skip_launcher = getenv("LARECOMP_NO_LAUNCHER") || getenv("LARECOMP_INPUT");  // tests boot straight in
     static char arg_root[1024];
     for (int i = 1; i < argc; i++) {
