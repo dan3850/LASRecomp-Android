@@ -141,7 +141,7 @@ static int vk_counter_mode(void) {
         // Give each presented frame a stable 16 ms step so the next frame's
         // counter no longer inherits the half-rate decision. Does NOT improve GPU speed.
 #ifdef __ANDROID__
-        const int default_mode = 4;  // virtual: Android-only half-rate feedback A/B test
+        const int default_mode = 2;  // gpu: PC-equivalent real GPU timestamps (Android A/B test)
 #else
         const int default_mode = 2;  // gpu: unchanged on other platforms
 #endif
