@@ -34,6 +34,14 @@ public final class GameMods {
              "Prepare e importe a biblioteca compatível uma vez. Reinicie o aplicativo após trocar a biblioteca.") +
             "\nOutros mods ainda não são compatíveis com este menu.");
         layout.addView(status);
+        File lastRun = new File(directory, "stable60-v2.status.txt");
+        if (lastRun.isFile() && lastRun.length() <= 4096) {
+            try (InputStream input = new java.io.FileInputStream(lastRun)) {
+                TextView execution = new TextView(activity);
+                execution.setText("\nÚLTIMA SESSÃO REGISTRADA\n" + Stable60Patch.read(input));
+                layout.addView(execution);
+            } catch (java.io.IOException ignored) { }
+        }
         CheckBox toggle = new CheckBox(activity);
         toggle.setText("Ativar na próxima inicialização");
         toggle.setChecked(prepared && Stable60Patch.enabled(directory));

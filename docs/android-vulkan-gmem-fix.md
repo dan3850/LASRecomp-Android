@@ -55,6 +55,37 @@ real no caminho portátil: o acesso é protegido, mas esse caso não implementa
 memória virtual GPU irrestrita. Escritas GMEM em estágios gráficos sem importação
 também não recebem o novo writeback compute; não apareceram nos registros usados.
 
+## Fechamento da sessao 20261016-132135
+
+O APK `af68a7ae6f34` carregou a biblioteca e depois sofreu SIGSEGV lendo zero
+em `f_70010cce50+0x34`, com chamador `f_70013c21e0+0x144`.
+O trecho privado fornecido pelo jogador mostra um loop de tarefas com duas
+chamadas virtuais; na funcao que falha, o objeto de entrada tem um ponteiro
+interno em `+0x10` que resulta em zero antes de ler sua tabela virtual.
+Isso identifica o acesso invalido, mas nao identifica por si so o tipo do
+objeto nem quem deveria inicializa-lo. Nenhum guard foi aplicado para ignorar
+a chamada, e nenhum C privado do jogo foi adicionado ao repositorio.
+
+Na auditoria, foi reproduzida uma corrida independente e relevante em `pl.c`:
+o carregador publicava `g_fonts_loaded=1` antes de preencher endereco e tamanho.
+Uma segunda thread recebia `addr=0 size=0` enquanto a primeira carregava a fonte;
+`GetSharedFontLoadState` tambem anunciava prontidao antecipadamente.
+Agora a inicializacao e protegida por mutex e a prontidao so e publicada
+depois de concluir Standard e a tentativa de NintendoExt. As consultas de
+estado, endereco e tamanho observam a mesma inicializacao concluida.
+
+O teste interrompe a primeira thread no alocador de teste e inicia as tres
+consultas reais em paralelo. Os tres retornos antecipados reproduziam o defeito
+anterior; apos a correcao, esperam e recebem endereco/tamanho validos. Os dez
+testes de carregamento e BFTTF passam. Isso **nao reproduz o crash completo**:
+as seis fontes registradas nesta sessao tinham enderecos nao nulos, e ainda
+nao foi demonstrado que essa corrida produziu o ponteiro interno do callback.
+
+O mesmo ZIP nao confirma execucao do mod. O runtime passa a registrar a
+biblioteca realmente carregada e os dois NOPs quando forem executados; o
+menu mostra o resultado da ultima sessao. A temporizacao Vulkan permanece
+como estava: o registro do modo 30 FPS nao prova ativacao ou ausencia do patch.
+
 ## Validação reproduzível
 
 ```sh

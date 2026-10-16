@@ -16,6 +16,7 @@
 
 #include "paths.h"
 #include "rt.h"
+#include "mods.h"
 
 static const GameLibTables *g_tables;
 static char g_error[256];
@@ -106,6 +107,12 @@ static const GameLibTables *open_lib(const char *path) {
         snprintf(g_error, sizeof g_error, "%s was built for another version", path);
         return NULL;  // (left loaded: nothing of it runs)
     }
+#ifdef __ANDROID__
+    // Inspect the module actually selected for gameplay, not a JNI import probe.
+    const char *(*menu_tag)(void) = (const char *(*)(void))dlsym(h, "lasgame_mod_menu_v1");
+    const char *(*fixed_tag)(void) = (const char *(*)(void))dlsym(h, "lasgame_mod_stable60_v2");
+    rt_mod_begin(menu_tag ? menu_tag() : NULL, fixed_tag ? fixed_tag() : NULL);
+#endif
     return t;
 }
 

@@ -80,6 +80,15 @@ NOP. O menu verifica o export `lasgame_mod_menu_v1` e a ABI antes de liberar
 a ativacao; bibliotecas antigas continuam funcionando, mas nao liberam esse
 controle. Modulos nao preparados nunca chamam o novo hook.
 
+O quadro **ULTIMA SESSAO REGISTRADA**, dentro de MODS, identifica a biblioteca
+realmente aberta pelo motor: original, preparada para o menu ou mod fixo.
+Separa a selecao carregada da confirmacao de **NOP executado** em cada um dos
+dois pontos. Apenas marcar a caixa nao e uma confirmacao de execucao. Se o
+jogo ainda nao passou por esses pontos, o quadro informa que esta aguardando.
+O resultado e preservado apos um fechamento e entra no ZIP em `mods/status.txt`.
+Trocar a selecao da proxima inicializacao nao altera o registro da ultima sessao.
+O caminho repetido do hook nao grava arquivos nem relê a selecao.
+
 Os enderecos do PCHTXT sao convertidos a partir dos offsets com cabecalho NSO:
 `offset + offset_shift - 0x100`. Assim, o arquivo original com
 `@flag offset_shift 0x100` seleciona exatamente os dois PCs esperados.
@@ -92,6 +101,8 @@ Os enderecos do PCHTXT sao convertidos a partir dos offsets com cabecalho NSO:
 - `tests/test_mod_menu.py` e `Stable60PatchTest.java`: validacao do arquivo,
   compatibilidade, importacao atomica, ativacao/desativacao e leitura pelo C
   do mesmo arquivo gravado pelo Java; erros preservam a importacao anterior.
+  Verificam tambem biblioteca sem suporte, mod fixo, selecao carregada,
+  confirmacao separada dos dois NOPs, ausencia de escrita repetida e reset.
 - `mod_library_test.c`: exercita as funcoes JNI de compatibilidade/validacao
   com handles de linker simulados, verificando biblioteca antiga, ABI errada,
   dependencia ausente, permissoes e arquitetura. Nao executa codigo do jogo.
