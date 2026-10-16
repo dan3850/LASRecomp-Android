@@ -15,30 +15,15 @@ fail(){ echo "ERRO: $*" >&2; exit 1; }
 step(){ printf '\n== %s ==\n' "$*"; }
 [[ "$(uname -m)" == aarch64 && "$PREFIX" == /data/data/com.termux/files/usr ]] || fail "Execute no Termux ARM64, fora de proot."
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || fail "LASRECOMP_JOBS invalido"
-# Instala somente utilitarios pequenos realmente ausentes no Termux.
-# Preserva SDK, NDK, Gradle, fontes e caches ja existentes.
-MISSING_PKGS=()
-for cmd in zipalign apksigner patchelf; do
- if ! command -v "$cmd" >/dev/null 2>&1; then
-  MISSING_PKGS+=("$cmd")
- fi
+# Ferramentas do SDK podem existir sem comandos no PATH.
+# Nao tente instalar nomes de pacotes inexistentes no Termux.
+for cmd in git clang clang++ cmake ninja make llvm-ar llvm-nm llvm-readelf llvm-ranlib llvm-strip python3 java javac jar keytool aapt2 zip patchelf; do
+ command -v "$cmd" >/dev/null 2>&1 || fail "Ferramenta ausente: $cmd. Instale apenas a dependencia correspondente."
 done
-if command -v python3 >/dev/null 2>&1 && ! python3 -c 'import fontTools' >/dev/null 2>&1; then
- MISSING_PKGS+=(python-fonttools)
+if ! python3 -c 'import fontTools' >/dev/null 2>&1; then
+ echo "Instalando modulo fonttools com pip (nao e pacote apt)..."
+ python3 -m pip install --user fonttools || fail "Instale fonttools com python3 -m pip install fonttools"
 fi
-if (( ${#MISSING_PKGS[@]} )); then
- command -v pkg >/dev/null 2>&1 || fail "Gerenciador pkg ausente; instale: ${MISSING_PKGS[*]}"
- step "Instalando APENAS pacotes ausentes: ${MISSING_PKGS[*]}"
- pkg install -y "${MISSING_PKGS[@]}" || fail "Nao foi possivel instalar: ${MISSING_PKGS[*]}"
-fi
-MISSING_CMDS=()
-for cmd in git clang clang++ cmake ninja make llvm-ar llvm-nm llvm-readelf llvm-ranlib llvm-strip python3 java javac jar keytool aapt2 zip zipalign apksigner patchelf; do
- command -v "$cmd" >/dev/null 2>&1 || MISSING_CMDS+=("$cmd")
-done
-if (( ${#MISSING_CMDS[@]} )); then
- fail "Ferramentas ausentes: ${MISSING_CMDS[*]}. Instale apenas os pacotes correspondentes; SDK e caches foram preservados."
-fi
-python3 -c 'import fontTools' >/dev/null 2>&1 || fail "Modulo Python fontTools ausente"
 ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$PREFIX/opt/android-sdk}}"
 [[ -d "$ANDROID_HOME/platforms" ]] || ANDROID_HOME="$HOME/android-sdk"
 ANDROID_JAR="${ANDROID_JAR:-$(find "$ANDROID_HOME/platforms" -name android.jar -type f 2>/dev/null | sort -V | tail -1)}"
@@ -62,6 +47,25 @@ else
  fi
 fi
 echo "D8: ${D8_CMD[*]}"
+# Reutiliza zipalign e apksigner do Android SDK quando nao estao no PATH.
+find_sdk_tool(){
+ local tool="$1" candidate
+ if command -v "$tool" >/dev/null 2>&1; then command -v "$tool"; return; fi
+ candidate="$(find "$ANDROID_HOME/build-tools" -type f -name "$tool" 2>/dev/null | sort -V | tail -1)"
+ [[ -n "$candidate" && -x "$candidate" ]] && { printf '%s\\n' "$candidate"; return; }
+ return 1
+}
+ZIPALIGN_CMD="$(find_sdk_tool zipalign || true)"
+APKSIGNER_CMD="$(find_sdk_tool apksigner || true)"
+if [[ -z "$ZIPALIGN_CMD" ]]; then
+ echo "AVISO: zipalign nao existe como executavel ARM64; empacotamento prosseguira sem ele."
+fi
+if [[ -z "$APKSIGNER_CMD" ]]; then
+ APKSIGNER_JAR="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner.jar 2>/dev/null | sort -V | tail -1)"
+ [[ -n "$APKSIGNER_JAR" ]] || fail "apksigner nao encontrado no SDK; falta build-tools com apksigner.jar"
+ APKSIGNER_CMD="java -jar $APKSIGNER_JAR"
+fi
+
 step "Projeto LASRecomp (branch intacta, sem git reset/pull/clean)"
 git -C "$ROOT" log -1 --oneline || true
 checkout(){
@@ -305,7 +309,11 @@ rm -f -- "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml -o "$OUT/unsigned.apk"
 (cd "$STAGE" && zip -q -r "$OUT/unsigned.apk" lib assets)
 (cd "$STAGE/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
-zipalign -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
+if [[ -n "$ZIPALIGN_CMD" ]]; then
+ "$ZIPALIGN_CMD" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
+else
+ cp "$OUT/unsigned.apk" "$OUT/aligned.apk"
+fi
 KEYSTORE="${LASRECOMP_KEYSTORE:-$HOME/.lasrecomp-android-debug.keystore}"
 if [[ ! -s "$KEYSTORE" ]]; then
  mkdir -p "$(dirname "$KEYSTORE")"
@@ -315,9 +323,9 @@ if [[ ! -s "$KEYSTORE" ]]; then
   -dname "CN=LASRecomp Termux Debug,O=RetroAura,C=BR"
  chmod 600 "$KEYSTORE"
 fi
-apksigner sign --ks "$KEYSTORE" --ks-key-alias androiddebugkey \
+${APKSIGNER_CMD} sign --ks "$KEYSTORE" --ks-key-alias androiddebugkey \
  --ks-pass pass:android --key-pass pass:android --out "$APK" "$OUT/aligned.apk"
-apksigner verify "$APK"
+${APKSIGNER_CMD} verify "$APK"
 if [[ -d "$HOME/storage/downloads" ]]; then
  mkdir -p "$HOME/storage/downloads/LASRecomp"
  cp -f "$APK" "$HOME/storage/downloads/LASRecomp/LASRecomp-Android-Termux.apk"
