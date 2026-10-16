@@ -26,7 +26,7 @@ if ! python3 -c 'import fontTools' >/dev/null 2>&1; then
 fi
 ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$PREFIX/opt/android-sdk}}"
 [[ -d "$ANDROID_HOME/platforms" ]] || ANDROID_HOME="$HOME/android-sdk"
-ANDROID_JAR="${ANDROID_JAR:-$(find "$ANDROID_HOME/platforms" -name android.jar -type f 2>/dev/null | sort -V | tail -1)}"
+ANDROID_JAR="${ANDROID_JAR:-$(find "$ANDROID_HOME/platforms" -name android.jar -type f 2>/dev/null | sort -V | tail -1 || true)}"
 [[ -s "$ANDROID_JAR" ]] || fail "SDK android.jar ausente. Configure ANDROID_HOME."
 # D8 e um compilador Java: pode existir como comando ou dentro de d8.jar
 # das Android SDK Build Tools. Nao precisa reinstalar o SDK nem instalar
@@ -39,7 +39,7 @@ elif command -v d8 >/dev/null 2>&1; then
  D8_CMD=(d8)
 else
  D8_JAR="$(find "$ANDROID_HOME/build-tools" "$PREFIX/share/java" "$HOME/.gradle/caches/modules-2/files-2.1/com.android.tools/r8" \
-   -type f \( -name d8.jar -o -name 'r8-*.jar' \) 2>/dev/null | sort -V | tail -n 1)"
+   -type f \( -name d8.jar -o -name 'r8-*.jar' \) 2>/dev/null | sort -V | tail -n 1 || true)"
  if [[ -n "$D8_JAR" && -s "$D8_JAR" ]]; then
   D8_CMD=(java -Xmx1g -cp "$D8_JAR" com.android.tools.r8.D8)
  else
@@ -51,7 +51,7 @@ echo "D8: ${D8_CMD[*]}"
 find_sdk_tool(){
  local tool="$1" candidate
  if command -v "$tool" >/dev/null 2>&1; then command -v "$tool"; return; fi
- candidate="$(find "$ANDROID_HOME/build-tools" -type f -name "$tool" 2>/dev/null | sort -V | tail -1)"
+ candidate="$(find "$ANDROID_HOME/build-tools" -type f -name "$tool" 2>/dev/null | sort -V | tail -1 || true)"
  [[ -n "$candidate" && -x "$candidate" ]] && { printf '%s\\n' "$candidate"; return; }
  return 1
 }
@@ -61,7 +61,7 @@ if [[ -z "$ZIPALIGN_CMD" ]]; then
  echo "AVISO: zipalign nao existe como executavel ARM64; empacotamento prosseguira sem ele."
 fi
 if [[ -z "$APKSIGNER_CMD" ]]; then
- APKSIGNER_JAR="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner.jar 2>/dev/null | sort -V | tail -1)"
+ APKSIGNER_JAR="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner.jar 2>/dev/null | sort -V | tail -1 || true)"
  [[ -n "$APKSIGNER_JAR" ]] || fail "apksigner nao encontrado no SDK; falta build-tools com apksigner.jar"
  APKSIGNER_CMD="java -jar $APKSIGNER_JAR"
 fi
@@ -274,7 +274,7 @@ if [[ -n "${LASRECOMP_GAME_SO:-}" ]]; then
 fi
 NDK="${ANDROID_NDK_HOME:-}"
 if [[ -z "$NDK" ]]; then
- NDK="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)"
+ NDK="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1 || true)"
 fi
 [[ -d "$NDK" ]] || fail "NDK do Android nao encontrado (necessario apenas libc++_shared.so; nao executa binarios x86)."
 CXX_SHARED="$(find "$NDK/toolchains/llvm/prebuilt" -type f -path '*/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so' -print -quit)"
