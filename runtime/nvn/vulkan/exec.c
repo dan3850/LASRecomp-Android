@@ -2432,15 +2432,40 @@ static VkDescriptorBufferInfo graphics_gmem_map(int stage, uint32_t tab[(GMAP_MA
         }
     }
     uint64_t total = 0;
+    uint64_t omitted_bytes = 0;
+    unsigned omitted_ranges = 0;
     unsigned mapped = 0;
     for (unsigned i = 0; i < merged; ++i) {
         uint64_t len = ranges[i].end - ranges[i].start;
-        if (len > (1024ull << 10) - total) continue;
+        if (len > (1024ull << 10) - total) {
+            omitted_bytes += len;
+            ++omitted_ranges;
+            continue;
+        }
         tab[mapped * 4] = (uint32_t)ranges[i].start;
         tab[mapped * 4 + 1] = (uint32_t)len;
         tab[mapped * 4 + 2] = (uint32_t)(total >> 2);
         total += len;
         ++mapped;
+    }
+    // Diagnostic only: one record per shader/stage. This tracks declared
+    // storage-buffer coverage, not dynamic LDG misses inside the GPU.
+    if (!g_vk.host_import) {
+        static struct { uint64_t shader; int stage; } seen[32];
+        static unsigned nseen;
+        uint64_t shader = st.program ? st.program->stages[stage].code_addr : 0;
+        bool known = false;
+        for (unsigned k = 0; k < nseen; ++k)
+            if (seen[k].shader == shader && seen[k].stage == stage) { known = true; break; }
+        if (!known && nseen < 32) {
+            seen[nseen].shader = shader;
+            seen[nseen++].stage = stage;
+            LOG("[gmem-map-coverage] stage=%d shader=%llx declared=%u mapped=%u bytes=%llu omitted=%u omitted_bytes=%llu heap=%llu\n",
+                stage, (unsigned long long)shader, merged, mapped,
+                (unsigned long long)total, omitted_ranges,
+                (unsigned long long)omitted_bytes,
+                (unsigned long long)heap);
+        }
     }
     if (!mapped) return (VkDescriptorBufferInfo){0};
     VkSpan span = vk_transient(total, 256);
