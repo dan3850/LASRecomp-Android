@@ -9,6 +9,35 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef __ANDROID__
+#include <jni.h>
+#include <SDL3/SDL_system.h>
+
+static void boot_mark(const char *files, const char *stage, int value);
+
+// SDL owns the Activity instance and Java VM. Keep the selected SAF URI
+// available to native integrations without treating it as a POSIX path.
+static void log_selected_game_tree(const char *files) {
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    if (!env || !activity) return;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    if (!cls) { (*env)->DeleteLocalRef(env, activity); return; }
+    jmethodID method = (*env)->GetMethodID(env, cls, "getExternalGameRoot",
+                                           "()Ljava/lang/String;");
+    if (method) {
+        jstring uri = (jstring)(*env)->CallObjectMethod(env, activity, method);
+        if (!(*env)->ExceptionCheck(env) && uri) {
+            // URI is deliberately not logged: it may contain private names.
+            boot_mark(files, "SAF folder supplied to native SDL bridge", 0);
+            (*env)->DeleteLocalRef(env, uri);
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, activity);
+}
+#endif
 
 typedef int (*LASRecompStart)(const char *files_dir);
 
@@ -38,6 +67,9 @@ int SDL_main(int argc, char **argv) {
     }
 
     boot_mark(files, "SDL_main entered", 0);
+#ifdef __ANDROID__
+    log_selected_game_tree(files);
+#endif
 #ifdef __ANDROID__
     // Optional modest Android-only output gain, leaving stream timing untouched.
     if (!getenv("LARECOMP_AUDIO_GAIN")) setenv("LARECOMP_AUDIO_GAIN", "1.35", 0);
