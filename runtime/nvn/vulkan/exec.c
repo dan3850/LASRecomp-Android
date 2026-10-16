@@ -671,7 +671,7 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
 // A changed in-flight entry uses the original transient path until it is safe
 // to update. No Vulkan resource is overwritten while a queued draw may read it.
 // LARECOMP_VK_STATIC_VTX_CACHE=0 restores the original path for A/B testing.
-#define VTX_SNAPSHOT_SLOTS 512
+#define VTX_SNAPSHOT_SLOTS 1024
 #define VTX_SNAPSHOT_MIN 4096ull
 #define VTX_SNAPSHOT_MAX (512ull << 10)
 #define VTX_SNAPSHOT_BUDGET (32ull << 20)
@@ -709,13 +709,16 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
     if (!enabled || size < VTX_SNAPSHOT_MIN || size > VTX_SNAPSHOT_MAX || !addr)
         return guest_copy(addr, size);
 
-    uint64_t h = (addr >> 4) * 0x9E3779B97F4A7C15ull ^ size * 0xC2B2AE3D27D4EB4Full;
+    // Cache by guest address, not exact draw size: one larger snapshot also
+    // covers draws that access a shorter prefix of the same vertex stream.
+    // The byte comparison below still protects against guest writes.
+    uint64_t h = (addr >> 4) * 0x9E3779B97F4A7C15ull;
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (VTX_SNAPSHOT_SLOTS - 1);
     VtxSnapshot *e = &vtx_snapshots[slot];
     uint64_t pending = vk_pending_seq();
     const void *src = (const void *)(uintptr_t)addr;
 
-    if (e->buf && e->addr == addr && e->size == size &&
+    if (e->buf && e->addr == addr && e->size >= size &&
         !memcmp(e->shadow, src, (size_t)size)) {
         e->seq = pending;
         vtx_snapshot_reuses++;
