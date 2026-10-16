@@ -127,6 +127,9 @@ static int vk_counter_mode(void) {
         const char *e = getenv("LARECOMP_VK_COUNTER");
         counter_mode = e && !strcmp(e, "cpu") ? 0 : e && !strcmp(e, "frozen") ? 1 : e && !strcmp(e, "legacy") ? 3 : 2;
         if (counter_mode == 2 && !g_vk.props.limits.timestampComputeAndGraphics) counter_mode = 0;
+        LOG("[counter-pace] timestamp source=%s (LARECOMP_VK_COUNTER=%s)\n",
+            counter_mode == 2 ? "gpu" : counter_mode == 0 ? "cpu" : counter_mode == 1 ? "frozen" : "legacy",
+            e ? e : "unset");
     }
     return counter_mode;
 }
@@ -147,6 +150,31 @@ static int vk_counter_mode(void) {
 extern __thread uint64_t g_blocked_ns;  // kernel.c: this thread's time blocked in waits / sleeps
 static bool pace_slow;
 static uint64_t stat_pace_over;
+
+// Lightweight two-second summaries of the counter intervals the game actually sees.
+// This measures counter pairs, not display FPS; it never changes a timestamp or pacing.
+static struct {
+    uint64_t since_ns, reports, pairs, over_16ms, over_30ms;
+    double sum_ms, peak_ms;
+} counter_pace_diag;
+
+static void counter_pace_diag_flush(void) {
+    uint64_t now = plat_now_ns();
+    if (!counter_pace_diag.since_ns) counter_pace_diag.since_ns = now;
+    if (now - counter_pace_diag.since_ns < 2000000000ull) return;
+    if (counter_pace_diag.reports) {
+        LOG("[counter-pace] reports=%llu paired=%llu gpu-interval-avg=%.2fms peak=%.2fms >=16.67ms=%llu >=30ms=%llu pace-injection=%s\\n",
+            (unsigned long long)counter_pace_diag.reports,
+            (unsigned long long)counter_pace_diag.pairs,
+            counter_pace_diag.pairs ? counter_pace_diag.sum_ms / counter_pace_diag.pairs : 0.0,
+            counter_pace_diag.peak_ms,
+            (unsigned long long)counter_pace_diag.over_16ms,
+            (unsigned long long)counter_pace_diag.over_30ms,
+            pace_slow ? "on" : "off");
+    }
+    memset(&counter_pace_diag, 0, sizeof counter_pace_diag);
+    counter_pace_diag.since_ns = now;
+}
 
 void vk_pace_frame(void) {
     static int on = -1;
@@ -210,9 +238,25 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
             uint64_t gpu = ns_to_gpu_ticks((uint64_t)((int64_t)((double)t[k] * per) + cq_offset));
             if (log) LOG("[counter] seq %llu #%u at %llx host %.3f gpu %.3f ms\n", (unsigned long long)q->seq, k,
                          (unsigned long long)(uintptr_t)q->out[k], q->out[k][1] * 625.0 / 384 / 1e6, gpu * 625.0 / 384 / 1e6);
-            q->out[k][1] = pace_end_counter(k ? q->out[k - 1] : NULL, q->out[k], gpu);
+            uint64_t delivered = pace_end_counter(k ? q->out[k - 1] : NULL, q->out[k], gpu);
+            // Pairs use adjacent 16-byte NVN counter records. Count only genuine
+            // start/end pairs; unrelated timestamps must not be called frame times.
+            if (k && (uintptr_t)q->out[k] == (uintptr_t)q->out[k - 1] + 16) {
+                uint64_t start = q->out[k - 1][1];
+                if (delivered >= start) {
+                    double ms = (delivered - start) * (625.0 / 384.0 / 1000000.0);
+                    counter_pace_diag.pairs++;
+                    counter_pace_diag.sum_ms += ms;
+                    if (ms > counter_pace_diag.peak_ms) counter_pace_diag.peak_ms = ms;
+                    if (ms >= 16.67) counter_pace_diag.over_16ms++;
+                    if (ms >= 30.0) counter_pace_diag.over_30ms++;
+                }
+            }
+            q->out[k][1] = delivered;
+            counter_pace_diag.reports++;
         }
         stat_counters_gpu += q->n;
+        counter_pace_diag_flush();
     }
     q->n = 0;
 }
@@ -872,8 +916,8 @@ const char *renderer_stats(void) {
             if (prof_end_line[l] > 20) { n = strlen(stats_text); snprintf(stats_text + n, sizeof stats_text - n, " %d:%u", l, prof_end_line[l]); }
         memset(prof_end_line, 0, sizeof prof_end_line);
         n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n, " | views created %llu | counters gpu %llu | pace %s, %llu frames over", (unsigned long long)prof_views_created,
-                 (unsigned long long)stat_counters_gpu, pace_slow ? "30" : "60", (unsigned long long)stat_pace_over);
+        snprintf(stats_text + n, sizeof stats_text - n, " | views created %llu | counters gpu %llu | pace-injection %s, %llu frames over", (unsigned long long)prof_views_created,
+                 (unsigned long long)stat_counters_gpu, pace_slow ? "on" : "off", (unsigned long long)stat_pace_over);
         stat_counters_gpu = stat_pace_over = 0;
         {
             extern uint64_t prof_vc_hits, prof_vc_bypass, prof_vc_copied, prof_vc_queries, prof_vc_scan_pages, prof_vc_scan_ns;
