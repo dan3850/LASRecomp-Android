@@ -78,6 +78,29 @@ static uint8_t *ttc_face0(const uint8_t *f, size_t len, size_t *out_len) {
     return out;
 }
 
+// Reject fonts whose sfnt directory points outside the file. The guest font
+// parser consumes these bytes directly, so a readable file is not enough.
+static bool valid_sfnt(const uint8_t *d, size_t len) {
+    if (len < 12) return false;
+    uint32_t magic = be32(d);
+    if (magic != 0x00010000u && magic != 0x74727565u) return false;  // TrueType outlines
+    uint32_t tables = (uint32_t)d[4] << 8 | d[5];
+    if (!tables || tables > (len - 12) / 16) return false;
+    bool glyf = false, loca = false, head = false, maxp = false, cmap = false;
+    for (uint32_t i = 0; i < tables; ++i) {
+        const uint8_t *e = d + 12 + 16 * i;
+        size_t off = be32(e + 8), n = be32(e + 12);
+        if (off > len || n > len - off) return false;
+        uint32_t tag = be32(e);
+        glyf |= tag == 0x676c7966u;
+        loca |= tag == 0x6c6f6361u;
+        head |= tag == 0x68656164u;
+        maxp |= tag == 0x6d617870u;
+        cmap |= tag == 0x636d6170u;
+    }
+    return glyf && loca && head && maxp && cmap;
+}
+
 static int load_one(const char *path, Font *ft) {
     size_t len;
     uint8_t *d = read_file(path, &len);
@@ -93,6 +116,11 @@ static int load_one(const char *path, Font *ft) {
         if (!f0) { LOG("[pl] %s: bad font collection\n", path); return 0; }
         d = f0;
         len = l2;
+    }
+    if (!valid_sfnt(d, len)) {
+        LOG("[pl] rejecting incompatible or malformed TrueType font %s (%zu bytes)\n", path, len);
+        free(d);
+        return 0;
     }
     void *p = hle_alloc(len + 16);
     memcpy(p, d, len);
@@ -145,7 +173,18 @@ static void load_fonts(void) {
 // SharedFontType: 0 Standard, 1 ChineseSimple, 2 ChineseSimpleExt, 3 ChineseTraditional, 4 Korean, 5 NintendoExt
 static const Font *font_for(uint64_t type) {
     load_fonts();
-    return type == 5 && fonts[1].addr ? &fonts[1] : &fonts[0];
+    // Log each requested type once. Missing NintendoExt currently falls back
+    // to Standard: seeing this in the log distinguishes substitution from a
+    // real type-specific system font.
+    static uint64_t logged_types;
+    const Font *f = type == 5 && fonts[1].addr ? &fonts[1] : &fonts[0];
+    if (type < 64 && !(logged_types & (1ull << type))) {
+        logged_types |= 1ull << type;
+        LOG("[pl] shared font request type=%llu selected=%s addr=%#llx size=%llu\n",
+            (unsigned long long)type, f == &fonts[1] ? "NintendoExt" : "Standard",
+            (unsigned long long)f->addr, (unsigned long long)f->size);
+    }
+    return f;
 }
 
 HLE_FUNC("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", pl_get_load_state) { c->x[0] = 1; }
