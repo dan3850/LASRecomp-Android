@@ -377,6 +377,18 @@ static Service *open_romfs_storage(void) {
         char path[1024];
         snprintf(path, sizeof path, "%s.bin", g_romfs_dir);  // extracted/romfs.bin
         romfs_fd = open(path, O_RDONLY);
+#ifdef __ANDROID__
+        if (romfs_fd < 0) {
+            extern int lasrecomp_external_open(const char *relative_path);
+            romfs_fd = lasrecomp_external_open("romfs.bin");
+            if (romfs_fd >= 0 && lseek(romfs_fd, 0, SEEK_CUR) < 0) {
+                // Some SAF providers return pipes; RomFS requires pread.
+                close(romfs_fd);
+                romfs_fd = -1;
+                FATAL("external romfs.bin is not seekable; choose local storage\n");
+            }
+        }
+#endif
         if (romfs_fd < 0) FATAL("cannot open %s (set up the game files on the start screen)\n", path);
         rom_index(romfs_fd);
     }
