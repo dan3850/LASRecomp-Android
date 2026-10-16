@@ -935,9 +935,8 @@ void ui_window_init(void) {
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     settings_load();
 #ifdef __ANDROID__
-    // The 16:9 Switch image must never be horizontally stretched to 20:9.
-    // Keep its aspect while the fullscreen Android window uses the full display.
-    g_settings.aspect = ASPECT_ORIGINAL;
+    // Respect the aspect mode loaded from larecomp.ini; Android UI controls this setting.
+    // Keep the Android surface fullscreen for either original or unlocked aspect.
     g_settings.fullscreen = true;
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
