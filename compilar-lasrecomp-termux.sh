@@ -342,7 +342,7 @@ jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
 # libc++ ARM64 do NDK, necessaria para simbolos C++ do runtime.
 TERMUX_CXX="$PREFIX/lib/libc++_shared.so"
 [[ -s "$TERMUX_CXX" ]] || fail "libc++_shared.so do Termux ausente: $TERMUX_CXX"
-llvm-nm -D "$TERMUX_CXX" | grep -q '_ZNSt6__ndk113__hash_memoryEPKvm' || fail "libc++ do Termux nao exporta __hash_memory"
+llvm-nm -D "$TERMUX_CXX" | grep '_ZNSt6__ndk113__hash_memoryEPKvm' >/dev/null || fail "libc++ do Termux nao exporta __hash_memory"
 cp -L "$TERMUX_CXX" "$STAGE/lib/arm64-v8a/libc++_shared.so"
 # O runtime deve referenciar explicitamente a libc++ empacotada,
 # evitando resolver acidentalmente simbolos na libc++ do sistema.
