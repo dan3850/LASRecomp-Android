@@ -15,14 +15,33 @@ fail(){ echo "ERRO: $*" >&2; exit 1; }
 step(){ printf '\n== %s ==\n' "$*"; }
 [[ "$(uname -m)" == aarch64 && "$PREFIX" == /data/data/com.termux/files/usr ]] || fail "Execute no Termux ARM64, fora de proot."
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || fail "LASRECOMP_JOBS invalido"
-for cmd in git clang clang++ cmake ninja make llvm-ar llvm-nm llvm-readelf llvm-ranlib llvm-strip python3 javac jar keytool aapt2 d8 zip zipalign apksigner patchelf; do
-  command -v "$cmd" >/dev/null 2>&1 || fail "Falta $cmd. pkg install git clang cmake ninja make python openjdk-21 android-sdk aapt2 d8 zip zipalign apksigner patchelf"
+for cmd in git clang clang++ cmake ninja make llvm-ar llvm-nm llvm-readelf llvm-ranlib llvm-strip python3 java javac jar keytool aapt2 zip zipalign apksigner patchelf; do
+  command -v "$cmd" >/dev/null 2>&1 || fail "Falta $cmd. pkg install git clang cmake ninja make python openjdk-21 android-sdk aapt2 zip zipalign apksigner patchelf"
 done
 python3 -c 'import fontTools' 2>/dev/null || fail "Instale pkg install python-fonttools"
 ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$PREFIX/opt/android-sdk}}"
 [[ -d "$ANDROID_HOME/platforms" ]] || ANDROID_HOME="$HOME/android-sdk"
 ANDROID_JAR="${ANDROID_JAR:-$(find "$ANDROID_HOME/platforms" -name android.jar -type f 2>/dev/null | sort -V | tail -1)}"
 [[ -s "$ANDROID_JAR" ]] || fail "SDK android.jar ausente. Configure ANDROID_HOME."
+# D8 e um compilador Java: pode existir como comando ou dentro de d8.jar
+# das Android SDK Build Tools. Nao precisa reinstalar o SDK nem instalar
+# um pacote Termux chamado "d8".
+D8_CMD=()
+if [[ -n "${LASRECOMP_D8_JAR:-}" ]]; then
+ [[ -s "$LASRECOMP_D8_JAR" ]] || fail "LASRECOMP_D8_JAR nao existe: $LASRECOMP_D8_JAR"
+ D8_CMD=(java -Xmx1g -cp "$LASRECOMP_D8_JAR" com.android.tools.r8.D8)
+elif command -v d8 >/dev/null 2>&1; then
+ D8_CMD=(d8)
+else
+ D8_JAR="$(find "$ANDROID_HOME/build-tools" "$PREFIX/share/java" "$HOME/.gradle/caches/modules-2/files-2.1/com.android.tools/r8" \
+   -type f \( -name d8.jar -o -name 'r8-*.jar' \) 2>/dev/null | sort -V | tail -n 1)"
+ if [[ -n "$D8_JAR" && -s "$D8_JAR" ]]; then
+  D8_CMD=(java -Xmx1g -cp "$D8_JAR" com.android.tools.r8.D8)
+ else
+  fail "D8 nao encontrado. Procure d8.jar no SDK existente (build-tools/*/lib/d8.jar); configure LASRECOMP_D8_JAR=/caminho/d8.jar. Nao reinstale o SDK."
+ fi
+fi
+echo "D8: ${D8_CMD[*]}"
 step "Projeto LASRecomp (branch intacta, sem git reset/pull/clean)"
 git -C "$ROOT" log -1 --oneline || true
 checkout(){
@@ -244,7 +263,7 @@ mapfile -d '' -t SDLJAVA < <(find "$SDL_JAVA" -type f -name '*.java' -print0)
 javac -source 8 -target 8 -encoding UTF-8 -cp "$ANDROID_JAR" \
  -d "$STAGE/classes" android/src/com/retroaura/lasrecomp/*.java "${SDLJAVA[@]}"
 jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
-d8 --min-api 26 --lib "$ANDROID_JAR" --output "$STAGE/dex" "$STAGE/classes.jar"
+"${D8_CMD[@]}" --min-api 26 --lib "$ANDROID_JAR" --output "$STAGE/dex" "$STAGE/classes.jar"
 [[ -s "$STAGE/dex/classes.dex" ]] || fail "D8 nao gerou classes.dex"
 LIBDIR="$STAGE/lib/arm64-v8a"
 for so in "$LIBDIR"/*.so; do
