@@ -2089,10 +2089,10 @@ static void gfast_finish(VkCommandBuffer cb) {
     if (gfast_staged) {
         uint64_t bytes = 0;
         for (int i = 0; i < gfast_n; ++i)
-            if (back[i].dstOffset + back[i].size > bytes) bytes = back[i].dstOffset + back[i].size;
+            if (back[i].srcOffset + back[i].size > bytes) bytes = back[i].srcOffset + back[i].size;
         VkSpan dst = vk_readback(bytes);
         for (int i = 0; i < gfast_n; ++i) {
-            VkBufferCopy c = {back[i].srcOffset, dst.off + back[i].dstOffset, back[i].size};
+            VkBufferCopy c = {back[i].srcOffset, dst.off + back[i].srcOffset, back[i].size};
             vkCmdCopyBuffer(cb, gfast_buf, dst.buf, 1, &c);
         }
         // Flush this dispatch before exposing the shader-written bytes to CPU.
@@ -2100,7 +2100,7 @@ static void gfast_finish(VkCommandBuffer cb) {
         vk_readback_invalidate();
         for (int i = 0; i < gfast_n; ++i)
             memcpy((void *)(uintptr_t)(HEAP_BASE + back[i].dstOffset),
-                   (uint8_t *)dst.ptr + back[i].dstOffset, back[i].size);
+                   (uint8_t *)dst.ptr + back[i].srcOffset, back[i].size);
     } else {
         vkCmdCopyBuffer(cb, gfast_buf, gmem_buf, (uint32_t)gfast_n, back);
         vk_full_barrier(cb);
