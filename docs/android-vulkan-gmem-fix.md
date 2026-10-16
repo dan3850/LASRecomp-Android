@@ -91,3 +91,63 @@ celular. A validação restante é recompilar com o script Termux existente e
 comparar a mesma tela de menu/diálogo, a casa inicial e a área externa. O cache
 SPIR-V depende do código-fonte GLSL e naturalmente distingue os shaders alterados;
 não é necessário apagar os caches ou executar um clean.
+
+## Desempenho e fechamento: ZIP de 16/10/2026, 10:25:43
+
+O usuário confirmou melhora da iluminação e de outros elementos após o caminho
+portátil. A última sessão desse ZIP cai de 30,1 para 13,7 FPS, com até 530,4 MiB
+de uploads a cada aproximadamente dois segundos. Termina em SIGSEGV com endereço
+zero; não há registro de device loss Vulkan nessa sessão. O fechamento também
+aparece em sessões anteriores à correção portátil. Isso não identifica sua causa.
+
+As mudanças seguintes preservam a cobertura GMEM e o writeback:
+
+- Snapshots somente de leitura idênticos são compartilhados dentro da mesma
+  submissão. Nova submissão, flush CPU, atualização inline ou writeback modificado
+  invalidam o cache. São 128 entradas de metadados, sem manter cópias extras.
+- Alocações compute concluídas e já copiadas de volta podem ser reutilizadas.
+  Dispatches pendentes continuam com buffers distintos. O pool mantém no máximo
+  oito buffers e 16 MiB de capacidade Vulkan, mais o mesmo tamanho de baselines
+  CPU; alocações maiores são descartadas após a conclusão. O reboot esvazia o pool.
+- A comparação do resultado pula blocos iguais com `memcmp`, mantendo precisão de
+  bytes nos blocos alterados. Ranges sem mudanças não invalidam atlas e snapshots.
+- A compilação Termux passa a registrar dependências de headers. Antes, mudar
+  `vk.h` podia combinar objetos compilados com layouts diferentes de `TexBackend`.
+  Os objetos nativos antigos sem depfile são recompilados uma vez. Esse script
+  não recompila nem apaga a biblioteca privada de código do jogo.
+
+Os 13 casos Maxwell e a amostragem R8 continuam passando em Lavapipe. O teste
+adicional executa 501 leituras idênticas de 1 MiB e verifica exatamente 1 MiB de
+uploads; verifica também invalidação CPU/inline/por submissão, preservação dos
+snapshots anteriores, buffers pendentes distintos, reutilização após conclusão
+e ausência de invalidação por dispatch sem mudanças. Os limites de quantidade e
+capacidade do pool também são exercitados. O helper passou com
+AddressSanitizer/UBSan. Três testes compilam objetos C reais para verificar
+dependências, mudança de layout, cache sem depfile e preservação após erro.
+
+O relatório antigo chamava tanto PC quanto LR de `f_70013c21e0`: os dois nomes
+apontavam ao mesmo buffer temporário, sobrescrito pela consulta de LR. O nome do
+PC era incorreto, embora o endereço e o offset numéricos fossem preservados.
+Agora os nomes são independentes e o offset de LR também é impresso. Um teste
+reproduz a colisão e verifica os dois símbolos. **Essa correção identifica melhor
+o fechamento; não corrige por si só o acesso nulo do código do jogo.**
+
+A biblioteca privada e as funções geradas correspondentes não estão neste
+checkout nem no ZIP. Para recuperar o trecho relevante usando o ZIP existente,
+sem jogar novamente, recompilar o jogo ou enviar sua biblioteca inteira:
+
+```sh
+python3 ~/LASRecomp-Android/tools/extract-android-crash.py \
+  ~/storage/downloads/LASRecomp-grafico-20261016-102543.zip \
+  ~/lasrecomp-android-gen \
+  --output ~/storage/downloads/LASRecomp-crash-code.txt
+```
+
+Use o diretório que contém a geração e a `liblasgame.so` não stripada **do mesmo
+teste**. `--library` permite indicar outro caminho. Nos relatórios antigos a
+ferramenta limita os candidatos usando os endereços PC/LR, offset do PC e tamanho
+do chamador no ELF; não presume que o nome antigo do PC esteja certo. O relatório
+gerado inclui apenas os trechos selecionados e suas chamadas diretas, e deve ficar
+fora do Git. Seis testes verificam seleção e extração, inclusive um ELF real com
+ZIP sintético e rejeição de crash mais recente sem símbolos. A recuperação de FPS, a ausência de regressão
+visual e o encerramento do jogo ainda precisam ser avaliados no aparelho.
