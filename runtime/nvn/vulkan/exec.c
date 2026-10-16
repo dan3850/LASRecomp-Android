@@ -3654,7 +3654,36 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
     VkViewport vp = {vx, vy, vw, vh, 0, 1};
     vkCmdSetViewport(cb, 0, 1, &vp);
     vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
-    vkCmdDraw(cb, 3, 1, 0, 0);
+    // Temporary visual diagnostic: left is the game's raw image; right is
+    // the existing post-processing path. Both share identical viewport,
+    // crop, presentation shader and colour conversion.
+    static bool announced;
+    if (!announced) {
+        LOG("[color-compare] left=raw right=post; post_same=%d; split at window midpoint\n", src == raw_view(b));
+        announced = true;
+    }
+    uint32_t sw = g_vk.sc_extent.width, sh = g_vk.sc_extent.height;
+    uint32_t mid = sw / 2;
+    VkRect2D left = {{0, 0}, {mid, sh}};
+    VkRect2D right = {{(int32_t)mid, 0}, {sw - mid, sh}};
+    VkRect2D full_scissor = {{0, 0}, {sw, sh}};
+    if (mid && mid < sw) {
+        VkDescriptorSet raw_ds = vk_alloc_set(present_set_layout);
+        VkDescriptorImageInfo raw_ii = {vk_default_sampler(true), raw_view(b), VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet raw_w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = raw_ds,
+                                      .dstBinding = 0, .descriptorCount = 1,
+                                      .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &raw_ii};
+        vkUpdateDescriptorSets(g_vk.dev, 1, &raw_w, 0, NULL);
+        vkCmdSetScissor(cb, 0, 1, &left);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &raw_ds, 0, NULL);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdSetScissor(cb, 0, 1, &right);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdSetScissor(cb, 0, 1, &full_scissor);
+    } else {
+        vkCmdDraw(cb, 3, 1, 0, 0);
+    }
     VkViewport full = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
     vkCmdSetViewport(cb, 0, 1, &full);
 }
