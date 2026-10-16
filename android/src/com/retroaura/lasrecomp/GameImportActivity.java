@@ -133,7 +133,7 @@ public final class GameImportActivity extends Activity {
     }
 
     private void showVideoSettings() {
-        final String[] sections = {"Resolução interna", "Proporção da tela"};
+        final String[] sections = {"Resolução interna", "Proporção da tela", "Mostrar FPS"};
         new AlertDialog.Builder(this).setTitle("Configurações de vídeo")
             .setItems(sections, (dialog, which) -> {
                 if (which == 0) {
@@ -148,12 +148,21 @@ public final class GameImportActivity extends Activity {
                             saveVideoOption("resolution", values[index]);
                             choiceDialog.dismiss();
                         }).setNegativeButton("Cancelar", null).show();
-                } else {
+                } else if (which == 1) {
                     String[] labels = {"Expandida (preenche a tela)", "Original 16:9"};
                     int selected = "original".equals(videoOption("aspect", "unlocked")) ? 1 : 0;
                     new AlertDialog.Builder(this).setTitle("Proporção da tela")
                         .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
                             saveVideoOption("aspect", index == 1 ? "original" : "unlocked");
+                            choiceDialog.dismiss();
+                        }).setNegativeButton("Cancelar", null).show();
+                } else {
+                    // Reuse the PC runtime FPS HUD. The setting is applied on next launch.
+                    final String[] labels = {"Ligado (canto superior direito)", "Desligado"};
+                    int selected = "1".equals(videoOption("show_fps", "0")) ? 0 : 1;
+                    new AlertDialog.Builder(this).setTitle("Mostrar FPS")
+                        .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
+                            saveVideoOption("show_fps", index == 0 ? "1" : "0");
                             choiceDialog.dismiss();
                         }).setNegativeButton("Cancelar", null).show();
                 }
