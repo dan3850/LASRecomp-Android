@@ -468,9 +468,34 @@ static bool recover_lost_surface(void) {
     if (g_vk.surface) vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
     g_vk.surface = VK_NULL_HANDLE;
     if (!android_window_surface_ready("new SDL Vulkan surface")) return false;
-    LOG("[vk] recovery: creating new SDL Vulkan surface\n");
-    if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) {
-        LOG("[vk] SDL surface not ready for recovery: %s\n", SDL_GetError());
+    // SDL_Vulkan_CreateSurface crashes on some Android SDL3 resume paths
+    // even with a non-NULL native window. Use the already enabled
+    // VK_KHR_android_surface instance extension directly for recovery.
+    typedef struct {
+        VkStructureType sType;
+        const void *pNext;
+        VkFlags flags;
+        void *native_window;
+    } AndroidSurfaceInfo;
+    typedef VkResult (VKAPI_PTR *CreateAndroidSurfaceFn)(
+        VkInstance, const AndroidSurfaceInfo *, const VkAllocationCallbacks *, VkSurfaceKHR *);
+    void *native_window = SDL_GetPointerProperty(
+        SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+    CreateAndroidSurfaceFn create_android_surface =
+        (CreateAndroidSurfaceFn)vkGetInstanceProcAddr(g_vk.inst, "vkCreateAndroidSurfaceKHR");
+    if (!native_window || !create_android_surface) {
+        LOG("[vk] recovery postponed: native window=%p vkCreateAndroidSurfaceKHR=%p\n",
+            native_window, (void *)create_android_surface);
+        return false;
+    }
+    // VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR = 1000008000,
+    // defined by VK_KHR_android_surface (avoid dependence on platform header defines).
+    AndroidSurfaceInfo sci = {.sType = (VkStructureType)1000008000, .native_window = native_window};
+    LOG("[vk] recovery: creating Android Vulkan surface directly\n");
+    VkResult surface_result = create_android_surface(g_vk.inst, &sci, NULL, &g_vk.surface);
+    if (surface_result != VK_SUCCESS || !g_vk.surface) {
+        LOG("[vk] recovery: vkCreateAndroidSurfaceKHR failed: %d\n", surface_result);
+        g_vk.surface = VK_NULL_HANDLE;
         return false;
     }
     LOG("[vk] recovery: creating replacement swapchain\n");
