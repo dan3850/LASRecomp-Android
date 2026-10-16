@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 
 from fontTools.ttLib import TTFont
+from fontTools.pens.ttGlyphPen import TTGlyphPen
 
 EXPECTED = {
     "FONT_STANDARD": 217276,
@@ -44,6 +45,38 @@ def extract_font(source: Path, array_name: str, destination: Path) -> None:
         font.ensureDecompiled()
         if "glyf" not in font or "cmap" not in font or not font.getBestCmap():
             raise ValueError(f"{array_name}: missing TrueType outlines or unicode cmap")
+        # Link's Awakening uses the empty-square fallback codepoint.
+        # Keep this compatibility glyph without requiring a Nintendo font.
+        if array_name == "FONT_STANDARD" and 0x25A1 not in font.getBestCmap():
+            glyph = "lasrecomp_white_square"
+            upem = font["head"].unitsPerEm
+            left, bottom = int(upem * .12), int(upem * .04)
+            right, top = int(upem * .88), int(upem * .80)
+            border = max(1, int(upem * .10))
+            pen = TTGlyphPen(None)
+            for contour in (
+                [(left, bottom), (left, top), (right, top), (right, bottom)],
+                [(left+border, bottom+border), (right-border, bottom+border),
+                 (right-border, top-border), (left+border, top-border)],
+            ):
+                pen.moveTo(contour[0])
+                for pt in contour[1:]:
+                    pen.lineTo(pt)
+                pen.closePath()
+            font.setGlyphOrder(font.getGlyphOrder() + [glyph])
+            font["glyf"][glyph] = pen.glyph()
+            font["hmtx"][glyph] = (upem, left)
+            font["maxp"].numGlyphs = len(font.getGlyphOrder())
+            found = 0
+            for cmap in font["cmap"].tables:
+                if cmap.isUnicode() and cmap.format in (4, 12):
+                    cmap.cmap[0x25A1] = glyph
+                    found += 1
+            if not found:
+                raise ValueError(f"{array_name}: cannot add unicode fallback glyph")
+            output = BytesIO()
+            font.save(output)
+            data = output.getvalue()
         print(f"{array_name}: {len(data)} bytes, {len(font.getBestCmap())} mapped glyphs")
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
