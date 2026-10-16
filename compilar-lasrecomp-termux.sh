@@ -312,7 +312,7 @@ fi
 ADRENO_BUILD="$WORK/adrenotools"
 cmake -S "$ADRENO_SRC" -B "$ADRENO_BUILD" -G Ninja \
  -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
- -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a -DBUILD_SHARED_LIBS=ON
+ -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=ON
 cmake --build "$ADRENO_BUILD" --parallel "$JOBS"
 for name in libadrenotools.so libmain_hook.so libhook_impl.so libfile_redirect_hook.so libgsl_alloc_hook.so; do
  find "$ADRENO_BUILD" -type f -name "$name" -print -quit | grep -q . ||
