@@ -219,6 +219,7 @@ static void run(const char *dir, unsigned test) {
 }
 
 static void snapshots(void) {
+    gmem_snap_enabled = 0; // baseline transient invalidation tests
     uint8_t *guest = (uint8_t *)(uintptr_t)HEAP_BASE;
     memset(st.sbuf, 0, sizeof st.sbuf);
     memset(st.ubuf, 0, sizeof st.ubuf);
@@ -268,6 +269,57 @@ static void snapshots(void) {
     assert(!gmem_free && !gmem_free_bytes && !gmem_free_count);
     memset(st.sbuf, 0, sizeof st.sbuf);
     puts("GMEM snapshots: 501 identical reads copy 1 MiB; CPU/inline/submission invalidation and safe compute reuse PASS");
+}
+
+static void persistent_snapshots(void) {
+    gmem_snap_enabled = 1;
+    memset(st.sbuf, 0, sizeof st.sbuf);
+    memset(st.ubuf, 0, sizeof st.ubuf);
+    st.sbuf[0][0] = (Range){HEAP_BASE + 0x80000, 1 << 20};
+    uint8_t *guest = (uint8_t *)(uintptr_t)HEAP_BASE;
+    memset(guest + 0x80000, 0x23, 1 << 20);
+    uint32_t tab[(GMAP_MAX + 1) * 4];
+    gmem_snap_enabled = 0;
+    uint64_t baseline = stat_upload_bytes;
+    for (unsigned frame = 0; frame < 61; ++frame) {
+        portable_gmem_map(0, false, tab);
+        vk_cmd(); renderer_flush();
+    }
+    assert(stat_upload_bytes - baseline == 61ull << 20);
+    gmem_snap_enabled = 1;
+    uint64_t before = stat_upload_bytes;
+    VkDescriptorBufferInfo first = portable_gmem_map(0, false, tab);
+    for (unsigned frame = 0; frame < 60; ++frame) {
+        vk_cmd(); renderer_flush();
+        VkDescriptorBufferInfo same = portable_gmem_map(0, false, tab);
+        assert(same.buffer == first.buffer && same.offset == first.offset);
+    }
+    assert(stat_upload_bytes - before == 1 << 20);
+    // A changed byte, even without a CPU notification, must be observed by the
+    // persistent cache in the next submission. Preserve the pending old copy.
+    guest[0x81234] = 0x67;
+    guest_copy_flush();
+    VkDescriptorBufferInfo changed = portable_gmem_map(0, false, tab);
+    assert(changed.buffer != first.buffer);
+    struct GmemSnapshot *old = NULL, *fresh = NULL;
+    for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i) {
+        if (gmem_snap[i].buf == first.buffer) old = &gmem_snap[i];
+        if (gmem_snap[i].buf == changed.buffer) fresh = &gmem_snap[i];
+    }
+    assert(old && fresh && old->shadow[0x1234] == 0x23 && fresh->shadow[0x1234] == 0x67);
+    VkDescriptorBufferInfo writable = portable_gmem_map(0, true, tab);
+    assert(writable.buffer != changed.buffer && writable.buffer != first.buffer);
+    vk_cmd(); renderer_flush();
+    // Both allocations are now idle: refresh in place instead of reallocating.
+    guest[0x81234] = 0x45;
+    VkDescriptorBufferInfo updated = portable_gmem_map(0, false, tab);
+    assert(updated.buffer == first.buffer || updated.buffer == changed.buffer);
+    assert(gmem_snap_bytes == 2ull << 20);
+    vk_cmd(); renderer_flush();
+    gmem_snap_clear(); gmem_write_pool_clear();
+    assert(!gmem_snap_bytes);
+    memset(st.sbuf, 0, sizeof st.sbuf);
+    puts("GMEM persistent snapshots: 61 submissions upload 1 MiB instead of 61 MiB; mutation/in-flight isolation/write isolation PASS");
 }
 
 static void write_pool_limits(void) {
@@ -371,6 +423,7 @@ int main(int argc, char **argv) {
     init();
     for (unsigned i = 0; i < 13; ++i) run(argv[1],i);
     snapshots();
+    persistent_snapshots();
     write_pool_limits();
     atlas(argv[1]);
     vkDeviceWaitIdle(g_vk.dev);

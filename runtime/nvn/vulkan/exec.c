@@ -20,7 +20,7 @@
 #include "../../settings.h"
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
-static uint64_t stat_upload_bytes;
+static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -637,7 +637,7 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
 
 // Per-draw constants that usually repeat the previous draw's (scale table, tint, driver constants): reuse that copy
 // while it's identical, within one submission. slot: one per kind of data.
-enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_SLOTS };
+enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_GMAP_V, DEDUPE_GMAP_F, DEDUPE_GMAP_C, DEDUPE_SLOTS };
 static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
     static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; } last[DEDUPE_SLOTS];
     uint64_t seq = vk_pending_seq();
@@ -917,7 +917,11 @@ const char *renderer_stats(void) {
         snprintf(stats_text + n, sizeof stats_text - n, ", vtx reused %llu", (unsigned long long)vtx_snapshot_reuses);
         vtx_snapshot_reuses = 0;
     }
-    stat_feedback_copies = stat_upload_bytes = 0;
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
+    }
+    stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     {
         extern void vk_alias_stats(void);
         vk_alias_stats();
@@ -2392,6 +2396,93 @@ static void gmem_read_stage(int stage, ShaderInfo *si) {
     }
 }
 
+// Read-only packed GMEM snapshots can survive submission boundaries. Android has
+// no heap import/write tracking: verify every input byte against a CPU shadow.
+// Never read mapped write-combined memory on the CPU, or overwrite in-flight data.
+#define GMEM_SNAP_SLOTS 128
+#define GMEM_SNAP_WAYS 4
+#define GMEM_SNAP_BUDGET (32ull << 20)
+static struct GmemSnapshot {
+    GmemPlan plan;
+    VkBuffer buf;
+    VmaAllocation mem;
+    void *mapped;
+    uint8_t *shadow;
+    uint64_t seq;
+} gmem_snap[GMEM_SNAP_SLOTS];
+static uint64_t gmem_snap_bytes;
+static int gmem_snap_enabled = -1;
+
+static void gmem_snap_clear(void) { // GPU idle, like the vertex snapshots
+    for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i) {
+        if (gmem_snap[i].buf) vmaDestroyBuffer(g_vk.vma, gmem_snap[i].buf, gmem_snap[i].mem);
+        free(gmem_snap[i].shadow);
+    }
+    memset(gmem_snap, 0, sizeof gmem_snap);
+    gmem_snap_bytes = 0;
+}
+
+static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
+    if (gmem_snap_enabled < 0) {
+        const char *e = getenv("LARECOMP_VK_GMEM_SNAPSHOTS");
+        gmem_snap_enabled = !e || atoi(e) != 0;
+    }
+    if (!gmem_snap_enabled || plan->size < 4096 || plan->size > (2ull << 20)) return (VkSpan){0};
+    unsigned base = (hash_words(0, plan, sizeof *plan) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS)) * GMEM_SNAP_WAYS;
+    uint64_t pending = vk_pending_seq();
+    struct GmemSnapshot *match = NULL;
+    for (unsigned i = base; i < base + GMEM_SNAP_WAYS; ++i) {
+        struct GmemSnapshot *s = &gmem_snap[i];
+        if (!s->buf || memcmp(&s->plan, plan, sizeof *plan)) continue;
+        bool same = true;
+        for (unsigned r = 0; r < plan->tab[GMAP_MAX * 4]; ++r) {
+            uint64_t off = (uint64_t)plan->tab[r * 4 + 2] * 4;
+            if (memcmp(s->shadow + off, (const void *)(uintptr_t)(HEAP_BASE + plan->tab[r * 4]),
+                       plan->tab[r * 4 + 1])) { same = false; break; }
+        }
+        if (same) { s->seq = pending; stat_gmem_reused_bytes += plan->size; return (VkSpan){s->buf, 0, NULL}; }
+        match = s;
+    }
+    uint64_t done = vk_completed_seq();
+    struct GmemSnapshot *pick = match && match->seq <= done ? match : NULL;
+    for (unsigned i = base; !pick && i < base + GMEM_SNAP_WAYS; ++i)
+        if (!gmem_snap[i].buf) pick = &gmem_snap[i];
+    if (!pick) {
+        for (unsigned i = base; i < base + GMEM_SNAP_WAYS; ++i)
+            if (gmem_snap[i].seq <= done && (!pick || gmem_snap[i].seq < pick->seq)) pick = &gmem_snap[i];
+    }
+    if (!pick || gmem_snap_bytes - pick->plan.size + plan->size > GMEM_SNAP_BUDGET) return (VkSpan){0};
+    if (!pick->buf || pick->plan.size != plan->size) {
+        if (pick->buf) vmaDestroyBuffer(g_vk.vma, pick->buf, pick->mem);
+        free(pick->shadow);
+        gmem_snap_bytes -= pick->plan.size;
+        memset(pick, 0, sizeof *pick);
+        pick->shadow = malloc(plan->size);
+        if (!pick->shadow) return (VkSpan){0};
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = plan->size,
+            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
+            .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+        VmaAllocationInfo info = {0};
+        if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &pick->buf, &pick->mem, &info) != VK_SUCCESS || !info.pMappedData) {
+            if (pick->buf) vmaDestroyBuffer(g_vk.vma, pick->buf, pick->mem);
+            free(pick->shadow); memset(pick, 0, sizeof *pick); return (VkSpan){0};
+        }
+        pick->mapped = info.pMappedData;
+        gmem_snap_bytes += plan->size;
+    }
+    for (unsigned r = 0; r < plan->tab[GMAP_MAX * 4]; ++r) {
+        uint64_t off = (uint64_t)plan->tab[r * 4 + 2] * 4;
+        memcpy(pick->shadow + off, (const void *)(uintptr_t)(HEAP_BASE + plan->tab[r * 4]), plan->tab[r * 4 + 1]);
+    }
+    memcpy(pick->mapped, pick->shadow, plan->size);
+    VK_CHECK(vmaFlushAllocation(g_vk.vma, pick->mem, 0, plan->size));
+    stat_upload_bytes += plan->size; // include persistent uploads in the existing total
+    pick->plan = *plan;
+    pick->seq = pending;
+    return (VkSpan){pick->buf, 0, NULL};
+}
+
 static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t *tab) {
     // The transient allocator keeps the snapshot alive through completion.
     // Never share a writable dispatch's allocation or reuse across CPU flushes.
@@ -2427,10 +2518,14 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
         w->plan = plan;
         w->seq = seq;
         span = (VkSpan){w->buf, 0, w->after};
-    } else span = vk_transient(plan.size, 256);
-    for (unsigned i = 0; i < plan.tab[GMAP_MAX * 4]; ++i)
-        memcpy((uint8_t *)span.ptr + (uint64_t)plan.tab[i * 4 + 2] * 4,
-               (const void *)(uintptr_t)(HEAP_BASE + plan.tab[i * 4]), plan.tab[i * 4 + 1]);
+    } else span = gmem_read_snapshot(&plan);
+    bool copy = store || !span.buf;
+    if (!span.buf) span = vk_transient(plan.size, 256);
+    if (copy) {
+        for (unsigned i = 0; i < plan.tab[GMAP_MAX * 4]; ++i)
+            memcpy((uint8_t *)span.ptr + (uint64_t)plan.tab[i * 4 + 2] * 4,
+                   (const void *)(uintptr_t)(HEAP_BASE + plan.tab[i * 4]), plan.tab[i * 4 + 1]);
+    }
     if (w) {
         memcpy(w->before, span.ptr, plan.size);
         VK_CHECK(vmaFlushAllocation(g_vk.vma, w->mem, 0, plan.size));
@@ -2689,6 +2784,7 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    gmem_snap_clear();
     vtx_snapshots_clear();  // backend reset occurs after GPU idle
     gmem_resolve_done(vk_completed_seq());
     gmem_write_pool_clear();
@@ -2831,7 +2927,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             // Graphics with an imported heap read it directly; the preceding
             // compute dispatch's shared scratch table is not a graphics snapshot.
             const uint32_t *tab = portable_map ? portable_tab : stage == 5 ? gmap_tab : direct_tab;
-            bi[n] = ubo_span(vk_transient_copy(tab, sizeof gmap_tab, 256), sizeof gmap_tab);
+            bi[n] = ubo_span(copy_dedupe(stage == 5 ? DEDUPE_GMAP_C : sg ? DEDUPE_GMAP_F : DEDUPE_GMAP_V, tab, sizeof gmap_tab, 256), sizeof gmap_tab);
         } else if (b->binding == 18) {
             for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
             bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
