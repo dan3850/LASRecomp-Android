@@ -635,7 +635,7 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
 #else
         enabled = opt && atoi(opt) != 0;
 #endif
-        if (enabled) LOG("[vk] byte-verified vertex/index snapshot cache enabled (32 MB limit)\\n");
+        if (enabled) LOG("[vk] byte-verified vertex/index snapshot cache enabled (32 MB limit)\n");
     }
     if (!enabled || size < VTX_SNAPSHOT_MIN || size > VTX_SNAPSHOT_MAX || !addr)
         return guest_copy(addr, size);
@@ -851,6 +851,11 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
+    if (vtx_snapshot_reuses) {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, ", vtx reused %llu", (unsigned long long)vtx_snapshot_reuses);
+        vtx_snapshot_reuses = 0;
+    }
     stat_feedback_copies = stat_upload_bytes = 0;
     {
         extern void vk_alias_stats(void);
@@ -3309,7 +3314,8 @@ static void draw_(CmdRec *r, bool indexed) {
             if (iaddr % isz == 0 && guest_direct(iaddr, (uint64_t)count * isz, &ib.buf, &ib.off)) {
                 scan_src = src; scan_isz = isz; scan_restart = restart;  // max_index only if a stream gets copied
             } else {
-                ib = vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
+                ib = (uint64_t)count * isz >= VTX_SNAPSHOT_MIN ? guest_vertex_copy(iaddr, (uint64_t)count * isz)
+                    : vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
                 if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != (uint16_t)restart) max_index = s[i]; }
                 else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
             }
