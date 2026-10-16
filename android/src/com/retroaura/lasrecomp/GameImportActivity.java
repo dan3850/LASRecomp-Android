@@ -133,7 +133,8 @@ public final class GameImportActivity extends Activity {
     }
 
     private void showVideoSettings() {
-        final String[] sections = {"Resolução interna", "Proporção da tela", "Mostrar FPS", "Diagnóstico de desempenho (CPU/GPU)"};
+        final String[] sections = {"Resolução interna", "Proporção da tela", "Mostrar FPS", "Diagnóstico de desempenho (CPU/GPU)",
+            "Upscaler (FSR 1 / Bilinear)", "Antisserrilhamento (SMAA)", "Remover desfoque", "Ocultar ícone Hero Mode"};
         new AlertDialog.Builder(this).setTitle("Configurações de vídeo")
             .setItems(sections, (dialog, which) -> {
                 if (which == 0) {
@@ -165,7 +166,7 @@ public final class GameImportActivity extends Activity {
                             saveVideoOption("show_fps", index == 0 ? "1" : "0");
                             choiceDialog.dismiss();
                         }).setNegativeButton("Cancelar", null).show();
-                } else {
+                } else if (which == 3) {
                     // Opt-in only: the native GPU/CPU profiler may add overhead.
                     // AlertDialog cannot display setMessage together with its single-choice list:
                     // message takes precedence, hiding the on/off radio buttons on Android.
@@ -193,6 +194,43 @@ public final class GameImportActivity extends Activity {
                                     .setMessage("Não foi possível salvar: " + error.getMessage())
                                     .setPositiveButton("OK", null).show();
                             }
+                        }).setNegativeButton("Cancelar", null).show();
+                } else if (which == 4) {
+                    // This changes the active Vulkan presentation post-process, not the renderer API.
+                    final String[] labels = {"Bilinear (mais leve, sem FSR)", "FSR 1 (melhora a nitidez ao ampliar)"};
+                    int selected = "bilinear".equals(videoOption("upscaler", "fsr1")) ? 0 : 1;
+                    new AlertDialog.Builder(this).setTitle("Upscaler")
+                        .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
+                            saveVideoOption("upscaler", index == 0 ? "bilinear" : "fsr1");
+                            choiceDialog.dismiss();
+                            android.widget.Toast.makeText(this, "Reinicie o jogo para aplicar o upscaler.",
+                                android.widget.Toast.LENGTH_SHORT).show();
+                        }).setNegativeButton("Cancelar", null).show();
+                } else if (which == 5) {
+                    final String[] labels = {"Desligado (mais leve, padrão)", "SMAA (suaviza serrilhados)"};
+                    int selected = "smaa".equals(videoOption("antialias", "off")) ? 1 : 0;
+                    new AlertDialog.Builder(this).setTitle("Antisserrilhamento (SMAA)")
+                        .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
+                            saveVideoOption("antialias", index == 0 ? "off" : "smaa");
+                            choiceDialog.dismiss();
+                            android.widget.Toast.makeText(this, "Reinicie o jogo para aplicar o SMAA.",
+                                android.widget.Toast.LENGTH_SHORT).show();
+                        }).setNegativeButton("Cancelar", null).show();
+                } else if (which == 6) {
+                    final String[] labels = {"Manter desfoque original (padrão)", "Remover desfoque"};
+                    int selected = "1".equals(videoOption("blur_removal", "0")) ? 1 : 0;
+                    new AlertDialog.Builder(this).setTitle("Desfoque do jogo")
+                        .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
+                            saveVideoOption("blur_removal", index == 0 ? "0" : "1");
+                            choiceDialog.dismiss();
+                        }).setNegativeButton("Cancelar", null).show();
+                } else if (which == 7) {
+                    final String[] labels = {"Mostrar ícone Hero Mode (padrão)", "Ocultar ícone Hero Mode"};
+                    int selected = "1".equals(videoOption("hide_hero_icon", "0")) ? 1 : 0;
+                    new AlertDialog.Builder(this).setTitle("Ícone Hero Mode")
+                        .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
+                            saveVideoOption("hide_hero_icon", index == 0 ? "0" : "1");
+                            choiceDialog.dismiss();
                         }).setNegativeButton("Cancelar", null).show();
                 }
             }).setPositiveButton("Fechar", null).show();
