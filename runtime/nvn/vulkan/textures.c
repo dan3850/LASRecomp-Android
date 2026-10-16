@@ -805,6 +805,25 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
             sw.a = VK_COMPONENT_SWIZZLE_ONE;
         }
     }
+    // Record distinct colour reinterpretations and swizzles for Android Vulkan.
+    // Deliberately diagnostics-only: do not change any sampled pixel values.
+    if (getenv("LARECOMP_LOG_COLOR_VIEWS") && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
+        static struct { uint32_t base, requested; VkFormat actual; VkComponentMapping sw; } seen[64];
+        static unsigned nseen;
+        const uint32_t requested = v && (v->setmask & 4) ? v->format : t->format;
+        bool known = false;
+        for (unsigned i = 0; i < nseen; ++i)
+            if (seen[i].base == t->format && seen[i].requested == requested &&
+                seen[i].actual == fmt && !memcmp(&seen[i].sw, &sw, sizeof sw)) { known = true; break; }
+        if (!known && nseen < 64) {
+            seen[nseen].base = t->format;
+            seen[nseen].requested = requested;
+            seen[nseen].actual = fmt;
+            seen[nseen++].sw = sw;
+            LOG("[color-view] NVN=%#x requested=%#x actualVk=%d imageVk=%d swizzle=%d,%d,%d,%d size=%ux%u levels=%u\n",
+                t->format, requested, fmt, b->format, sw.r, sw.g, sw.b, sw.a, t->width, t->height, b->levels);
+        }
+    }
     VkImageViewType want = view_type_for(want_textype);
     VkImageViewType have = b->base_type;
     if (b->samples > 1) return vk_dummy_view(want_textype);  // multisampled images can't be sampled as 2D
