@@ -554,6 +554,12 @@ public final class GameImportActivity extends Activity {
         return DocumentsContract.getDocumentId(entry.uri);
     }
 
+    private boolean hasNamedFile(List<Entry> entries, String name) {
+        for (Entry entry : entries)
+            if (!entry.directory() && name.equals(entry.name)) return true;
+        return false;
+    }
+
     private Entry namedFolder(List<Entry> entries, String name) {
         for (Entry e : entries) {
             if (e.directory() && name.equals(e.name)) return e;
@@ -614,6 +620,14 @@ public final class GameImportActivity extends Activity {
             Entry romfs = namedFolder(root, "romfs");
             if (exefs == null || romfs == null)
                 throw new IllegalStateException("Escolha a pasta que contém exefs e romfs");
+            // Validate the SAF tree before copying large game data.
+            List<Entry> exefsFiles = children(tree, documentId(exefs));
+            if (!hasNamedFile(exefsFiles, "main") ||
+                !hasNamedFile(exefsFiles, "sdk") ||
+                !hasNamedFile(exefsFiles, "main.npdm"))
+                throw new IllegalStateException("Pasta exefs incompleta: main, sdk ou main.npdm ausente");
+            if (namedFolder(children(tree, documentId(romfs)), "region_common") == null)
+                throw new IllegalStateException("Pasta romfs incompleta: region_common ausente");
             copyTree(tree, exefs, new File(stage, "exefs"), 0);
             copyTree(tree, romfs, new File(stage, "romfs"), 0);
             // Prepare the actual binary RomFS image the guest reads. The bridge
@@ -637,7 +651,7 @@ public final class GameImportActivity extends Activity {
             // Keep the SAF grant for future external-file loading; the current
             // engine still uses the prepared private copy until its file I/O
             // bridge supports content URIs.
-            if (rememberedGameFolder() != null || hasPersistedReadGrant(tree))
+            if (hasPersistedReadGrant(tree))
                 getPreferences(MODE_PRIVATE).edit().putString(GAME_TREE_PREF, tree.toString()).apply();
         } catch (Exception e) {
             error = e.getMessage() == null ? e.toString() : e.getMessage();
