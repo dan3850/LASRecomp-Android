@@ -113,7 +113,12 @@ static void load_fonts(void) {
     if (g_fonts_loaded) return;
     g_fonts_loaded = 1;
     const char *env = getenv("LARECOMP_FONT");
-    const char *std[] = {env, "fonts/nintendo_udsg-r_std_003.bfttf", "fonts/nintendo_udsg-r_std_003.ttf",
+    const char *std[] = {env,
+#ifdef __ANDROID__
+                         // Bundled Eden font first, even if old imports exist on disk.
+                         "fonts/eden_standard.ttf",
+#endif
+                         "fonts/nintendo_udsg-r_std_003.bfttf", "fonts/nintendo_udsg-r_std_003.ttf",
                          "fonts/nintendo_udsgr_std_003.ttf", "fonts/nintendo_udsgr_std_003.bfttf",
 #ifdef __ANDROID__
                          // APK-owned classic/static TrueType fallback, already in the
@@ -122,7 +127,6 @@ static void load_fonts(void) {
                          // parser was never designed for arbitrary Android fonts.
                          // Eden-style synthesized static system fonts live inside the APK.
                          // They are extracted at build time, not imported by the player.
-                         "fonts/eden_standard.ttf",
                          "fonts/android_fallback.ttf",
                          // Android exposes system TrueType fonts to regular applications.
                          // Prefer Roboto/Droid Sans (glyf outlines); Noto CJK fonts can
@@ -145,12 +149,17 @@ static void load_fonts(void) {
     for (size_t i = 0; i < sizeof std / sizeof *std && !fonts[0].addr; i++)
         if (std[i]) load_one(std[i], &fonts[0]);
     if (!fonts[0].addr) FATAL("no usable system font substitute\n");
-    if (!load_one("fonts/nintendo_ext_003.bfttf", &fonts[1]) &&
-        !load_one("fonts/nintendo_ext_003.ttf", &fonts[1])) {
 #ifdef __ANDROID__
-        load_one("fonts/eden_nintendo_ext.ttf", &fonts[1]);
+    if (!load_one("fonts/eden_nintendo_ext.ttf", &fonts[1]) &&
+        !load_one("fonts/nintendo_ext_003.bfttf", &fonts[1]))
+        load_one("fonts/nintendo_ext_003.ttf", &fonts[1]);
+#else
+    if (!load_one("fonts/nintendo_ext_003.bfttf", &fonts[1]))
+        load_one("fonts/nintendo_ext_003.ttf", &fonts[1]);
 #endif
-    }
+    LOG("[pl] selected standard=%#llx size=%llu extension=%#llx size=%llu\n",
+        (unsigned long long)fonts[0].addr, (unsigned long long)fonts[0].size,
+        (unsigned long long)fonts[1].addr, (unsigned long long)fonts[1].size);
 }
 
 // SharedFontType: 0 Standard, 1 ChineseSimple, 2 ChineseSimpleExt, 3 ChineseTraditional, 4 Korean, 5 NintendoExt
@@ -159,6 +168,28 @@ static const Font *font_for(uint64_t type) {
     return type == 5 && fonts[1].addr ? &fonts[1] : &fonts[0];
 }
 
-HLE_FUNC("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", pl_get_load_state) { c->x[0] = 1; }
-HLE_FUNC("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", pl_get_address) { c->x[0] = font_for(c->x[0])->addr; }
-HLE_FUNC("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", pl_get_size) { c->x[0] = font_for(c->x[0])->size; }
+// Log a bounded number of guest font-service queries, not every frame.
+static unsigned pl_state_calls, pl_address_calls, pl_size_calls;
+HLE_FUNC("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", pl_get_load_state) {
+    uint64_t type = c->x[0];
+    c->x[0] = 1;
+    if (__atomic_fetch_add(&pl_state_calls, 1, __ATOMIC_RELAXED) < 8)
+        LOG("[pl] GetSharedFontLoadState type=%llu -> 1\n", (unsigned long long)type);
+}
+HLE_FUNC("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", pl_get_address) {
+    uint64_t type = c->x[0];
+    const Font *font = font_for(type);
+    c->x[0] = font->addr;
+    if (__atomic_fetch_add(&pl_address_calls, 1, __ATOMIC_RELAXED) < 12)
+        LOG("[pl] GetSharedFontAddress type=%llu -> %#llx size=%llu\n",
+            (unsigned long long)type, (unsigned long long)font->addr,
+            (unsigned long long)font->size);
+}
+HLE_FUNC("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", pl_get_size) {
+    uint64_t type = c->x[0];
+    const Font *font = font_for(type);
+    c->x[0] = font->size;
+    if (__atomic_fetch_add(&pl_size_calls, 1, __ATOMIC_RELAXED) < 12)
+        LOG("[pl] GetSharedFontSize type=%llu -> %llu\n",
+            (unsigned long long)type, (unsigned long long)font->size);
+}

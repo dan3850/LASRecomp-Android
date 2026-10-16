@@ -197,11 +197,37 @@ public final class GameImportActivity extends Activity {
         }
     }
 
+    // Keep the initial font service calls visible even after long play sessions.
+    private static String readFontServiceLog(File file) {
+        if (!file.isFile()) return "(arquivo nao criado)\n";
+        StringBuilder output = new StringBuilder();
+        try (RandomAccessFile stream = new RandomAccessFile(file, "r")) {
+            long limit = Math.min(stream.length(), 512 * 1024L);
+            int matches = 0;
+            while (stream.getFilePointer() < limit && matches < 40) {
+                String line = stream.readLine();
+                if (line == null) break;
+                if (line.contains("[pl]")) {
+                    output.append(line).append('\n');
+                    matches++;
+                }
+            }
+        } catch (Exception error) {
+            return "(erro ao ler fontes: " + error.getMessage() + ")\n";
+        }
+        return output.length() > 0
+                ? output.toString()
+                : "(sem chamadas do servico nn::pl no inicio do log)\n";
+    }
+
     private void showBootLog() {
         String boot = readLogTail(new File(getFilesDir(), "lasrecomp_boot.txt"), 10000);
-        String runtime = readLogTail(new File(getFilesDir(), "lasrecomp.log"), 16000);
+        File gameLog = new File(getFilesDir(), "lasrecomp.log");
+        String runtime = readLogTail(gameLog, 16000);
+        String font = readFontServiceLog(gameLog);
         String output = "=== INICIO / SDL ===\n" + boot
-                      + "\n\n=== MOTOR NATIVO ===\n" + runtime;
+                      + "\n\n=== FONTES DO JOGO (nn::pl) ===\n" + font
+                      + "\n=== MOTOR NATIVO ===\n" + runtime;
         new AlertDialog.Builder(this)
             .setTitle("Diagnostico do boot")
             .setMessage(output)
