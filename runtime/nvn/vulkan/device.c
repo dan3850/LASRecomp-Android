@@ -7,6 +7,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#include <android/log.h>
+#endif
 
 #include "../../paths.h"
 #include "../../settings.h"
@@ -56,7 +60,41 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 // LARECOMP_VK_VALIDATION=1: Khronos validation layer (MSYS2 package vulkan-validation-layers)
 static void create_instance(void) {
 #ifdef __ANDROID__
-    VkResult vr = volkInitialize();
+    // Optional app-private driver, loaded before the Vulkan instance. The Java
+    // importer writes driver.active only after validating a complete ZIP.
+    // Never change Android's system driver.
+    bool custom_loaded = false;
+    const char *files = getenv("HOME");
+    if (files && files[0]) {
+        char marker[1024], driver_dir[1024], hook_dir[1024];
+        snprintf(marker, sizeof marker, "%s/gpu_driver/driver.active", files);
+        snprintf(driver_dir, sizeof driver_dir, "%s/gpu_driver", files);
+        const char *native_lib_dir = getenv("LASRECOMP_NATIVE_LIB_DIR");
+        if (native_lib_dir && access(marker, R_OK) == 0) {
+            FILE *f = fopen(marker, "r");
+            char soname[128] = {0};
+            if (f) { fgets(soname, sizeof soname, f); fclose(f); }
+            soname[strcspn(soname, "\r\n")] = 0;
+            if (soname[0] && !strchr(soname, '/') && !strstr(soname, "..")) {
+                void *adreno = dlopen("libadrenotools.so", RTLD_NOW | RTLD_LOCAL);
+                typedef void *(*DriverOpen)(int, int, const char *, const char *,
+                                             const char *, const char *, const char *, void **);
+                DriverOpen open_driver = adreno ? (DriverOpen)dlsym(adreno, "adrenotools_open_libvulkan") : NULL;
+                if (open_driver) {
+                    snprintf(hook_dir, sizeof hook_dir, "%s", native_lib_dir);
+                    void *loader = open_driver(RTLD_NOW | RTLD_LOCAL, 1, files,
+                                               hook_dir, driver_dir, soname, NULL, NULL);
+                    PFN_vkGetInstanceProcAddr gp = loader ?
+                        (PFN_vkGetInstanceProcAddr)dlsym(loader, "vkGetInstanceProcAddr") : NULL;
+                    if (gp && volkInitializeCustom(gp) == VK_SUCCESS) {
+                        custom_loaded = true;
+                        LOG("[vk] custom driver loader ready: %s\n", soname);
+                    } else LOG("[vk] custom driver failed; using system Vulkan\n");
+                } else LOG("[vk] adrenotools unavailable; using system Vulkan\n");
+            }
+        }
+    }
+    VkResult vr = custom_loaded ? VK_SUCCESS : volkInitialize();
     if (vr != VK_SUCCESS) FATAL("volkInitialize: Vulkan loader unavailable: %d\n", vr);
 #endif
     Uint32 n_sdl = 0;
