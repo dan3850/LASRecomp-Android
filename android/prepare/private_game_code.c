@@ -12,6 +12,38 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "../../runtime/gamelib.h"
+#include "../../runtime/mods.h"
+
+JNIEXPORT jboolean JNICALL
+Java_com_retroaura_lasrecomp_GameImportActivity_nativeSupportsModMenu(
+    JNIEnv *env, jclass cls, jstring libraryPath) {
+    (void)cls;
+    if (!libraryPath) return JNI_FALSE;
+    const char *path = (*env)->GetStringUTFChars(env, libraryPath, NULL);
+    if (!path) return JNI_FALSE;
+    jboolean supported = JNI_FALSE;
+    struct stat st;
+    void *engine = NULL, *game = NULL;
+    if (path[0] != '/' || lstat(path, &st) || !S_ISREG(st.st_mode) ||
+        st.st_size < 1024 * 1024 || st.st_size > 512LL * 1024 * 1024) goto done;
+    engine = dlopen("liblasrecomp_runtime.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!engine) goto done;
+    game = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!game) goto done;
+    GameLibEntry entry = (GameLibEntry)(void *)dlsym(game, GAMELIB_ENTRY);
+    const char *(*capability)(void) = (const char *(*)(void))dlsym(game, "lasgame_mod_menu_v1");
+    const GameLibTables *t = entry ? entry() : NULL;
+    const char *cap = capability ? capability() : NULL;
+    supported = t && t->abi == GAMELIB_ABI && t->id && !strcmp(t->id, GAMELIB_ID) &&
+                t->main_addrs && t->sdk_addrs && t->main_fns && t->sdk_fns &&
+                t->main_count && t->sdk_count && *t->main_count && *t->sdk_count &&
+                cap && !strcmp(cap, LAS_MOD_MENU_CAPABILITY) ? JNI_TRUE : JNI_FALSE;
+done:
+    if (game) dlclose(game);
+    if (engine) dlclose(engine);
+    (*env)->ReleaseStringUTFChars(env, libraryPath, path);
+    return supported;
+}
 
 JNIEXPORT jstring JNICALL
 Java_com_retroaura_lasrecomp_GameImportActivity_nativeValidateGameCode(

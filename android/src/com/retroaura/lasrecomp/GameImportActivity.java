@@ -43,6 +43,8 @@ public final class GameImportActivity extends Activity {
     // Feasibility test: loads ONLY a harmless probe library, not game code.
     private static native String nativeProbeLocalCode(String libraryPath, String cacheDirectory);
     private static native String nativeCheckGameCode(String libraryPath);
+    private static native String nativeValidateGameCode(String libraryPath);
+    private static native boolean nativeSupportsModMenu(String libraryPath);
 
     private static final String GAME_TREE_PREF = "selected_game_tree";
     private static final int PICK_GAME_FOLDER = 101;
@@ -112,6 +114,26 @@ public final class GameImportActivity extends Activity {
         libraryButton.setText("TESTE: IMPORTAR MINHA LIBLASGAME.SO");
         libraryButton.setOnClickListener(v -> selectGameCodeFile());
         layout.addView(libraryButton);
+
+        Button modsButton = new Button(this);
+        modsButton.setText("MODS");
+        modsButton.setOnClickListener(v -> {
+            if (importing) return;
+            modsButton.setEnabled(false);
+            new Thread(() -> {
+                File code = privateGameCodeFile();
+                if (!code.isFile()) code = new File(getApplicationInfo().nativeLibraryDir, "liblasgame.so");
+                boolean compatible;
+                try { compatible = nativeSupportsModMenu(code.getAbsolutePath()); }
+                catch (Throwable error) { compatible = false; }
+                final boolean prepared = compatible;
+                runOnUiThread(() -> {
+                    modsButton.setEnabled(true);
+                    if (!isFinishing() && !isDestroyed()) GameMods.show(this, prepared);
+                });
+            }, "LASRecompModCompatibility").start();
+        });
+        layout.addView(modsButton);
 
         // System fonts are console-owned, not stored in Zelda's NSP or our APK.
         // Users may import their own legitimate Switch Standard/NintendoExt font.
@@ -423,6 +445,10 @@ public final class GameImportActivity extends Activity {
                 temporary.canWrite()) {
                 throw new IllegalStateException("Não consegui tornar a biblioteca somente leitura");
             }
+            String compatibility = nativeValidateGameCode(temporary.getAbsolutePath());
+            if (compatibility == null || !compatibility.startsWith("OK:"))
+                throw new IllegalStateException(compatibility == null ?
+                    "Não consegui verificar a biblioteca; a anterior foi preservada." : compatibility);
             File destination = privateGameCodeFile();
             if (!temporary.renameTo(destination))
                 throw new IllegalStateException("Falha ao instalar biblioteca privada");
@@ -440,9 +466,9 @@ public final class GameImportActivity extends Activity {
             if (failure == null) {
                 new AlertDialog.Builder(this)
                     .setTitle("Biblioteca importada")
-                    .setMessage("A liblasgame.so está no cache privado. O próximo teste " +
-                                "é abrir o jogo para verificar compatibilidade com o motor. " +
-                                "Ainda não está confirmado que o Zelda inicia.")
+                    .setMessage("Biblioteca vinculada ao motor e instalada no cache privado. " +
+                                "Feche completamente e abra novamente o aplicativo antes de jogar " +
+                                "ou de verificar a compatibilidade no menu MODS.")
                     .setPositiveButton("OK", null).show();
             } else {
                 new AlertDialog.Builder(this)
@@ -531,6 +557,11 @@ public final class GameImportActivity extends Activity {
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (GraphicsDiagnostics.handleResult(this, requestCode, resultCode, data)) return;
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == GameMods.PICK_FILE) {
+            if (!importing && resultCode == RESULT_OK && data != null && data.getData() != null)
+                GameMods.importFile(this, data.getData());
+            return;
+        }
         if (requestCode == PICK_VULKAN_DRIVER) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 Uri zip = data.getData();

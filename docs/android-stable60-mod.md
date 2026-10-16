@@ -1,5 +1,9 @@
 # Link's Awakening v1.0.0 — Stable 60fps v2
 
+Para importar/colar e ativar/desativar pelo novo menu Android, use a
+[biblioteca preparada para o menu Mods](android-mod-menu.md). O procedimento
+abaixo continua disponivel para gerar o mod fixo anterior.
+
 Aplicador do mod fornecido pelo usuario, de **theboy181**, para a biblioteca
 privada de codigo recompilado do LASRecomp Android. O mod substitui por NOP
 as instrucoes de `main+0x01019608` e `main+0x01019628`, exclusivamente no
