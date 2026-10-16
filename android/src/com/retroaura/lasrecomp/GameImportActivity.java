@@ -42,6 +42,7 @@ public final class GameImportActivity extends Activity {
     private static native String nativeProbeLocalCode(String libraryPath, String cacheDirectory);
     private static native String nativeCheckGameCode(String libraryPath);
 
+    private static final String GAME_TREE_PREF = "selected_game_tree";
     private static final int PICK_GAME_FOLDER = 101;
     private static final int PICK_GAME_CODE = 102;
     private static final int PICK_SYSTEM_FONT = 103;
@@ -461,11 +462,24 @@ public final class GameImportActivity extends Activity {
         }
     }
 
+    private Uri rememberedGameFolder() {
+        String saved = getPreferences(MODE_PRIVATE).getString(GAME_TREE_PREF, null);
+        if (saved == null) return null;
+        Uri uri = Uri.parse(saved);
+        for (android.content.UriPermission grant : getContentResolver().getPersistedUriPermissions()) {
+            if (grant.isReadPermission() && uri.equals(grant.getUri())) return uri;
+        }
+        return null;
+    }
+
     private void pickGameFolder() {
         if (importing) return;
         Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
                         Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        Uri previous = rememberedGameFolder();
+        if (previous != null && android.os.Build.VERSION.SDK_INT >= 26)
+            picker.putExtra(DocumentsContract.EXTRA_INITIAL_URI, previous);
         startActivityForResult(picker, PICK_GAME_FOLDER);
     }
 
@@ -579,6 +593,13 @@ public final class GameImportActivity extends Activity {
         if (f.exists() && !f.delete()) throw new IllegalStateException("Falha ao limpar pasta");
     }
 
+    private boolean hasPersistedReadGrant(Uri tree) {
+        for (android.content.UriPermission grant : getContentResolver().getPersistedUriPermissions()) {
+            if (grant.isReadPermission() && tree.equals(grant.getUri())) return true;
+        }
+        return false;
+    }
+
     private void importTree(Uri tree) {
         String error = null;
         File stage = new File(getFilesDir(), "extracted.importing");
@@ -613,6 +634,11 @@ public final class GameImportActivity extends Activity {
                 throw new IllegalStateException("Não foi possível finalizar a importação");
             }
             if (previous.exists()) removeTree(previous);
+            // Keep the SAF grant for future external-file loading; the current
+            // engine still uses the prepared private copy until its file I/O
+            // bridge supports content URIs.
+            if (rememberedGameFolder() != null || hasPersistedReadGrant(tree))
+                getPreferences(MODE_PRIVATE).edit().putString(GAME_TREE_PREF, tree.toString()).apply();
         } catch (Exception e) {
             error = e.getMessage() == null ? e.toString() : e.getMessage();
         } finally {
