@@ -2689,6 +2689,26 @@ static void draw(CmdRec *r, bool indexed) {
     PROF_ADD(prof_draw);
 }
 static uint64_t prof_tp_;
+// On Android a newly visited area may queue hundreds of shaders and draw
+// nothing while workers build them. Wait for required graphics work rather
+// than silently discard geometry; permanent failures still return promptly.
+static bool graphics_ready(atomic_int *state) {
+    int v = atomic_load(state);
+#ifdef __ANDROID__
+    if (v == 0) {
+        uint64_t start = SDL_GetTicksNS();
+        do {
+            SDL_Delay(1);
+            v = atomic_load(state);
+        } while (v == 0 && SDL_GetTicksNS() - start < 2000000000ull);
+        static unsigned logged;
+        if (logged++ < 24)
+            LOG("[shader-wait] waited=%.1fms state=%d\n",
+                (double)(SDL_GetTicksNS() - start) / 1000000.0, v);
+    }
+#endif
+    return v == 1;
+}
 static void draw_(CmdRec *r, bool indexed) {
     if (prof) prof_tp_ = SDL_GetTicksNS();
     if (!st.program) { stat_skipped++; return; }
@@ -2699,7 +2719,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
     Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+    if (!pr || !graphics_ready(&pr->state)) { stat_skipped++; return; }
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
@@ -2828,7 +2848,7 @@ static void draw_(CmdRec *r, bool indexed) {
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
     }
-    if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
+    if (!graphics_ready(&pp->state)) { stat_skipped++; return; }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
