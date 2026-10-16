@@ -479,6 +479,7 @@ public final class GameImportActivity extends Activity {
         if (importing) return;
         Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION |
                         Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         Uri previous = rememberedGameFolder();
         if (previous != null && android.os.Build.VERSION.SDK_INT >= 26)
@@ -518,7 +519,8 @@ public final class GameImportActivity extends Activity {
             data == null || data.getData() == null) return;
         Uri tree = data.getData();
         try {
-            getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            getContentResolver().takePersistableUriPermission(tree,
+                data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
         } catch (SecurityException ignored) {
             // The transient URI grant remains usable for this import.
         }
@@ -636,8 +638,28 @@ public final class GameImportActivity extends Activity {
             // image. Keep that large image outside the APK's private storage.
             // Only the relatively small executable files are staged locally.
             boolean externalImage = hasNamedFile(root, "romfs.bin");
-            if (externalImage && !hasPersistedReadGrant(tree))
-                throw new IllegalStateException("Permissão permanente necessária para ler romfs.bin");
+            if (!hasPersistedReadGrant(tree))
+                throw new IllegalStateException("Permissão permanente necessária para a pasta do jogo");
+            if (!externalImage) {
+                boolean canWrite = false;
+                for (android.content.UriPermission grant : getContentResolver().getPersistedUriPermissions())
+                    if (tree.equals(grant.getUri()) && grant.isWritePermission()) canWrite = true;
+                if (!canWrite)
+                    throw new IllegalStateException("Autorize a escrita na pasta para criar romfs.bin sem copiar o jogo");
+                runOnUiThread(() -> status.setText("Gerando romfs.bin diretamente na pasta selecionada..."));
+                Uri created = DocumentsContract.createDocument(getContentResolver(),
+                    DocumentsContract.buildDocumentUriUsingTree(tree, rootId),
+                    "application/octet-stream", "romfs.bin");
+                if (created == null) throw new IllegalStateException("Falha ao criar romfs.bin externo");
+                try {
+                    new SafRomfsBuilder(this, tree).build(romfs.uri, created);
+                    externalImage = true;
+                } catch (Exception failure) {
+                    try { DocumentsContract.deleteDocument(getContentResolver(), created); }
+                    catch (Exception ignored) {}
+                    throw failure;
+                }
+            }
             copyTree(tree, exefs, new File(stage, "exefs"), 0);
             if (externalImage) {
                 try (FileOutputStream marker = new FileOutputStream(new File(stage, ".external-romfs"))) {
