@@ -101,6 +101,11 @@ CMAKE_OPTS=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
  -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS=-fPIC -DCMAKE_CXX_FLAGS=-fPIC
  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,max-page-size=16384")
 step "SDL3 — compila do fonte"
+# O CMake anterior persistiu ANDROID=ON no cache do SDL3.
+# Limpa apenas a entrada obsoleta, sem remover objetos ou caches de outras libs.
+if [[ -f "$WORK/sdl3/CMakeCache.txt" ]]; then
+ sed -i '/^ANDROID:UNINITIALIZED=/d; /^ANDROID:BOOL=/d; /^SDL_ANDROID:UNINITIALIZED=/d' "$WORK/sdl3/CMakeCache.txt"
+fi
 cmake -S "$DEPS/sdl3" -B "$WORK/sdl3" "${CMAKE_OPTS[@]}" \
  -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF \
  -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
