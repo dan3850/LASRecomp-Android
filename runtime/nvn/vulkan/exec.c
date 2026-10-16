@@ -593,6 +593,100 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     return s;
 }
 
+// On Android the Adreno driver does not expose VK_EXT_external_memory_host, and
+// the guest heap's OS page write tracking is unavailable. The regular vertex
+// cache is therefore disabled and the same geometry gets copied to the
+// transient ring on every submission. Retain a small mapped-buffer snapshot
+// for repeated guest vertex/index ranges. Always compare EVERY byte of the
+// source on reuse: never infer immutability from an address, a hash, or a frame.
+// A changed in-flight entry uses the original transient path until it is safe
+// to update. No Vulkan resource is overwritten while a queued draw may read it.
+// LARECOMP_VK_STATIC_VTX_CACHE=0 restores the original path for A/B testing.
+#define VTX_SNAPSHOT_SLOTS 512
+#define VTX_SNAPSHOT_MIN 4096ull
+#define VTX_SNAPSHOT_MAX (512ull << 10)
+#define VTX_SNAPSHOT_BUDGET (32ull << 20)
+typedef struct {
+    uint64_t addr, size, seq;
+    VkBuffer buf;
+    VmaAllocation alloc;
+    uint8_t *shadow;
+} VtxSnapshot;
+static VtxSnapshot vtx_snapshots[VTX_SNAPSHOT_SLOTS];
+static uint64_t vtx_snapshot_bytes;
+static uint64_t vtx_snapshot_reuses;
+
+static void vtx_snapshots_clear(void) {
+    for (int i = 0; i < VTX_SNAPSHOT_SLOTS; i++) {
+        VtxSnapshot *e = &vtx_snapshots[i];
+        if (e->buf) vmaDestroyBuffer(g_vk.vma, e->buf, e->alloc);
+        free(e->shadow);
+    }
+    memset(vtx_snapshots, 0, sizeof vtx_snapshots);
+    vtx_snapshot_bytes = vtx_snapshot_reuses = 0;
+}
+
+static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *opt = getenv("LARECOMP_VK_STATIC_VTX_CACHE");
+#ifdef __ANDROID__
+        enabled = !opt || atoi(opt) != 0;
+#else
+        enabled = opt && atoi(opt) != 0;
+#endif
+        if (enabled) LOG("[vk] byte-verified vertex/index snapshot cache enabled (32 MB limit)\\n");
+    }
+    if (!enabled || size < VTX_SNAPSHOT_MIN || size > VTX_SNAPSHOT_MAX || !addr)
+        return guest_copy(addr, size);
+
+    uint64_t h = (addr >> 4) * 0x9E3779B97F4A7C15ull ^ size * 0xC2B2AE3D27D4EB4Full;
+    uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (VTX_SNAPSHOT_SLOTS - 1);
+    VtxSnapshot *e = &vtx_snapshots[slot];
+    uint64_t pending = vk_pending_seq();
+    const void *src = (const void *)(uintptr_t)addr;
+
+    if (e->buf && e->addr == addr && e->size == size &&
+        !memcmp(e->shadow, src, (size_t)size)) {
+        e->seq = pending;
+        vtx_snapshot_reuses++;
+        return (VkSpan){e->buf, 0, NULL};
+    }
+
+    // An older submitted or still-recording command may use this snapshot.
+    // Avoid a wait: use the normal per-submission copy for the new contents.
+    if (e->buf && e->seq > vk_completed_seq()) return guest_copy(addr, size);
+    if (e->buf) {
+        vmaDestroyBuffer(g_vk.vma, e->buf, e->alloc);
+        free(e->shadow);
+        vtx_snapshot_bytes -= e->size;
+        memset(e, 0, sizeof *e);
+    }
+    if (vtx_snapshot_bytes + size > VTX_SNAPSHOT_BUDGET) return guest_copy(addr, size);
+
+    uint8_t *shadow = malloc((size_t)size);
+    if (!shadow) return guest_copy(addr, size);
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VkBuffer buf = VK_NULL_HANDLE;
+    VmaAllocation alloc = NULL;
+    VmaAllocationInfo info = {0};
+    if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &buf, &alloc, &info) != VK_SUCCESS || !info.pMappedData) {
+        if (buf) vmaDestroyBuffer(g_vk.vma, buf, alloc);
+        free(shadow);
+        return guest_copy(addr, size);
+    }
+    memcpy(shadow, src, (size_t)size);
+    memcpy(info.pMappedData, shadow, (size_t)size);
+    VK_CHECK(vmaFlushAllocation(g_vk.vma, alloc, 0, size));
+    *e = (VtxSnapshot){.addr = addr, .size = size, .seq = pending,
+                       .buf = buf, .alloc = alloc, .shadow = shadow};
+    vtx_snapshot_bytes += size;
+    return (VkSpan){buf, 0, NULL};
+}
+
 // ================================================================== worker threads (shader / pipeline builds)
 // First-use compiles run off the render thread. Android waits for required
 // builds instead of discarding draws/dispatches; desktop retains async skipping.
@@ -2529,6 +2623,7 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    vtx_snapshots_clear();  // backend reset occurs after GPU idle
     gmem_resolve_done(vk_completed_seq());
     gmem_write_pool_clear();
     memset(prog_tab, 0, sizeof prog_tab);
@@ -3271,7 +3366,7 @@ static void draw_(CmdRec *r, bool indexed) {
             else need = (uint64_t)max_index * stride + 256;
             if (v.size && need > v.size) need = v.size;
             if (!v.addr) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
-            else sp = guest_copy(v.addr, need ? need : 16);
+            else sp = guest_vertex_copy(v.addr, need ? need : 16);
         }
         VkDeviceSize off = sp.off;
         if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == sp.buf && ss.vo[s] == off) continue;
