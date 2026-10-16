@@ -39,8 +39,11 @@ static size_t bfttf_decode(uint8_t *d, size_t len) {
         uint32_t k = swap ? __builtin_bswap32(KEY) : KEY;
         uint32_t w0, w1, w2;
         memcpy(&w0, d, 4); memcpy(&w1, d + 4, 4); memcpy(&w2, d + 8, 4);
-        uint32_t size = w1 ^ k, ver = w2 ^ k;
-        if (size == 0 || size > len - 8 || (ver != 0x00000100u && ver != 0x4F54544Fu)) continue;  // sfnt 1.0 / OTTO
+        // Eden's bfttf header keeps the byte-swapped size. The encrypted
+        // sfnt tag itself is a normal little-endian word after XOR.
+        uint32_t size = __builtin_bswap32(w1 ^ k), ver = w2 ^ k;
+        if (w0 != 0x1e1af836u || size < 12 || size > len - 8 ||
+            (ver != 0x00000100u && ver != 0x4F54544Fu)) continue; // Eden header, sfnt 1.0 / OTTO
         (void)w0;
         for (size_t i = 0; i + 4 <= size; i += 4) {
             uint32_t w;
@@ -117,6 +120,9 @@ static void load_fonts(void) {
                          // open-source project (Apache-2.0). The Android system
                          // Roboto-Regular can be a variable font; the guest font
                          // parser was never designed for arbitrary Android fonts.
+                         // Eden-style synthesized static system fonts live inside the APK.
+                         // They are extracted at build time, not imported by the player.
+                         "fonts/eden_standard.ttf",
                          "fonts/android_fallback.ttf",
                          // Android exposes system TrueType fonts to regular applications.
                          // Prefer Roboto/Droid Sans (glyf outlines); Noto CJK fonts can
@@ -139,7 +145,12 @@ static void load_fonts(void) {
     for (size_t i = 0; i < sizeof std / sizeof *std && !fonts[0].addr; i++)
         if (std[i]) load_one(std[i], &fonts[0]);
     if (!fonts[0].addr) FATAL("no usable system font substitute\n");
-    if (!load_one("fonts/nintendo_ext_003.bfttf", &fonts[1])) load_one("fonts/nintendo_ext_003.ttf", &fonts[1]);
+    if (!load_one("fonts/nintendo_ext_003.bfttf", &fonts[1]) &&
+        !load_one("fonts/nintendo_ext_003.ttf", &fonts[1])) {
+#ifdef __ANDROID__
+        load_one("fonts/eden_nintendo_ext.ttf", &fonts[1]);
+#endif
+    }
 }
 
 // SharedFontType: 0 Standard, 1 ChineseSimple, 2 ChineseSimpleExt, 3 ChineseTraditional, 4 Korean, 5 NintendoExt
