@@ -807,7 +807,8 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     }
     // Record distinct colour reinterpretations and swizzles for Android Vulkan.
     // Deliberately diagnostics-only: do not change any sampled pixel values.
-    if (getenv("LARECOMP_LOG_COLOR_VIEWS") && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
+    if (!(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) &&
+        (fmt != b->format || memcmp(&sw, &IDENTITY, sizeof sw) != 0)) {
         static struct { uint32_t base, requested; VkFormat actual; VkComponentMapping sw; } seen[64];
         static unsigned nseen;
         const uint32_t requested = v && (v->setmask & 4) ? v->format : t->format;
