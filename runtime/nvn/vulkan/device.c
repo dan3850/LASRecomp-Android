@@ -73,7 +73,7 @@ static void create_instance(void) {
     if (files && files[0]) {
         char marker[1024], driver_dir[1024], hook_dir[1024];
         snprintf(marker, sizeof marker, "%s/gpu_driver/driver.active", files);
-        snprintf(driver_dir, sizeof driver_dir, "%s/gpu_driver", files);
+        snprintf(driver_dir, sizeof driver_dir, "%s/gpu_driver/", files);
         const char *native_lib_dir = getenv("LASRECOMP_NATIVE_LIB_DIR");
         int marker_status = access(marker, R_OK);
         LOG("[vk] driver activation marker=%s readable=%d errno=%d\n", marker, marker_status == 0, marker_status == 0 ? 0 : errno);
@@ -90,6 +90,7 @@ static void create_instance(void) {
                 if (!open_driver) LOG("[vk] adrenotools dlopen/dlsym: %s\n", dlerror() ? "failed" : "symbol absent");
                 if (open_driver) {
                     snprintf(hook_dir, sizeof hook_dir, "%s", native_lib_dir);
+                    LOG("[vk] custom driver target=%s%s\n", driver_dir, soname);
                     void *loader = open_driver(RTLD_NOW | RTLD_LOCAL, 1, files,
                                                hook_dir, driver_dir, soname, NULL, NULL);
                     PFN_vkGetInstanceProcAddr gp = loader ?
