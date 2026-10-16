@@ -211,15 +211,6 @@ compile(){
   mv -f "$obj.tmp" "$obj"
  fi
 }
-write_build_id(){
- local header="$1" revision="$2"
- printf '#define LASRECOMP_BUILD_SHA "%s"\n' "$revision" > "$header.tmp"
- if cmp -s "$header.tmp" "$header"; then
-  rm -f "$header.tmp"
- else
-  mv -f "$header.tmp" "$header"
- fi
-}
 cd "$ROOT"
 step "Compilando engine C da branch"
 CORE=()
@@ -252,8 +243,6 @@ fi
 echo "Vulkan headers: $VULKAN_INCLUDE"
 step "Compilando Vulkan/ImGui"
 mkdir -p "$OBJ/inc"
-BUILD_HEADER="$OBJ/inc/lasrecomp_build_id.h"
-write_build_id "$BUILD_HEADER" "$(git -C "$ROOT" rev-parse --short=12 HEAD)"
 LC_ALL=C tr -d '\r' < third_party/smaa/SMAA.hlsl \
  | LC_ALL=C tr '\200-\377' '?' \
  | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$/\\n"/' \
@@ -267,10 +256,8 @@ while IFS= read -r src; do
  obj="$OBJ/renderer/${src#"$ROOT"/}.o"
  cc=clang; std=-std=gnu11
  [[ "$src" == *.cpp ]] && { cc=clang++; std=-std=c++17; }
- version_flags=()
- [[ "$src" == "$ROOT/runtime/nvn/vulkan/diagnostics.c" ]] && version_flags=(-include "$BUILD_HEADER")
  compile "$src" "$obj" "$cc" "$std" -DVK_NO_PROTOTYPES \
-  "${version_flags[@]}" \
+  "-DLASRECOMP_BUILD_SHA=\"$(git -C "$ROOT" rev-parse --short=12 HEAD)\"" \
   -DIMGUI_IMPL_VULKAN_USE_VOLK -D_FILE_OFFSET_BITS=64 "${INC[@]}"
  RENDER+=("$obj")
 done < <(
