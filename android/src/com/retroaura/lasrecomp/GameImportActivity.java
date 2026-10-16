@@ -73,6 +73,93 @@ public final class GameImportActivity extends Activity {
         }
     }
 
+    // Shares the native PC engine's larecomp.ini format. Applied on the next launch.
+    private File videoSettingsFile() {
+        return new File(getFilesDir(), "larecomp.ini");
+    }
+
+    private String videoOption(String key, String fallback) {
+        File file = videoSettingsFile();
+        if (!file.isFile()) return fallback;
+        try (FileInputStream in = new FileInputStream(file)) {
+            byte[] bytes = new byte[(int) Math.min(file.length(), 131072)];
+            int len = in.read(bytes);
+            if (len < 0) return fallback;
+            String text = new String(bytes, 0, len, StandardCharsets.UTF_8);
+            for (String line : text.split("\\r?\\n")) {
+                String[] pair = line.trim().split("\\s*=\\s*", 2);
+                if (pair.length == 2 && pair[0].equals(key)) return pair[1].trim();
+            }
+        } catch (Exception error) {
+            android.util.Log.w("LASRecomp", "Cannot read video settings", error);
+        }
+        return fallback;
+    }
+
+    private void saveVideoOption(String key, String value) {
+        File file = videoSettingsFile();
+        StringBuilder out = new StringBuilder();
+        boolean replaced = false;
+        try {
+            if (file.isFile()) {
+                try (FileInputStream in = new FileInputStream(file)) {
+                    byte[] bytes = new byte[(int) Math.min(file.length(), 131072)];
+                    int len = in.read(bytes);
+                    if (len > 0) {
+                        for (String line : new String(bytes, 0, len, StandardCharsets.UTF_8).split("\\r?\\n")) {
+                            String[] pair = line.trim().split("\\s*=\\s*", 2);
+                            if (pair.length == 2 && pair[0].equals(key)) {
+                                if (!replaced) out.append(key).append(" = ").append(value).append('\\n');
+                                replaced = true;
+                            } else {
+                                out.append(line).append('\\n');
+                            }
+                        }
+                    }
+                }
+            }
+            if (!replaced) out.append(key).append(" = ").append(value).append('\\n');
+            File temporary = new File(getFilesDir(), "larecomp.ini.tmp");
+            try (FileOutputStream stream = new FileOutputStream(temporary)) {
+                stream.write(out.toString().getBytes(StandardCharsets.UTF_8));
+                stream.getFD().sync();
+            }
+            if (!temporary.renameTo(file)) throw new java.io.IOException("Cannot replace larecomp.ini");
+        } catch (Exception error) {
+            new AlertDialog.Builder(this).setTitle("Configurações")
+                .setMessage("Não foi possível salvar: " + error.getMessage())
+                .setPositiveButton("OK", null).show();
+        }
+    }
+
+    private void showVideoSettings() {
+        final String[] sections = {"Resolução interna", "Proporção da tela"};
+        new AlertDialog.Builder(this).setTitle("Configurações de vídeo")
+            .setItems(sections, (dialog, which) -> {
+                if (which == 0) {
+                    final String[] labels = {"Igual à tela (padrão)", "25% da tela", "50% da tela",
+                        "75% da tela", "Dinâmica", "1x (1080p)", "2x", "3x", "4x"};
+                    final String[] values = {"match", "25%", "50%", "75%", "dynamic", "1x", "2x", "3x", "4x"};
+                    String current = videoOption("resolution", "match");
+                    int selected = 0;
+                    for (int i = 0; i < values.length; i++) if (values[i].equals(current)) selected = i;
+                    new AlertDialog.Builder(this).setTitle("Resolução interna")
+                        .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
+                            saveVideoOption("resolution", values[index]);
+                            choiceDialog.dismiss();
+                        }).setNegativeButton("Cancelar", null).show();
+                } else {
+                    String[] labels = {"Expandida (preenche a tela)", "Original 16:9"};
+                    int selected = "original".equals(videoOption("aspect", "unlocked")) ? 1 : 0;
+                    new AlertDialog.Builder(this).setTitle("Proporção da tela")
+                        .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
+                            saveVideoOption("aspect", index == 1 ? "original" : "unlocked");
+                            choiceDialog.dismiss();
+                        }).setNegativeButton("Cancelar", null).show();
+                }
+            }).setPositiveButton("Fechar", null).show();
+    }
+
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         LinearLayout layout = new LinearLayout(this);
@@ -114,6 +201,11 @@ public final class GameImportActivity extends Activity {
         libraryButton.setText("TESTE: IMPORTAR MINHA LIBLASGAME.SO");
         libraryButton.setOnClickListener(v -> selectGameCodeFile());
         layout.addView(libraryButton);
+
+        Button settingsButton = new Button(this);
+        settingsButton.setText("CONFIGURAÇÕES");
+        settingsButton.setOnClickListener(v -> showVideoSettings());
+        layout.addView(settingsButton);
 
         // System fonts are console-owned, not stored in Zelda's NSP or our APK.
         // Users may import their own legitimate Switch Standard/NintendoExt font.
