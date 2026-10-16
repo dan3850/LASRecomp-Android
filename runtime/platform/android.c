@@ -184,3 +184,14 @@ static bool remove_tree(const char *path) {
     return ok && rmdir(path) == 0;
 }
 bool plat_remove_tree(const char *dir) { return dir && remove_tree(dir); }
+
+/* Resolve the SAF bridge exported by libmain.so at runtime. The returned
+ * descriptor is owned by the caller. No content URI is used as a path. */
+int lasrecomp_external_open(const char *relative_path) {
+    if (!relative_path || relative_path[0] == '/' || strstr(relative_path, ".."))
+        return -1;
+    typedef int (*OpenDocument)(const char *);
+    OpenDocument open_document = (OpenDocument)dlsym(RTLD_DEFAULT,
+                                      "lasrecomp_android_open_document_fd");
+    return open_document ? open_document(relative_path) : -1;
+}
