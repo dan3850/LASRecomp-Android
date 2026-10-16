@@ -122,7 +122,7 @@ if [[ -f "$WORK/sdl3/CMakeCache.txt" ]]; then
 fi
 cmake -S "$DEPS/sdl3" -B "$WORK/sdl3" "${CMAKE_OPTS[@]}" \
  -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF \
- -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+ -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_OPENGLES=OFF -DSDL_OPENGLES2=OFF -DSDL_OPENGL=OFF
 cmake --build "$WORK/sdl3" --parallel "$JOBS"
 SDL_SO="$(find "$WORK/sdl3" -name libSDL3.so -type f -print -quit)"
 [[ -s "$SDL_SO" ]] || fail "SDL3 nao gerou libSDL3.so"
