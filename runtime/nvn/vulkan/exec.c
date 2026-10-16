@@ -22,6 +22,8 @@
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
 static uint64_t stat_gmem_size_bypass, stat_gmem_capacity_bypass;
+static uint64_t stat_gmem_busy_bypass, stat_gmem_budget_bypass, stat_gmem_evicted_bytes, stat_gmem_evictions;
+static uint64_t gmem_snap_bytes; // tracked across submissions; defined with GMEM snapshots below
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -948,12 +950,16 @@ const char *renderer_stats(void) {
     }
     {
         size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB bypass-size %.1fMB bypass-capacity %.1fMB",
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 ", gmem saved %.1fMB bypass-size %.1fMB bypass-capacity %.1fMB (busy %.1fMB budget %.1fMB) evicted %.1fMB/%llu cache %.1fMB",
                  stat_gmem_reused_bytes / 1048576.0, stat_gmem_size_bypass / 1048576.0,
-                 stat_gmem_capacity_bypass / 1048576.0);
+                 stat_gmem_capacity_bypass / 1048576.0, stat_gmem_busy_bypass / 1048576.0,
+                 stat_gmem_budget_bypass / 1048576.0, stat_gmem_evicted_bytes / 1048576.0,
+                 (unsigned long long)stat_gmem_evictions, gmem_snap_bytes / 1048576.0);
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     stat_gmem_size_bypass = stat_gmem_capacity_bypass = 0;
+    stat_gmem_busy_bypass = stat_gmem_budget_bypass = stat_gmem_evicted_bytes = stat_gmem_evictions = 0;
     {
         extern void vk_alias_stats(void);
         vk_alias_stats();
@@ -2458,8 +2464,16 @@ static struct GmemSnapshot {
     uint8_t *shadow;
     uint64_t seq;
 } gmem_snap[GMEM_SNAP_SLOTS];
-static uint64_t gmem_snap_bytes;
 static int gmem_snap_enabled = -1;
+
+// Caller must prove that the GPU has finished all uses of this entry.
+// Never retire a mapped snapshot whose seq is still recording or in flight.
+static void gmem_snap_discard(struct GmemSnapshot *s) {
+    if (s->buf) vmaDestroyBuffer(g_vk.vma, s->buf, s->mem);
+    free(s->shadow);
+    gmem_snap_bytes -= s->plan.size;
+    memset(s, 0, sizeof *s);
+}
 
 static void gmem_snap_clear(void) { // GPU idle, like the vertex snapshots
     for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i) {
@@ -2503,16 +2517,46 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
         for (unsigned i = base; i < base + GMEM_SNAP_WAYS; ++i)
             if (gmem_snap[i].seq <= done && (!pick || gmem_snap[i].seq < pick->seq)) pick = &gmem_snap[i];
     }
-    if (!pick || gmem_snap_bytes - pick->plan.size + plan->size > GMEM_SNAP_BUDGET) {
+    if (!pick) {
+        // All four ways in this set are still in use. Never stall or overwrite.
         stat_gmem_capacity_bypass += plan->size;
+        stat_gmem_busy_bypass += plan->size;
         return (VkSpan){0};
+    }
+    // A completed entry in another set can retain the entire 32 MB budget.
+    // Reclaim the globally oldest completed snapshots before bypassing this
+    // allocation; no budget increase and no timeline wait. Preflight ensures
+    // a failed request does not evict useful entries for no benefit.
+    uint64_t remaining = gmem_snap_bytes - pick->plan.size + plan->size;
+    if (remaining > GMEM_SNAP_BUDGET) {
+        uint64_t need = remaining - GMEM_SNAP_BUDGET, reclaimable = 0;
+        for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i)
+            if (&gmem_snap[i] != pick && gmem_snap[i].buf && gmem_snap[i].seq <= done)
+                reclaimable += gmem_snap[i].plan.size;
+        if (reclaimable < need) {
+            stat_gmem_capacity_bypass += plan->size;
+            stat_gmem_budget_bypass += plan->size;
+            return (VkSpan){0};
+        }
+        while (need) {
+            struct GmemSnapshot *oldest = NULL;
+            for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i) {
+                struct GmemSnapshot *s = &gmem_snap[i];
+                if (s == pick || !s->buf || s->seq > done) continue;
+                if (!oldest || s->seq < oldest->seq) oldest = s;
+            }
+            // Preflight above established that completed entries suffice.
+            if (!oldest) FATAL("GMEM snapshot eviction preflight mismatch\n");
+            uint64_t freed = oldest->plan.size;
+            gmem_snap_discard(oldest);
+            stat_gmem_evictions++;
+            stat_gmem_evicted_bytes += freed;
+            need = need > freed ? need - freed : 0;
+        }
     }
     bool reuse = pick->buf && pick->plan.size == plan->size;
     if (!reuse) {
-        if (pick->buf) vmaDestroyBuffer(g_vk.vma, pick->buf, pick->mem);
-        free(pick->shadow);
-        gmem_snap_bytes -= pick->plan.size;
-        memset(pick, 0, sizeof *pick);
+        gmem_snap_discard(pick);
         pick->shadow = malloc(plan->size);
         if (!pick->shadow) return (VkSpan){0};
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = plan->size,
