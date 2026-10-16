@@ -62,7 +62,9 @@ echo "[2/5] Preparando Activity Android e ciclo de vida SDL3"
 mkdir -p "$OUT/java-classes" "$OUT/dex"
 JAVA_SOURCES=("$ROOT/android/src/com/retroaura/lasrecomp/GameImportActivity.java"
               "$ROOT/android/src/com/retroaura/lasrecomp/GraphicsDiagnostics.java"
-              "$ROOT/android/src/com/retroaura/lasrecomp/GameDocumentBridge.java")
+              "$ROOT/android/src/com/retroaura/lasrecomp/GameDocumentBridge.java"
+              "$ROOT/android/src/com/retroaura/lasrecomp/GameMods.java"
+              "$ROOT/android/src/com/retroaura/lasrecomp/Stable60Patch.java")
 NATIVE_LIBS=(lib/arm64-v8a/liblasrecomp_prepare.so lib/arm64-v8a/liblasrecomp_probe.so)
 
 # The SDL3 .so, its official Java integration and the game's SDL_main bridge
