@@ -2377,6 +2377,42 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     *out = (VkDescriptorImageInfo){smp, view, VK_IMAGE_LAYOUT_GENERAL};
 }
 
+// Per-draw read-only graphics mapping: each descriptor set owns a transient
+// snapshot, preventing later draws from overwriting its storage bytes.
+static VkDescriptorBufferInfo graphics_gmem_map(int stage, uint32_t tab[(GMAP_MAX + 1) * 4]) {
+    memset(tab, 0, sizeof(uint32_t) * (GMAP_MAX + 1) * 4);
+    uint64_t heap = kernel_heap_size(), total = 0;
+    struct { uint64_t start, len, dest; } entries[16];
+    unsigned n = 0;
+    for (int i = 0; i < 16; ++i) {
+        uint64_t addr = st.sbuf[stage][i].addr, size = st.sbuf[stage][i].size;
+        if (!addr || !size || addr < HEAP_BASE || addr - HEAP_BASE >= heap ||
+            size > heap - (addr - HEAP_BASE)) continue;
+        uint64_t start = (addr - HEAP_BASE) & ~3ull;
+        uint64_t end = ((addr - HEAP_BASE + size + 3) & ~3ull);
+        if (end > heap) end = heap & ~3ull;
+        uint64_t len = end > start ? end - start : 0;
+        if (!len || total + len > (256ull << 10)) {
+            // Skip large/unavailable bindings instead of allocating unbounded
+            // transient memory for every draw.
+            continue;
+        }
+        entries[n].start = start; entries[n].len = len; entries[n].dest = total;
+        tab[n * 4] = (uint32_t)start;
+        tab[n * 4 + 1] = (uint32_t)len;
+        tab[n * 4 + 2] = (uint32_t)(total >> 2);
+        total += len;
+        ++n;
+    }
+    if (!n) return (VkDescriptorBufferInfo){0};
+    VkSpan span = vk_transient(total, 256);
+    for (unsigned i = 0; i < n; ++i)
+        memcpy((uint8_t *)span.ptr + entries[i].dest,
+               (const void *)(uintptr_t)(HEAP_BASE + entries[i].start), entries[i].len);
+    tab[GMAP_MAX * 4] = n;
+    return (VkDescriptorBufferInfo){span.buf, span.off, total};
+}
+
 // Writes the descriptor set of one stage. gx..gz: compute group counts (driver constants).
 // pre_ii: texture descriptors already resolved by the caller (draw: fragment textures, needed earlier for the
 // viewport decision), or NULL.
@@ -2388,6 +2424,10 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     VkWriteDescriptorSet w[MAX_BIND];
     VkDescriptorBufferInfo bi[MAX_BIND];
     VkDescriptorImageInfo ii[MAX_BIND];
+    uint32_t graphics_tab[(GMAP_MAX + 1) * 4];
+    bool graphics_map = stage < 2 && si->uses_gmem_map && !si->uses_gmem_store && !g_vk.host_import;
+    VkDescriptorBufferInfo graphics_data = {0};
+    if (graphics_map) graphics_data = graphics_gmem_map(stage, graphics_tab);
     int n = 0;
     int sg = stage == 1 ? 1 : 0;
     float rs[66][4] = {{1, 1, 0, 0}};  // ([65]: mirror mode, renderer.m)
@@ -2413,7 +2453,8 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = b->binding == GFAST_BUFFER_INDEX ? gfast_info() : gmem_info();
+            bi[n] = b->binding == GFAST_BUFFER_INDEX ?
+                (graphics_map && graphics_data.buffer ? graphics_data : gfast_info()) : gmem_info();
             if (b->binding == GMEM_BUFFER_INDEX && !gmem_buf)
                 vk_diag_event(VD_ZERO_GMEM, "stage=%d shader=%llx writes=%d extension=%d heap=%llu zero_descriptor=%llu",
                     stage, (unsigned long long)(st.program ? st.program->stages[stage].code_addr : 0),
@@ -2431,7 +2472,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
         if (b->binding == GMAP_BUFFER_INDEX) {  // (compute) this dispatch's fast-copy table: gfast_prepare
-            bi[n] = ubo_span(vk_transient_copy(gmap_tab, sizeof gmap_tab, 256), sizeof gmap_tab);
+            bi[n] = ubo_span(vk_transient_copy(graphics_map ? graphics_tab : gmap_tab, sizeof gmap_tab, 256), sizeof gmap_tab);
         } else if (b->binding == 18) {
             for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
             bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
