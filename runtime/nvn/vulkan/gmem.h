@@ -51,12 +51,22 @@ static inline bool gmem_plan(GmemPlan *p, const GmemRange *r, unsigned n,
 
 // Copy only bytes changed by the shader, preserving CPU-owned neighbouring
 // bytes in the same packed range. Call only AFTER GPU completion + invalidation.
-static inline void gmem_apply(uint8_t *guest, const uint8_t *before,
+static inline bool gmem_apply(uint8_t *guest, const uint8_t *before,
                               const uint8_t *after, size_t size) {
-    for (size_t i = 0; i < size;) {
-        if (before[i] == after[i]) { ++i; continue; }
-        size_t start = i++;
-        while (i < size && before[i] != after[i]) ++i;
-        memcpy(guest + start, after + start, i - start);
+    if (!memcmp(before, after, size)) return false;
+    // Most mapped bytes are inputs. Skip identical blocks with libc's vector
+    // comparison, then retain byte precision in blocks containing GPU stores.
+    for (size_t block = 0; block < size;) {
+        size_t end = block + (size - block < 512 ? size - block : 512);
+        if (memcmp(before + block, after + block, end - block)) {
+            for (size_t i = block; i < end;) {
+                if (before[i] == after[i]) { ++i; continue; }
+                size_t start = i++;
+                while (i < end && before[i] != after[i]) ++i;
+                memcpy(guest + start, after + start, i - start);
+            }
+        }
+        block = end;
     }
+    return true;
 }

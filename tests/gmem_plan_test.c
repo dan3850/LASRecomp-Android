@@ -20,8 +20,15 @@ int main(void) {
     assert(p.size == 2 << 20); // no 1 MiB omission
     uint8_t before[8] = {1,2,3,4,5,6,7,8}, after[8] = {1,9,10,4,5,11,7,8};
     uint8_t guest[8] = {77,2,3,4,5,6,7,88};
-    gmem_apply(guest, before, after, 8);
+    assert(gmem_apply(guest, before, after, 8));
     const uint8_t want[8] = {77,9,10,4,5,11,7,88};
     assert(!memcmp(guest, want, 8));
+    assert(!gmem_apply(guest, before, before, 8));
+    assert(!memcmp(guest, want, 8));
+    uint8_t old[1553] = {0}, gpu[1553] = {0}, cpu[1553];
+    memset(cpu, 0x42, sizeof cpu);
+    gpu[511] = 1; gpu[512] = 2; gpu[1024] = 3; gpu[1552] = 4;
+    assert(gmem_apply(cpu, old, gpu, sizeof cpu));
+    for (unsigned i = 0; i < sizeof cpu; ++i) assert(cpu[i] == (gpu[i] ? gpu[i] : 0x42));
     puts("GMEM: aliases, bounds, packing, >1 MiB and selective writeback PASS");
 }

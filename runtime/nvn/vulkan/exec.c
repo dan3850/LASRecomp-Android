@@ -2081,38 +2081,99 @@ static void gfast_finish(VkCommandBuffer cb) {
     gfast_n = 0;
 }
 
-// Portable GMEM: one immutable packed input per draw/dispatch. Storing compute
-// dispatches own host-cached output allocations until their timeline value is
-// complete. No shared scratch reuse and no unconditional wait after a dispatch.
+// Portable GMEM: immutable packed inputs shared only within a submission and
+// CPU write generation. Storing compute dispatches own host-cached allocations
+// until their timeline value completes. No shared scratch reuse or unconditional
+// wait after a dispatch.
 // A later CPU snapshot of an overlapping range resolves the dependency first.
 typedef struct GmemWrite {
     struct GmemWrite *next;
     uint64_t seq;
+    uint64_t capacity;
     GmemPlan plan;
     VkBuffer buf;
     VmaAllocation mem;
     uint8_t *before, *after;
 } GmemWrite;
 static GmemWrite *gmem_writes, **gmem_tail = &gmem_writes;
+static GmemWrite *gmem_free;
+static uint64_t gmem_free_bytes;
+static unsigned gmem_free_count;
 static pthread_mutex_t gmem_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic bool gmem_pending;
+
+static void gmem_write_destroy(GmemWrite *w) {
+    if (w->buf) vmaDestroyBuffer(g_vk.vma, w->buf, w->mem);
+    free(w->before);
+    free(w);
+}
+
+// Only completed, invalidated and copied-back allocations enter this pool.
+// The bound prevents keeping a large loading dispatch resident indefinitely.
+static void gmem_write_recycle(GmemWrite *w) { // gmem_lock held
+    if (gmem_free_count < 8 && w->capacity <= (16ull << 20) - gmem_free_bytes) {
+        w->next = gmem_free;
+        gmem_free = w;
+        gmem_free_bytes += w->capacity;
+        ++gmem_free_count;
+    } else gmem_write_destroy(w);
+}
+
+static GmemWrite *gmem_write_acquire(uint64_t size) {
+    pthread_mutex_lock(&gmem_lock);
+    GmemWrite **best = NULL;
+    for (GmemWrite **p = &gmem_free; *p; p = &(*p)->next)
+        if ((*p)->capacity >= size && (!best || (*p)->capacity < (*best)->capacity)) best = p;
+    GmemWrite *w = best ? *best : NULL;
+    if (w) {
+        *best = w->next;
+        w->next = NULL;
+        gmem_free_bytes -= w->capacity;
+        --gmem_free_count;
+    }
+    pthread_mutex_unlock(&gmem_lock);
+    if (w) return w;
+    w = calloc(1, sizeof *w);
+    if (!w || !(w->before = malloc(size))) FATAL("portable GMEM allocation failed\n");
+    w->capacity = size;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo info;
+    VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &w->buf, &w->mem, &info));
+    w->after = info.pMappedData;
+    return w;
+}
+
+static void gmem_write_pool_clear(void) {
+    pthread_mutex_lock(&gmem_lock);
+    while (gmem_free) {
+        GmemWrite *w = gmem_free;
+        gmem_free = w->next;
+        gmem_write_destroy(w);
+    }
+    gmem_free_bytes = gmem_free_count = 0;
+    pthread_mutex_unlock(&gmem_lock);
+}
 
 static void gmem_resolve_done(uint64_t done) {
     pthread_mutex_lock(&gmem_lock);
     while (gmem_writes && gmem_writes->seq <= done) {
         GmemWrite *w = gmem_writes;
+        bool changed = false;
         VK_CHECK(vmaInvalidateAllocation(g_vk.vma, w->mem, 0, w->plan.size));
         for (unsigned i = 0; i < w->plan.tab[GMAP_MAX * 4]; ++i) {
             uint64_t off = (uint64_t)w->plan.tab[i * 4 + 2] * 4;
-            gmem_apply((uint8_t *)(uintptr_t)(HEAP_BASE + w->plan.tab[i * 4]),
-                       w->before + off, w->after + off, w->plan.tab[i * 4 + 1]);
-            backend_pool_written(HEAP_BASE + w->plan.tab[i * 4], w->plan.tab[i * 4 + 1]);
+            if (gmem_apply((uint8_t *)(uintptr_t)(HEAP_BASE + w->plan.tab[i * 4]),
+                           w->before + off, w->after + off, w->plan.tab[i * 4 + 1])) {
+                backend_pool_written(HEAP_BASE + w->plan.tab[i * 4], w->plan.tab[i * 4 + 1]);
+                changed = true;
+            }
         }
-        guest_copy_flush();
+        if (changed) guest_copy_flush();
         gmem_writes = w->next;
-        vmaDestroyBuffer(g_vk.vma, w->buf, w->mem);
-        free(w->before);
-        free(w);
+        gmem_write_recycle(w);
     }
     if (!gmem_writes) { gmem_tail = &gmem_writes; atomic_store(&gmem_pending, false); }
     pthread_mutex_unlock(&gmem_lock);
@@ -2160,6 +2221,13 @@ static void gmem_read_stage(int stage, ShaderInfo *si) {
 }
 
 static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t *tab) {
+    // The transient allocator keeps the snapshot alive through completion.
+    // Never share a writable dispatch's allocation or reuse across CPU flushes.
+    static struct {
+        uint64_t seq, gen, cpu_writes;
+        GmemPlan plan;
+        VkDescriptorBufferInfo data;
+    } cache[128];
     GmemRange ranges[GMAP_MAX] = {0};
     for (int i = 0; i < 16; ++i) ranges[i] = (GmemRange){st.sbuf[stage][i].addr, st.sbuf[stage][i].size};
     // NVN's compute driver constants also expose uniform-buffer GPU addresses.
@@ -2175,20 +2243,17 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
         FATAL("portable GMEM exceeds the device's storage-buffer range\n");
     memcpy(tab, plan.tab, sizeof plan.tab);
     if (!plan.size) return (VkDescriptorBufferInfo){0};
+    unsigned slot = hash_words(0, &plan, sizeof plan) % (sizeof cache / sizeof cache[0]);
+    uint64_t seq = vk_pending_seq(), gen = atomic_load(&gcopy_gen), cpu_writes = vk_cpu_write_generation();
+    if (!store && cache[slot].seq == seq && cache[slot].gen == gen &&
+        cache[slot].cpu_writes == cpu_writes && !memcmp(&cache[slot].plan, &plan, sizeof plan))
+        return cache[slot].data;
     VkSpan span;
     GmemWrite *w = NULL;
     if (store) {
-        w = calloc(1, sizeof *w);
-        if (!w || !(w->before = malloc(plan.size))) FATAL("portable GMEM allocation failed\n");
+        w = gmem_write_acquire(plan.size);
         w->plan = plan;
-        w->seq = vk_pending_seq();
-        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = plan.size,
-                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
-        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-            .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
-        VmaAllocationInfo info;
-        VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &w->buf, &w->mem, &info));
-        w->after = info.pMappedData;
+        w->seq = seq;
         span = (VkSpan){w->buf, 0, w->after};
     } else span = vk_transient(plan.size, 256);
     for (unsigned i = 0; i < plan.tab[GMAP_MAX * 4]; ++i)
@@ -2203,7 +2268,15 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
         atomic_store(&gmem_pending, true);
         pthread_mutex_unlock(&gmem_lock);
     }
-    return (VkDescriptorBufferInfo){span.buf, span.off, plan.size};
+    VkDescriptorBufferInfo data = {span.buf, span.off, plan.size};
+    if (!store) {
+        cache[slot].seq = seq;
+        cache[slot].gen = gen;
+        cache[slot].cpu_writes = cpu_writes;
+        cache[slot].plan = plan;
+        cache[slot].data = data;
+    }
+    return data;
 }
 
 static void gmem_host_barrier(VkCommandBuffer cb) {
@@ -2445,6 +2518,7 @@ static int g_cs_n;  // (compute program table below)
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
     gmem_resolve_done(vk_completed_seq());
+    gmem_write_pool_clear();
     memset(prog_tab, 0, sizeof prog_tab);
     memset(pipe_tab, 0, sizeof pipe_tab);
     g_cs_n = 0;

@@ -218,6 +218,72 @@ static void run(const char *dir, unsigned test) {
     printf("GMEM case %u: LDG/STG and deferred selective writeback PASS\n",test);
 }
 
+static void snapshots(void) {
+    uint8_t *guest = (uint8_t *)(uintptr_t)HEAP_BASE;
+    memset(st.sbuf, 0, sizeof st.sbuf);
+    memset(st.ubuf, 0, sizeof st.ubuf);
+    st.sbuf[0][0] = (Range){HEAP_BASE + 0x80000, 1 << 20};
+    memset(guest + 0x80000, 0x31, 1 << 20);
+    uint32_t tab[(GMAP_MAX + 1) * 4];
+    uint64_t uploads = stat_upload_bytes;
+    VkDescriptorBufferInfo first = portable_gmem_map(0, false, tab);
+    for (int i = 0; i < 500; ++i) {
+        VkDescriptorBufferInfo same = portable_gmem_map(0, false, tab);
+        assert(same.buffer == first.buffer && same.offset == first.offset);
+    }
+    assert(stat_upload_bytes - uploads == 1 << 20);
+    guest[0x80000] = 0x72;
+    backend_pool_written(HEAP_BASE + 0x80000, 1);
+    VkDescriptorBufferInfo changed = portable_gmem_map(0, false, tab);
+    assert(changed.buffer != first.buffer || changed.offset != first.offset);
+    guest[0x80000] = 0x19;
+    guest_copy_flush(); // inline constant updates invalidate the snapshot too
+    VkDescriptorBufferInfo inline_change = portable_gmem_map(0, false, tab);
+    assert(inline_change.buffer != changed.buffer || inline_change.offset != changed.offset);
+    uint8_t *first_ptr = NULL, *changed_ptr = NULL, *inline_ptr = NULL;
+    for (int i = 0; i < nchunks; ++i) {
+        if (chunks[i].buf == first.buffer) first_ptr = (uint8_t *)chunks[i].ptr + first.offset;
+        if (chunks[i].buf == changed.buffer) changed_ptr = (uint8_t *)chunks[i].ptr + changed.offset;
+        if (chunks[i].buf == inline_change.buffer) inline_ptr = (uint8_t *)chunks[i].ptr + inline_change.offset;
+    }
+    assert(first_ptr && changed_ptr && inline_ptr);
+    assert(first_ptr[0] == 0x31 && changed_ptr[0] == 0x72 && inline_ptr[0] == 0x19);
+    // A writable dispatch uses separate memory even when its bindings match.
+    VkDescriptorBufferInfo writable = portable_gmem_map(0, true, tab);
+    assert(writable.buffer != inline_change.buffer);
+    uint64_t epoch = vk_cpu_write_generation(), gen = atomic_load(&gcopy_gen);
+    vk_cmd(); renderer_flush();
+    assert(!gmem_writes && gmem_free);
+    // This dispatch did not write: do not dirty every atlas / snapshot.
+    assert(vk_cpu_write_generation() == epoch && atomic_load(&gcopy_gen) == gen);
+    VkDescriptorBufferInfo reused = portable_gmem_map(0, true, tab);
+    assert(reused.buffer == writable.buffer);
+    assert(gmem_writes->before[0] == 0x19 && gmem_writes->after[0] == 0x19);
+    vk_cmd(); renderer_flush();
+    uint64_t new_uploads = stat_upload_bytes;
+    portable_gmem_map(0, false, tab); // new submission must take a fresh snapshot
+    assert(stat_upload_bytes - new_uploads == 1 << 20);
+    vk_cmd(); renderer_flush();
+    gmem_write_pool_clear();
+    assert(!gmem_free && !gmem_free_bytes && !gmem_free_count);
+    memset(st.sbuf, 0, sizeof st.sbuf);
+    puts("GMEM snapshots: 501 identical reads copy 1 MiB; CPU/inline/submission invalidation and safe compute reuse PASS");
+}
+
+static void write_pool_limits(void) {
+    GmemWrite *w[10];
+    for (unsigned i = 0; i < 10; ++i) w[i] = gmem_write_acquire(64);
+    pthread_mutex_lock(&gmem_lock);
+    for (unsigned i = 0; i < 10; ++i) gmem_write_recycle(w[i]);
+    pthread_mutex_unlock(&gmem_lock);
+    assert(gmem_free_count == 8 && gmem_free_bytes == 8 * 64);
+    gmem_write_pool_clear();
+    GmemWrite *large = gmem_write_acquire((16 << 20) + 64);
+    pthread_mutex_lock(&gmem_lock); gmem_write_recycle(large); pthread_mutex_unlock(&gmem_lock);
+    assert(!gmem_free && !gmem_free_bytes && !gmem_free_count);
+    puts("GMEM compute pool: buffer-count and byte-capacity limits PASS");
+}
+
 static void atlas(const char *dir) {
     uint8_t *pixels = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x30000);
     memset(pixels, 0, 512);
@@ -304,6 +370,8 @@ int main(int argc, char **argv) {
     }
     init();
     for (unsigned i = 0; i < 13; ++i) run(argv[1],i);
+    snapshots();
+    write_pool_limits();
     atlas(argv[1]);
     vkDeviceWaitIdle(g_vk.dev);
     for (int i = 0; i < nchunks; ++i) vmaDestroyBuffer(g_vk.vma,chunks[i].buf,chunks[i].mem);
