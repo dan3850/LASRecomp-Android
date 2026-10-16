@@ -340,9 +340,10 @@ jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
 "${D8_CMD[@]}" --min-api 26 --lib "$ANDROID_JAR" --output "$STAGE/dex" "$STAGE/classes.jar"
 [[ -s "$STAGE/dex/classes.dex" ]] || fail "D8 nao gerou classes.dex"
 # libc++ ARM64 do NDK, necessaria para simbolos C++ do runtime.
-NDK_CXX="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
-[[ -s "$NDK_CXX" ]] || fail "libc++_shared.so ARM64 do NDK ausente: $NDK_CXX"
-cp -L "$NDK_CXX" "$STAGE/lib/arm64-v8a/libc++_shared.so"
+TERMUX_CXX="$PREFIX/lib/libc++_shared.so"
+[[ -s "$TERMUX_CXX" ]] || fail "libc++_shared.so do Termux ausente: $TERMUX_CXX"
+llvm-nm -D "$TERMUX_CXX" | grep -q '_ZNSt6__ndk113__hash_memoryEPKvm' || fail "libc++ do Termux nao exporta __hash_memory"
+cp -L "$TERMUX_CXX" "$STAGE/lib/arm64-v8a/libc++_shared.so"
 # O runtime deve referenciar explicitamente a libc++ empacotada,
 # evitando resolver acidentalmente simbolos na libc++ do sistema.
 patchelf --add-needed libc++_shared.so "$STAGE/lib/arm64-v8a/liblasrecomp_runtime.so"
