@@ -179,6 +179,20 @@ int SDL_main(int argc, char **argv) {
     jobject vkactivity = SDL_GetAndroidActivity();
     if (vkenv && vkactivity) {
         jclass vkcls = (*vkenv)->GetObjectClass(vkenv, vkactivity);
+        jmethodID filesmethod = vkcls ? (*vkenv)->GetMethodID(vkenv, vkcls,
+            "getVulkanDriverFilesDirectory", "()Ljava/lang/String;") : NULL;
+        if (filesmethod) {
+            jstring path = (jstring)(*vkenv)->CallObjectMethod(vkenv, vkactivity, filesmethod);
+            if (path && !(*vkenv)->ExceptionCheck(vkenv)) {
+                const char *chars = (*vkenv)->GetStringUTFChars(vkenv, path, NULL);
+                if (chars) {
+                    setenv("LASRECOMP_PRIVATE_FILES", chars, 1);
+                    (*vkenv)->ReleaseStringUTFChars(vkenv, path, chars);
+                }
+                (*vkenv)->DeleteLocalRef(vkenv, path);
+            }
+            if ((*vkenv)->ExceptionCheck(vkenv)) (*vkenv)->ExceptionClear(vkenv);
+        }
         jmethodID vkmethod = vkcls ? (*vkenv)->GetMethodID(vkenv, vkcls,
             "getVulkanHookLibraryDirectory", "()Ljava/lang/String;") : NULL;
         if (vkmethod) {
