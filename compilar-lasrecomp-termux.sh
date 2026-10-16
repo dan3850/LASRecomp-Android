@@ -210,13 +210,26 @@ compile "$ROOT/runtime/hle/movie.c" "$OBJ/core/hle/movie.c.o" clang \
  -Werror=implicit-function-declaration
 CORE+=("$OBJ/core/hle/movie.c.o")
 llvm-ar rcs "$LIB/liblasrecomp-core.a" "${CORE[@]}"
+# Localiza headers Vulkan existentes (Termux, NDK ou dependencias).
+VULKAN_INCLUDE=""
+for candidate in "$PREFIX/include" "$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" "$DEPS/vma/include" "$DEPS/volk"; do
+ if [[ -f "$candidate/vulkan/vulkan.h" ]]; then VULKAN_INCLUDE="$candidate"; break; fi
+done
+if [[ -z "$VULKAN_INCLUDE" ]]; then
+ VULKAN_HEADER="$(find "$ANDROID_HOME/ndk" "$DEPS" -type f -path '*/vulkan/vulkan.h' -print -quit 2>/dev/null || true)"
+ [[ -n "$VULKAN_HEADER" ]] || fail "Headers Vulkan ausentes. Instale pkg install vulkan-headers (se disponivel) ou configure LASRECOMP_VULKAN_INCLUDE."
+ VULKAN_INCLUDE="${VULKAN_HEADER%/vulkan/vulkan.h}"
+fi
+[[ -z "${LASRECOMP_VULKAN_INCLUDE:-}" ]] || VULKAN_INCLUDE="$LASRECOMP_VULKAN_INCLUDE"
+[[ -f "$VULKAN_INCLUDE/vulkan/vulkan.h" ]] || fail "vulkan/vulkan.h ausente em $VULKAN_INCLUDE"
+echo "Vulkan headers: $VULKAN_INCLUDE"
 step "Compilando Vulkan/ImGui"
 mkdir -p "$OBJ/inc"
 LC_ALL=C tr -d '\r' < third_party/smaa/SMAA.hlsl \
  | LC_ALL=C tr '\200-\377' '?' \
  | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$/\\n"/' \
  > "$OBJ/inc/smaa_hlsl.inc"
-INC=(-Iruntime -Iruntime/nvn -Ithird_party/imgui \
+INC=(-I"$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Ithird_party/imgui \
  -Ithird_party/imgui/backends -Ithird_party/smaa/Textures \
  -I"$SDL_HEADERS" -I"$DEPS/shaderc/libshaderc/include" \
  -I"$DEPS/vma/include" -I"$DEPS/volk" -I"$OBJ/inc")
@@ -248,7 +261,7 @@ for src in "$ROOT"/runtime/ui/*.mm; do
  obj="$OBJ/ui/$(basename "$src").o"
  compile "$src" "$obj" clang++ -x c++ -std=c++17 \
   -DVK_NO_PROTOTYPES -DIMGUI_IMPL_VULKAN_USE_VOLK \
-  -Iruntime -Iruntime/nvn -Iruntime/ui -Ithird_party/imgui \
+  -I"$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Iruntime/ui -Ithird_party/imgui \
   -Ithird_party/imgui/backends -I"$SDL_HEADERS" \
   -I"$FFDEST/include" -I"$DEPS/vma/include" -I"$DEPS/volk"
  UI+=("$obj")
