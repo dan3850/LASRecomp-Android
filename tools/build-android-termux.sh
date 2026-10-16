@@ -189,6 +189,16 @@ mkdir -p "$OUT/assets"
     "$ROOT/third_party/imgui/misc/fonts/Roboto-Medium.ttf" \
     "$OUT/assets/lasrecomp_font.ttf"
 (cd "$OUT" && zip -q unsigned.apk assets/lasrecomp_font.ttf)
+# Eden supplies emulator-created TrueType substitutes for Standard and
+# Nintendo Extension; both live in the final APK rather than being imported.
+if [[ -n "${LASRECOMP_EDEN_STANDARD_TTF:-}" && -n "${LASRECOMP_EDEN_EXTENDED_TTF:-}" ]]; then
+    test -s "$LASRECOMP_EDEN_STANDARD_TTF"
+    test -s "$LASRECOMP_EDEN_EXTENDED_TTF"
+    cp "$LASRECOMP_EDEN_STANDARD_TTF" "$OUT/assets/lasrecomp_eden_standard.ttf"
+    cp "$LASRECOMP_EDEN_EXTENDED_TTF" "$OUT/assets/lasrecomp_eden_extended.ttf"
+    (cd "$OUT" && zip -q unsigned.apk assets/lasrecomp_eden_standard.ttf assets/lasrecomp_eden_extended.ttf)
+    echo "Eden-style built-in Standard and Nintendo Extension fonts bundled."
+fi
 "$ZIPALIGN_BIN" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
 echo "[3/5] Preparando assinatura debug local"
