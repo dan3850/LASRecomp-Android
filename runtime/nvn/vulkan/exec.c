@@ -387,12 +387,10 @@ void vk_full_barrier(VkCommandBuffer cb) {
     vkCmdPipelineBarrier2(cb, &di);
 }
 
-// Android-native experiment: upload command buffers only write via transfer
-// operations (copies and clears). Keep the dependency from prior graphics,
-// compute and transfer work, including previous GPU reads of upload targets,
-// but limit the *destination* of the first barrier to transfer operations.
-// At the end, publish those transfer writes for the following main buffer.
-// This does not bypass hazards: all commands/reads remain ordered where needed.
+// Android-native experiment: limit the *beginning* upload dependency to
+// transfer reads/writes, while still ordering prior graphics/compute/transfer
+// work. The end barrier remains fully conservative: image-layout transitions
+// can execute in the upload buffer even when no transfer write follows them.
 // LARECOMP_VK_UPLOAD_SCOPE=0 restores the original full barriers for A/B tests.
 static void vk_upload_scope_barrier(VkCommandBuffer cb, bool beginning) {
     static int on = -1;
@@ -402,14 +400,13 @@ static void vk_upload_scope_barrier(VkCommandBuffer cb, bool beginning) {
         LOG("[vk] upload scope barriers %s (LARECOMP_VK_UPLOAD_SCOPE=%s)\n",
             on ? "transfer-scoped" : "legacy-full", e ? e : "unset");
     }
-    if (!on) { vk_full_barrier(cb); return; }
+    if (!on || !beginning) { vk_full_barrier(cb); return; }
     VkMemoryBarrier2 mb = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = beginning ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        .srcAccessMask = beginning ? VK_ACCESS_2_MEMORY_WRITE_BIT : VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = beginning ? VK_PIPELINE_STAGE_2_TRANSFER_BIT : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = beginning ? (VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT)
-                                   : (VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT),
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
     };
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                            .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
