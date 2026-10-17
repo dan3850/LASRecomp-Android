@@ -16,6 +16,7 @@
 #include "diagnostics.h"
 #include "gmem.h"
 #include "gmem_delta.h"
+#include "resident_gpu.h"
 #include "replay.h"
 #include "cache_identity.h"
 #include "../bcn_decode.h"
@@ -751,7 +752,27 @@ static void vtx_snapshots_clear(void) {
     vtx_snapshot_refreshes = vtx_snapshot_busy = 0;
 }
 
+// Request the new device-resident, submission-versioned GPU geometry path.
+// All bytes are checked on every lookup: Android supplies no guest page tracking.
+static bool resident_vertex_equal(const uint8_t *shadow, const void *ctx, size_t size) {
+    return !memcmp(shadow, ctx, size);
+}
+static void resident_vertex_fill(uint8_t *out, const void *ctx, size_t size) {
+    memcpy(out, ctx, size);
+}
+
 static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
+    if (size >= VTX_SNAPSHOT_MIN && size <= VTX_SNAPSHOT_MAX && addr && vk_resident_enabled()) {
+        const VkResidentRequest request = {
+            .domain = VK_RESIDENT_GEOMETRY, .key = addr,
+            .identity = &addr, .identity_size = sizeof addr,
+            .size = (size_t)size,
+            .equal = resident_vertex_equal, .fill = resident_vertex_fill,
+            .context = (const void *)(uintptr_t)addr
+        };
+        VkSpan gpu = vk_resident_get(&request);
+        if (gpu.buf) return gpu;
+    }
     static int enabled = -1;
     if (enabled < 0) {
         const char *opt = getenv("LARECOMP_VK_STATIC_VTX_CACHE");
@@ -1029,6 +1050,10 @@ const char *renderer_stats(void) {
     {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
+    }
+    {
+        size_t n = strlen(stats_text);
+        vk_resident_stats_append(stats_text + n, sizeof stats_text - n);
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     {
@@ -2565,7 +2590,40 @@ static void gmem_snap_clear(void) { // GPU idle, like the vertex snapshots
     gmem_snap_bytes = 0;
 }
 
+// Pack the exact GMEM address table into an immutable GPU version; the
+// identity is the complete plan, not merely its hash. Compute stores still
+// use the existing writable/writeback path with its own dependency tracking.
+static bool resident_gmem_equal(const uint8_t *shadow, const void *ctx, size_t size) {
+    const GmemPlan *p = ctx;
+    (void)size;
+    for (unsigned i = 0; i < p->tab[GMAP_MAX * 4]; ++i) {
+        size_t offset = (size_t)p->tab[i * 4 + 2] * 4;
+        const uint8_t *src = (const uint8_t *)(uintptr_t)(HEAP_BASE + p->tab[i * 4]);
+        if (memcmp(shadow + offset, src, p->tab[i * 4 + 1])) return false;
+    }
+    return true;
+}
+static void resident_gmem_fill(uint8_t *out, const void *ctx, size_t size) {
+    const GmemPlan *p = ctx;
+    (void)size;
+    for (unsigned i = 0; i < p->tab[GMAP_MAX * 4]; ++i)
+        memcpy(out + (size_t)p->tab[i * 4 + 2] * 4,
+               (const void *)(uintptr_t)(HEAP_BASE + p->tab[i * 4]),
+               p->tab[i * 4 + 1]);
+}
+
 static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
+    if (plan->size >= 4096 && plan->size <= (2ull << 20) && vk_resident_enabled()) {
+        const VkResidentRequest request = {
+            .domain = VK_RESIDENT_GMEM, .key = hash_words(0, plan, sizeof *plan),
+            .identity = plan, .identity_size = sizeof *plan,
+            .size = (size_t)plan->size,
+            .equal = resident_gmem_equal, .fill = resident_gmem_fill,
+            .context = plan
+        };
+        VkSpan gpu = vk_resident_get(&request);
+        if (gpu.buf) return gpu;
+    }
     if (gmem_snap_enabled < 0) {
         const char *e = getenv("LARECOMP_VK_GMEM_SNAPSHOTS");
         gmem_snap_enabled = !e || atoi(e) != 0;
@@ -2952,6 +3010,7 @@ static int g_cs_n;  // (compute program table below)
 void vk_exec_reset(void) {
     counter_prev_out = 0;
     counter_prev_tick = 0;
+    vk_resident_reset();  // called with GPU idle during backend reset
     gmem_snap_clear();
     vtx_snapshots_clear();  // backend reset occurs after GPU idle
     gmem_resolve_done(vk_completed_seq());
