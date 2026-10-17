@@ -174,11 +174,6 @@ int SDL_main(int argc, char **argv) {
 
     // The engine is dlopen'ed after these environment values are populated.
     setenv("LASRECOMP_PRIVATE_FILES", files, 1);
-    // Android A/B test: compile first-use shaders and Vulkan pipelines inline
-    // instead of dropping draws while background compilation is pending.
-    // The renderer, timing and cached pipeline data remain unchanged.
-    setenv("LARECOMP_SYNC_SHADERS", "1", 1);
-    boot_mark(files, "experimental synchronous shaders", 1);
     // Use the same larecomp.ini edited by Android's video settings screen.
     // Set before dlopen() and before the native engine calls settings_load().
     char settings_path[PATH_MAX];
