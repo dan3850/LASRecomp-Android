@@ -699,6 +699,7 @@ typedef struct {
 static VtxSnapshot vtx_snapshots[VTX_SNAPSHOT_SLOTS];
 static uint64_t vtx_snapshot_bytes;
 static uint64_t vtx_snapshot_reuses;
+static uint64_t vtx_partial_written_bytes, vtx_partial_saved_bytes;
 
 static void vtx_snapshots_clear(void) {
     for (int i = 0; i < VTX_SNAPSHOT_SLOTS; i++) {
@@ -749,9 +750,39 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
         // Only an equal-sized range is refreshed: never read beyond the
         // current binding. A different address/size uses the path below.
         if (e->addr == addr) {
-            memcpy(e->shadow, src, (size_t)e->size);
-            memcpy(e->mapped, e->shadow, (size_t)e->size);
-            VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc, 0, e->size));
+            // Eden-inspired dirty-region staging: on Android we cannot rely
+            // on guest write tracking, so compare the shadow byte-for-byte.
+            // Copy only changed 4 KiB blocks after the GPU has finished.
+            // No synchronization/pacing change; the old full-copy path remains
+            // available with LARECOMP_VK_VTX_PARTIAL=0 for A/B testing.
+            static int partial = -1;
+            if (partial < 0) {
+                const char *opt = getenv("LARECOMP_VK_VTX_PARTIAL");
+                partial = !opt || atoi(opt) != 0;
+            }
+            if (partial) {
+                uint64_t dirty_lo = UINT64_MAX, dirty_hi = 0, written = 0;
+                const uint8_t *bytes = src;
+                for (uint64_t off = 0; off < size; off += 4096) {
+                    size_t n = (size_t)((size - off) < 4096 ? (size - off) : 4096);
+                    if (!memcmp(e->shadow + off, bytes + off, n)) continue;
+                    memcpy(e->shadow + off, bytes + off, n);
+                    memcpy(e->mapped + off, bytes + off, n);
+                    if (off < dirty_lo) dirty_lo = off;
+                    dirty_hi = off + n;
+                    written += n;
+                }
+                // Flush a single contiguous range: fewer VMA calls and no
+                // writes to blocks whose contents are already identical.
+                if (written) VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc,
+                                                         dirty_lo, dirty_hi - dirty_lo));
+                vtx_partial_written_bytes += written;
+                vtx_partial_saved_bytes += size - written;
+            } else {
+                memcpy(e->shadow, src, (size_t)e->size);
+                memcpy(e->mapped, e->shadow, (size_t)e->size);
+                VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc, 0, e->size));
+            }
             e->seq = pending;
             return (VkSpan){e->buf, 0, NULL};
         }
@@ -944,6 +975,14 @@ const char *renderer_stats(void) {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, ", vtx reused %llu", (unsigned long long)vtx_snapshot_reuses);
         vtx_snapshot_reuses = 0;
+    }
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 ", vtx partial wrote %.1fMB saved %.1fMB",
+                 vtx_partial_written_bytes / 1048576.0,
+                 vtx_partial_saved_bytes / 1048576.0);
+        vtx_partial_written_bytes = vtx_partial_saved_bytes = 0;
     }
     {
         size_t n = strlen(stats_text);
