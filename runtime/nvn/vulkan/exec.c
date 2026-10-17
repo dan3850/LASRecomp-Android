@@ -578,6 +578,19 @@ static int new_chunk(uint64_t size) {
 }
 
 static void ring_retire(void) {}  // chunks are recycled lazily in vk_transient
+// As in Eden's staging pool, reuse only storage whose last GPU timeline
+// sequence has finished. Prefer a different retired chunk (old behavior),
+// then allow the current full chunk if it too has finished. Crucially, a
+// chunk referenced by the current pending submission can never pass this
+// test: pending > the completed timeline value.
+static int ring_retired_chunk(uint64_t size, uint64_t done) {
+    for (int i = 0; i < nchunks; ++i)
+        if (i != active && chunks[i].seq <= done && chunks[i].size >= size) return i;
+    if (active >= 0 && chunks[active].seq <= done && chunks[active].size >= size)
+        return active;
+    return -1;
+}
+static uint64_t stat_ring_active_recycles, stat_ring_new_chunks;
 static void ring_flush(void) {
     for (int i = 0; i < nchunks; i++) {
         Chunk *c = &chunks[i];
@@ -603,10 +616,12 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
         }
     }
     uint64_t done = vk_completed_seq();
-    int pick = -1;
-    for (int i = 0; i < nchunks; i++)
-        if (i != active && chunks[i].seq <= done && chunks[i].size >= size) { pick = i; break; }
-    if (pick < 0) pick = new_chunk(size > CHUNK_SIZE ? size : CHUNK_SIZE);
+    int pick = ring_retired_chunk(size, done);
+    if (pick == active && pick >= 0) stat_ring_active_recycles++;
+    if (pick < 0) {
+        pick = new_chunk(size > CHUNK_SIZE ? size : CHUNK_SIZE);
+        stat_ring_new_chunks++;
+    }
     active = pick;
     chunks[pick].used = size;
     chunks[pick].dirty_lo = 0; chunks[pick].dirty_hi = size;
@@ -988,6 +1003,14 @@ const char *renderer_stats(void) {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
     }
+    if (stat_ring_active_recycles || stat_ring_new_chunks) {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 ", staging recycles %llu new %llu chunks %d",
+                 (unsigned long long)stat_ring_active_recycles,
+                 (unsigned long long)stat_ring_new_chunks, nchunks);
+    }
+    stat_ring_active_recycles = stat_ring_new_chunks = 0;
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     {
         extern void vk_alias_stats(void);
