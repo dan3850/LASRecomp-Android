@@ -864,6 +864,46 @@ static void wait_first_use(_Atomic int *state, const char *kind) {
 #endif
 }
 
+// Small 1-6 vertex/index draws often generate an offscreen texture or
+// composite the final image. Skipping one can leave a whole room incomplete.
+// Eden keeps these pipelines instead of treating them as optional. On this
+// renderer, compilation stays on worker threads, and waits are bounded to
+// avoid the global synchronous-shader audio regression.
+static uint64_t critical_graphics_deadline(uint64_t count) {
+#ifdef __ANDROID__
+    if (!count || count > 6) return 0;
+    static int budget_ms = -1;
+    if (budget_ms < 0) {
+        const char *env = getenv("LARECOMP_VK_CRITICAL_WAIT_MS");
+        budget_ms = env ? atoi(env) : 750;
+        if (budget_ms < 0) budget_ms = 0;
+        if (budget_ms > 5000) budget_ms = 5000;
+        LOG("[vk] critical graphics protection: %d ms per small draw (0=off)\n", budget_ms);
+    }
+    return budget_ms ? SDL_GetTicksNS() + (uint64_t)budget_ms * 1000000ull : 0;
+#else
+    (void)count;
+    return 0;
+#endif
+}
+
+static void wait_critical_graphics(_Atomic int *state, const char *kind, uint64_t deadline) {
+    if (!deadline) { wait_first_use(state, kind); return; }
+    if (atomic_load_explicit(state, memory_order_acquire) != 0) return;
+    uint64_t start = SDL_GetTicksNS();
+    while (atomic_load_explicit(state, memory_order_acquire) == 0 && SDL_GetTicksNS() < deadline)
+        SDL_Delay(1);
+    uint64_t elapsed = SDL_GetTicksNS() - start;
+    stat_first_use_wait_ns += elapsed;
+    stat_first_use_waits++;
+    if (atomic_load_explicit(state, memory_order_acquire) == 0) {
+        stat_first_use_timeouts++;
+        static int warnings;
+        if (warnings++ < 12)
+            LOG("[vk] critical draw: %s pending after %.0f ms; fallback skip\n", kind, elapsed / 1e6);
+    }
+}
+
 // Shader translation: one dedicated thread (the translator isn't re-entrant - translate.c's RSC2 string ring - and
 // translating on the game thread cost up to ~90 ms per frame on entering an area). Compiles go on to the workers.
 static pthread_mutex_t translate_lock = PTHREAD_MUTEX_INITIALIZER;  // (compute shaders translate on the game thread)
@@ -3402,8 +3442,10 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    // Share a single bounded deadline across shader translation and pipeline creation.
+    uint64_t critical_deadline = critical_graphics_deadline(r->x[2]);
     Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (pr) wait_first_use(&pr->state, "graphics program");
+    if (pr) wait_critical_graphics(&pr->state, "graphics program", critical_deadline);
     if (!pr || atomic_load(&pr->state) != 1) {
         if (pr && atomic_load(&pr->state) == 0) stat_prog_pending++;
         stat_skipped++;
@@ -3422,7 +3464,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
-            if (pr) wait_first_use(&pr->state, "mirror program");
+            if (pr) wait_critical_graphics(&pr->state, "mirror program", critical_deadline);
             if (!pr || atomic_load(&pr->state) != 1) {
                 if (pr && atomic_load(&pr->state) == 0) stat_prog_pending++;
                 stat_skipped++;
@@ -3550,7 +3592,7 @@ static void draw_(CmdRec *r, bool indexed) {
             atomic_store_explicit(&pp->state, 1, memory_order_release);
         } else run_job(build_pipeline, pp);
     }
-    wait_first_use(&pp->state, "graphics pipeline");
+    wait_critical_graphics(&pp->state, "graphics pipeline", critical_deadline);
     if (atomic_load(&pp->state) != 1) {
         if (atomic_load(&pp->state) == 0) stat_pipe_pending++;
         stat_skipped++;
