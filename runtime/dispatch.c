@@ -1,5 +1,7 @@
 // Guest address -> recompiled function lookup, and host (HLE) function registry.
+#ifdef __ANDROID__
 #include <dlfcn.h>
+#endif
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
