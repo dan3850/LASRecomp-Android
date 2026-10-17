@@ -15,6 +15,7 @@
 #include "vk.h"
 #include "diagnostics.h"
 #include "gmem.h"
+#include "gmem_delta.h"
 #include "../bcn_decode.h"
 #include "../renderer.h"
 #include "../../settings.h"
@@ -2499,13 +2500,36 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
         pick->mapped = info.pMappedData;
         gmem_snap_bytes += plan->size;
     }
+    // Incremental updates are legal only for an identical packed layout whose
+    // previous GPU readers have completed. In-flight snapshots are never changed.
+    // A new/repurposed allocation still receives a complete initial upload.
+    bool delta = pick == match && pick->buf && pick->seq <= done;
+    size_t dirty_lo = SIZE_MAX, dirty_hi = 0;
+    uint64_t copied = 0;
     for (unsigned r = 0; r < plan->tab[GMAP_MAX * 4]; ++r) {
-        uint64_t off = (uint64_t)plan->tab[r * 4 + 2] * 4;
-        memcpy(pick->shadow + off, (const void *)(uintptr_t)(HEAP_BASE + plan->tab[r * 4]), plan->tab[r * 4 + 1]);
+        size_t off = (size_t)plan->tab[r * 4 + 2] * 4;
+        size_t len = plan->tab[r * 4 + 1];
+        const uint8_t *src = (const uint8_t *)(uintptr_t)(HEAP_BASE + plan->tab[r * 4]);
+        if (delta) {
+            GmemDelta d = gmem_delta_copy(pick->mapped, pick->shadow, src, off, len);
+            if (d.first < dirty_lo) dirty_lo = d.first;
+            if (d.end > dirty_hi) dirty_hi = d.end;
+            copied += d.copied;
+        } else {
+            memcpy(pick->shadow + off, src, len);
+        }
     }
-    memcpy(pick->mapped, pick->shadow, plan->size);
-    VK_CHECK(vmaFlushAllocation(g_vk.vma, pick->mem, 0, plan->size));
-    stat_upload_bytes += plan->size; // include persistent uploads in the existing total
+    if (delta) {
+        // VMA handles nonCoherentAtomSize alignment for partial flushes.
+        // The union is conservative when several packed ranges changed.
+        if (dirty_lo != SIZE_MAX)
+            VK_CHECK(vmaFlushAllocation(g_vk.vma, pick->mem, dirty_lo, dirty_hi - dirty_lo));
+    } else {
+        memcpy(pick->mapped, pick->shadow, plan->size);
+        VK_CHECK(vmaFlushAllocation(g_vk.vma, pick->mem, 0, plan->size));
+        copied = plan->size;
+    }
+    stat_upload_bytes += copied; // count bytes actually written to mapped GMEM
     pick->plan = *plan;
     pick->seq = pending;
     return (VkSpan){pick->buf, 0, NULL};
