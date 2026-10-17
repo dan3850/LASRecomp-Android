@@ -35,4 +35,29 @@ static void test_versions(void) {
     assert(resident_rewrite_safe(25,25));
     assert(resident_rewrite_safe(24,25));
 }
-int main(void) { test_dirty_regions(); test_versions(); return 0; }
+// Reconstruct changed images from the calculated GPU copy regions.
+// Checks both sparse changes and the full-copy fallback deterministically.
+static void test_reconstruct(void) {
+    enum { N = 20 * 4096 + 4 };
+    uint8_t *before = calloc(1, N), *after = calloc(1, N);
+    uint8_t *rebuilt = calloc(1, N);
+    assert(before && after && rebuilt);
+    unsigned seed = 0x7129u;
+    for (int test = 0; test < 256; ++test) {
+        for (int i = 0; i < 150; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            size_t at = seed % N;
+            after[at] ^= (uint8_t)(seed >> 24);
+        }
+        ResidentRegion dirty[8];
+        size_t n = resident_dirty_regions(before, after, N, 4096, dirty, 8);
+        memcpy(rebuilt, before, N);
+        if (n == SIZE_MAX) memcpy(rebuilt, after, N);
+        else for (size_t i = 0; i < n; ++i)
+            memcpy(rebuilt + dirty[i].offset, after + dirty[i].offset, dirty[i].size);
+        assert(!memcmp(rebuilt, after, N));
+        memcpy(before, after, N);
+    }
+    free(before); free(after); free(rebuilt);
+}
+int main(void) { test_dirty_regions(); test_versions(); test_reconstruct(); return 0; }
