@@ -131,6 +131,89 @@ GuestFn dispatch_lookup(uint64_t addr) {
     return NULL;
 }
 
+#ifdef __ANDROID__
+// Guest-main v1.0.0 child-pointer lifecycle trace.
+//
+// The same NULL virtual call occurs consistently when Field begins:
+// f_70010cce50+0x34, from f_70013c21e0+0x144. Disassembly of the
+// locally provided, private liblasgame.so confirms f_70010cce00 writes a
+// vtable to this and *clears* this+0x10. The pointer must be installed
+// elsewhere before f_70010cce50 can invoke it.
+//
+// Earlier tracing ran only in dispatch_slow(), so the dispatch cache hid the
+// most important calls. Record snapshots at the entry to rt_dispatch()
+// BEFORE the fast cache lookup. Never alter guest registers or return early.
+// The trace is lightweight: only a handful of fixed thunk addresses pass.
+enum { GUEST_CHILD_EVENTS = 32 };
+typedef struct {
+    uint64_t target, caller, object, vtable, plus8, child, plus18;
+} GuestChildEvent;
+static __thread GuestChildEvent guest_child_events[GUEST_CHILD_EVENTS];
+static __thread unsigned guest_child_next, guest_child_count, guest_child_printed;
+static __thread uint64_t guest_child_last_object, guest_child_last_value;
+
+static void guest_child_trace_before(Cpu *c) {
+    const uint64_t pc = c->pc;
+    if (pc != 0x70010cce00ull && pc != 0x70010cce30ull &&
+        pc != 0x70010cce50ull && pc != 0x70010cce80ull)
+        return;
+    // This hook observes virtual forwarding only. It does not replace a
+    // missing child or skip game work (the previous skip froze the game).
+    const uint64_t object = c->x[0], heap = kernel_heap_size();
+    if (object < HEAP_BASE || heap < 32 || object - HEAP_BASE > heap - 32)
+        return;
+
+    GuestChildEvent ev = {
+        .target = pc, .caller = c->x[30], .object = object,
+        .vtable = LD64(object), .plus8 = LD64(object + 8),
+        .child = LD64(object + 0x10), .plus18 = LD64(object + 0x18),
+    };
+    guest_child_events[guest_child_next++ % GUEST_CHILD_EVENTS] = ev;
+    guest_child_count++;
+    // First few events reveal whether the field starts NULL, becomes live
+    // and later returns to NULL. Log additional events only at transitions
+    // and when a NULL child is about to be dereferenced.
+    const bool changed = guest_child_last_object != object ||
+                         guest_child_last_value != ev.child;
+    const bool critical = (pc == 0x70010cce30ull || pc == 0x70010cce50ull) &&
+                          ev.child == 0;
+    if ((guest_child_printed < 12 || changed || critical) &&
+        guest_child_printed < 48) {
+        guest_child_printed++;
+        LOG("[guest-child-entry] func=%#llx caller=%#llx this=%#llx "
+            "vtable=%#llx field8=%#llx child10=%#llx field18=%#llx "
+            "event=%u%s\n",
+            (unsigned long long)pc, (unsigned long long)ev.caller,
+            (unsigned long long)object, (unsigned long long)ev.vtable,
+            (unsigned long long)ev.plus8, (unsigned long long)ev.child,
+            (unsigned long long)ev.plus18, guest_child_count,
+            critical ? " INVALID_CALLBACK" : "");
+    }
+    guest_child_last_object = object;
+    guest_child_last_value = ev.child;
+}
+
+static void guest_child_trace_dump(uint64_t object) {
+    unsigned count = guest_child_count < GUEST_CHILD_EVENTS ?
+                     guest_child_count : GUEST_CHILD_EVENTS;
+    fprintf(stderr, "[guest-child-history] events=%u retained=%u last_object=%#llx\n",
+            guest_child_count, count, (unsigned long long)object);
+    for (unsigned k = 0; k < count; ++k) {
+        unsigned slot = (guest_child_next + GUEST_CHILD_EVENTS - count + k) %
+                        GUEST_CHILD_EVENTS;
+        const GuestChildEvent *e = &guest_child_events[slot];
+        if (object && e->object != object) continue;
+        fprintf(stderr,
+            "[guest-child-history] i=%u func=%#llx caller=%#llx "
+            "obj=%#llx vtable=%#llx field8=%#llx child10=%#llx field18=%#llx\n",
+            k, (unsigned long long)e->target,
+            (unsigned long long)e->caller, (unsigned long long)e->object,
+            (unsigned long long)e->vtable, (unsigned long long)e->plus8,
+            (unsigned long long)e->child, (unsigned long long)e->plus18);
+    }
+}
+#endif
+
 // Small direct-mapped cache in front of the binary search
 #define DCACHE 4096
 static __thread struct { uint64_t addr; GuestFn fn; } dcache[DCACHE];
@@ -191,6 +274,11 @@ static GuestFn dispatch_slow(Cpu *c) {
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
+#ifdef __ANDROID__
+    // This must run BEFORE the fast-cache lookup; dispatch_slow() is
+    // intentionally bypassed on warm virtual method calls.
+    guest_child_trace_before(c);
+#endif
     unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
     GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
     __attribute__((musttail)) return f(c);
@@ -374,6 +462,7 @@ void rt_fault_report(const char *what, uint64_t fa, uint64_t pc, uint64_t lr) {
                     (unsigned long long)c->x[2],
                     (unsigned long long)c->sp);
             }
+            guest_child_trace_dump(object);
         }
     }
     rt_fatal_trace();
