@@ -462,7 +462,9 @@ void rt_fault_report(const char *what, uint64_t fa, uint64_t pc, uint64_t lr) {
                     (unsigned long long)c->x[2],
                     (unsigned long long)c->sp);
             }
+#ifdef __ANDROID__
             guest_child_trace_dump(object);
+#endif
         }
     }
     rt_fatal_trace();
