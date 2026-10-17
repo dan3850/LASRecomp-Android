@@ -1,5 +1,6 @@
 #include "../../kernel.h"
 #include "rt_graph.h"
+#include "rt_copy_policy.h"
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -11,15 +12,21 @@ void vk_rt_prepare_copy(VkCommandBuffer cb, VkImage src, VkImage dst,
     if (on < 0) {
         const char *v = getenv("LARECOMP_VK_RT_SCOPE");
 #ifdef __ANDROID__
-        // For the crash-isolation run keep legacy full-copy dependencies
-        // by default, separate from geometry/texture residency experiments.
-        on = v && atoi(v) != 0;
+        // These barriers cover only the source/destination images, including
+        // all aspects and mip/layer ranges. The former global memory barrier
+        // serialized unrelated texture/buffer work hundreds of times per frame.
+        // Experimental branch: enable per-image dependency scopes by default.
+        // LARECOMP_VK_RT_SCOPE=0 restores the previous conservative behavior.
+        on = !v || atoi(v) != 0;
 #else
         on = v && atoi(v) != 0;
 #endif
-        LOG("[vk-rt] per-image copy dependencies %s\n", on ? "on" : "off");
+        LOG("[vk-rt] per-image copy dependencies %s "
+            "(LARECOMP_VK_RT_SCOPE=%s)\n",
+            on ? "on" : "off", v ? v : "unset");
     }
-    if (!on || !src || !dst || !sa || !da) {
+    if (!las_rt_copy_scope_allowed(on != 0, (uint64_t)(uintptr_t)src,
+                                 (uint64_t)(uintptr_t)dst, sa, da)) {
         legacy++;
         vk_full_barrier(cb);
         return;
@@ -30,10 +37,12 @@ void vk_rt_prepare_copy(VkCommandBuffer cb, VkImage src, VkImage dst,
     // Whole subresource ranges, including depth/stencil aspects, deliberately
     // keep the first iteration conservative about levels and layers.
     VkImageMemoryBarrier2 dep[2];
-    uint32_t n = src == dst ? 1 : 2;
+    uint32_t n = las_rt_copy_image_count((uint64_t)(uintptr_t)src,
+                                           (uint64_t)(uintptr_t)dst);
     for (uint32_t i = 0; i < n; ++i) {
         VkImage img = i == 0 ? src : dst;
-        VkImageAspectFlags aspect = (src == dst) ? sa | da : i == 0 ? sa : da;
+        VkImageAspectFlags aspect = las_rt_copy_aspects(
+            (uint64_t)(uintptr_t)src, (uint64_t)(uintptr_t)dst, sa, da, i);
         dep[i] = (VkImageMemoryBarrier2){
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
