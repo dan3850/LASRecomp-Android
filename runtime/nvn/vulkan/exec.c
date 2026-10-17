@@ -20,6 +20,7 @@
 #include "gmem_atlas.h"
 #include "scheduler.h"
 #include "counter_ready.h"
+#include "recovery60_policy.h"
 #include "descriptor_reuse_policy.h"
 #include "descriptor_batch_policy.h"
 #include "resident_gpu.h"
@@ -168,6 +169,37 @@ static bool cq_calibrated;
 static int counter_mode = -1;  // 0 cpu, 1 frozen, 2 gpu, 3 legacy, 4 virtual
 static uint64_t stat_counters_gpu;
 
+// Experimental recovery of the game's native 60 Hz choice, NOT the Stable60
+// binary mod. Do not touch the guest frame interval or game simulation.
+// Short probe uses an optimistic GPU-work report ONLY after the hardware
+// proved <12 ms and the guest stayed at actual 30 fps for 3 seconds. The
+// exact real timestamp path is restored after the probe or on any overload.
+// LARECOMP_VK_RECOVERY60=0 disables, for a reproducible A/B comparison.
+static LasRecovery recovery60;
+static _Atomic uint32_t recovery60_gpu_us;
+static _Atomic uint64_t recovery60_last_gpu_ns;
+static _Atomic bool recovery60_probe;
+static int recovery60_enabled=-1;
+static uint64_t recovery60_probes, recovery60_short_reports;
+static bool recovery60_on(void) {
+    if (recovery60_enabled<0) {
+        const char *v=getenv("LARECOMP_VK_RECOVERY60");
+#ifdef __ANDROID__
+        recovery60_enabled=!v || atoi(v)!=0;
+#else
+        recovery60_enabled=v && atoi(v)!=0;
+#endif
+        LOG("[recover60] guarded native-mode recovery %s (LARECOMP_VK_RECOVERY60=%s)\\n",
+            recovery60_enabled?"enabled":"disabled",v?v:"unset");
+    }
+    return recovery60_enabled!=0 && vk_counter_mode()==2;
+}
+static bool recovery60_report_end(const uint64_t *start, const uint64_t *out) {
+    return recovery60_on() && start && out == start+2 &&
+           atomic_load_explicit(&recovery60_probe,memory_order_relaxed);
+}
+
+
 static int vk_counter_mode(void) {
     if (counter_mode < 0) {
         const char *e = getenv("LARECOMP_VK_COUNTER");
@@ -246,6 +278,12 @@ static void counter_pace_diag_flush(void) {
             (unsigned long long)counter_pace_diag.provisional_false_slow,
             (unsigned long long)counter_pace_diag.eager_polls,
             (unsigned long long)counter_pace_diag.eager_queries);
+        if (recovery60_enabled>0)
+            LOG("[recover60] state=%u gpu-avg=%.2fms attempts=%llu provisional-pulses=%llu\\n",
+                (unsigned)recovery60.state,
+                atomic_load_explicit(&recovery60_gpu_us,memory_order_relaxed)/1000.0,
+                (unsigned long long)recovery60_probes,
+                (unsigned long long)recovery60_short_reports);
     }
     memset(&counter_pace_diag, 0, sizeof counter_pace_diag);
     counter_pace_diag.since_ns = now;
@@ -265,6 +303,13 @@ static void counter_pace_record(
         if (ms > counter_pace_diag.peak_ms) counter_pace_diag.peak_ms = ms;
         if (ms >= 16.67) counter_pace_diag.over_16ms++;
         if (ms >= 30.0) counter_pace_diag.over_30ms++;
+        // With no recent completed GPU pair, recovery stays disabled.
+        uint32_t sample = ms > 1000.0 ? 1000000u : (uint32_t)(ms*1000.0);
+        uint32_t previous = atomic_load_explicit(&recovery60_gpu_us,memory_order_relaxed);
+        uint32_t avg = previous ? (previous*7u + sample)/8u : sample;
+        atomic_store_explicit(&recovery60_gpu_us,avg,memory_order_relaxed);
+        atomic_store_explicit(&recovery60_last_gpu_ns,
+                              plat_now_ns(),memory_order_relaxed);
         if (provisional >= counter_prev_provisional) {
             double provisional_ms = (provisional - counter_prev_provisional)
                                   * (625.0 / 384.0) / 1e6;
@@ -296,7 +341,27 @@ void vk_pace_frame(void) {
     uint64_t p = now - last, wt = w - last_wait;
     bool first = !last;
     last = now, last_wait = w;
-    if (first || p > 100000000ull) return;  // (loading, a hitch: not a pace)
+    if (first || p > 100000000ull) {
+        recovery60.slow=0;
+        if (recovery60.state==LAS_RECOVERY_PROBE) {
+            las_recovery_reset(&recovery60);
+            atomic_store_explicit(&recovery60_probe,false,memory_order_relaxed);
+        }
+        return;  // loading: don't infer GPU headroom from stale data
+    }
+    if (recovery60_on()) {
+        uint64_t recent=atomic_load_explicit(&recovery60_last_gpu_ns,memory_order_relaxed);
+        uint32_t gpu_us=(recent && now>=recent && now-recent<=1000000000ull)
+           ? atomic_load_explicit(&recovery60_gpu_us,memory_order_relaxed) : 0;
+        int transition=las_recovery_frame(&recovery60,p,gpu_us);
+        if (transition) {
+            atomic_store_explicit(&recovery60_probe,transition>0,memory_order_relaxed);
+            if (transition>0) recovery60_probes++;
+            LOG("[recover60] %s real-period %.2f ms GPU-avg %.2f ms attempts %llu\\n",
+                transition>0?"probe begin":"probe ended; restoring real counters",
+                p/1e6,gpu_us/1000.0,(unsigned long long)recovery60_probes);
+        }
+    }
     double busy = (p > wt ? p - wt : 0) / 1e6;
     avg = avg ? avg + (busy - avg) * 0.05 : busy;
     static int log = -1;  // LARECOMP_LOG_PACE=1: each frame's period, vsync wait and busy time
@@ -3348,6 +3413,10 @@ void vk_exec_reset(void) {
     counter_prev_out = 0;
     counter_prev_tick = counter_prev_provisional = 0;
     atomic_store_explicit(&last_eager_completed, 0, memory_order_relaxed);
+    las_recovery_reset(&recovery60);
+    atomic_store_explicit(&recovery60_probe,false,memory_order_relaxed);
+    atomic_store_explicit(&recovery60_gpu_us,0,memory_order_relaxed);
+    atomic_store_explicit(&recovery60_last_gpu_ns,0,memory_order_relaxed);
     vk_resident_reset();  // called with GPU idle during backend reset
     vk_gmem_atlas_reset(); // release dedicated guest-memory atlas slabs
     memset(ds_reuse,0,sizeof ds_reuse);
@@ -5141,6 +5210,17 @@ static void exec_list(uint64_t handle, int depth) {
             out[1] = (mode == 1 || mode == 4) ? frame_ts : mode == 3 ? SDL_GetTicksNS() : ns_to_gpu_ticks(plat_now_ns());  // (3 legacy: ns, the old bug)
             static uint64_t *prev_out;  // (frame pacing: the pair's start)
             if (mode == 0 || mode == 2) out[1] = pace_end_counter(prev_out, out, out[1]);
+            // A bounded RECOVERY probe is NOT permanent virtual time:
+            // during a measured real 30fps plateau with ample GPU headroom,
+            // briefly report optimistic GPU work so the unmodified Zelda
+            // logic can attempt its own 60fps branch. Otherwise real clocks.
+            // A real over-budget GPU interval aborts the probe.
+            bool recovery_end = mode==2 && type==0 &&
+                                recovery60_report_end(prev_out,out);
+            if(recovery_end) {
+                out[1]=prev_out[1]+ns_to_gpu_ticks(2000000ull);
+                recovery60_short_reports++;
+            }
             prev_out = out;
             {   // (test) LARECOMP_TEST_COUNTER_DELAY_MS=<ms>: stall the host after a frame's first counter - a slow CPU
                 static double delay = -1;
