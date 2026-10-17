@@ -21,6 +21,7 @@
 #include "scheduler.h"
 #include "counter_ready.h"
 #include "descriptor_reuse_policy.h"
+#include "descriptor_batch_policy.h"
 #include "resident_gpu.h"
 #include "texture_native.h"
 #include "rt_graph.h"
@@ -59,6 +60,18 @@ typedef struct {
 } DsReuseEntry;
 static DsReuseEntry ds_reuse[LAS_DS_SLOTS];
 static uint64_t ds_hit,ds_miss,ds_large,ds_collide;
+// Spare, immutable descriptor sets are owned by exactly one pending Vulkan
+// submission. A slot is discarded on seq/layout mismatch; unused sets from
+// the old slot stay in their submission pool and are retired normally.
+typedef struct {
+    uint64_t seq, layout;
+    VkDescriptorSet sets[LAS_DS_BATCH_WIDTH];
+    uint8_t next, count;
+} DsBatch;
+static DsBatch ds_batches[LAS_DS_BATCH_SLOTS];
+static int ds_batch_enabled = -1;
+static uint64_t ds_batch_calls, ds_batch_served, ds_batch_allocated;
+
 static int ds_enabled = -1;
 void vk_collect_dead(void);
 
@@ -631,8 +644,38 @@ void renderer_wait_seq(uint64_t seq) {
     vk_wait_seq(seq > s ? s : seq);  // not submitted yet (other thread): everything submitted so far
 }
 
+// Batch the expensive driver allocations when shaders use the same layout.
+// Every VkDescriptorSet is immutable once handed out to a draw/dispatch;
+// unused handles are never returned twice and are tied to the same timeline
+// submission/pool lifetime. LARECOMP_VK_DESCRIPTOR_BATCH=0 is the A/B switch.
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
     Sub *s = sub();
+    if (ds_batch_enabled < 0) {
+        const char *v = getenv("LARECOMP_VK_DESCRIPTOR_BATCH");
+#ifdef __ANDROID__
+        ds_batch_enabled = !v || atoi(v) != 0;
+#else
+        ds_batch_enabled = v && atoi(v) != 0;
+#endif
+        LOG("[vk-ds] batched descriptor allocation %s "
+            "(LARECOMP_VK_DESCRIPTOR_BATCH=%s)\n",
+            ds_batch_enabled ? "enabled" : "disabled", v ? v : "unset");
+    }
+    uint64_t seq = vk_pending_seq();
+    uint64_t lid = (uint64_t)(uintptr_t)layout;
+    DsBatch *cache = NULL;
+    if (ds_batch_enabled) {
+        cache = &ds_batches[las_ds_batch_slot(lid)];
+        if (las_ds_batch_take_allowed(cache->seq, seq, cache->layout,
+                                      lid, cache->next, cache->count)) {
+            ds_batch_served++;
+            return cache->sets[cache->next++];
+        }
+    }
+    VkDescriptorSetLayout layouts[LAS_DS_BATCH_WIDTH];
+    VkDescriptorSet sets[LAS_DS_BATCH_WIDTH];
+    uint32_t width = cache ? LAS_DS_BATCH_WIDTH : 1u;
+    for (unsigned i = 0; i < width; i++) layouts[i] = layout;
     for (;;) {
         if (s->cur_pool == s->npools) {
             if (s->npools == 16) FATAL("descriptor pools exhausted\n");
@@ -644,10 +687,26 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
             VK_CHECK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &s->pools[s->npools++]));
         }
         VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                          .descriptorPool = s->pools[s->cur_pool], .descriptorSetCount = 1, .pSetLayouts = &layout};
-        VkDescriptorSet set;
-        VkResult r = vkAllocateDescriptorSets(g_vk.dev, &ai, &set);
-        if (r == VK_SUCCESS) return set;
+                                          .descriptorPool = s->pools[s->cur_pool],
+                                          .descriptorSetCount = width, .pSetLayouts = layouts};
+        VkResult r = vkAllocateDescriptorSets(g_vk.dev, &ai, sets);
+        ds_batch_calls++;
+        if (r == VK_SUCCESS) {
+            ds_batch_allocated += width;
+            if (cache) {
+                cache->seq = seq;
+                cache->layout = lid;
+                cache->count = (uint8_t)width;
+                cache->next = 1;
+                memcpy(cache->sets, sets, width * sizeof sets[0]);
+            }
+            return sets[0];
+        }
+        // Descriptor pool exhaustion/fragmentation can happen when many
+        // pipeline layouts are active. An error other than pool exhaustion
+        // is not fixed by creating more pools and should be reported.
+        if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL)
+            VK_CHECK(r);
         s->cur_pool++;
     }
 }
@@ -1154,6 +1213,15 @@ const char *renderer_stats(void) {
             (unsigned long long)ds_hit,(unsigned long long)ds_miss,
             (unsigned long long)ds_large,(unsigned long long)ds_collide);
         ds_hit=ds_miss=ds_large=ds_collide=0;
+    }
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+            " | ds batch calls %llu served %llu sets %llu",
+            (unsigned long long)ds_batch_calls,
+            (unsigned long long)ds_batch_served,
+            (unsigned long long)ds_batch_allocated);
+        ds_batch_calls=ds_batch_served=ds_batch_allocated=0;
     }
     {
         size_t n = strlen(stats_text);
@@ -3283,6 +3351,7 @@ void vk_exec_reset(void) {
     vk_resident_reset();  // called with GPU idle during backend reset
     vk_gmem_atlas_reset(); // release dedicated guest-memory atlas slabs
     memset(ds_reuse,0,sizeof ds_reuse);
+    memset(ds_batches,0,sizeof ds_batches);
     gmem_snap_clear();
     vtx_snapshots_clear();  // backend reset occurs after GPU idle
     gmem_resolve_done(vk_completed_seq());
