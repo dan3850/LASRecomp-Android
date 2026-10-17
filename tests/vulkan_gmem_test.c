@@ -346,6 +346,37 @@ static void persistent_snapshots(void) {
     puts("GMEM persistent snapshots: 61 submissions upload 1 MiB instead of 61 MiB; mutation/in-flight isolation/write isolation PASS");
 }
 
+// Eden-style staging reuse: a completed active chunk is eligible, but a
+// chunk still in the GPU timeline must not be touched or overwritten.
+static void staging_recycle_selection(void) {
+    Chunk *real_chunks = chunks;
+    int real_nchunks = nchunks, real_active = active;
+    Chunk fake[3] = {
+        {.size = 64, .seq = 3},
+        {.size = 256, .seq = 6},
+        {.size = 128, .seq = 4}
+    };
+    chunks = fake;
+    nchunks = 3;
+    active = 2;
+    // Preserve the old preference for other completed storage.
+    assert(ring_retired_chunk(32, 4) == 0);
+    fake[0].seq = 6;
+    // Only the active chunk has finished; recycle it without allocating.
+    assert(ring_retired_chunk(32, 4) == 2);
+    // Busy, even if the buffer is big enough: never reuse.
+    assert(ring_retired_chunk(200, 4) == -1);
+    fake[2].seq = 5;
+    assert(ring_retired_chunk(32, 4) == -1);
+    fake[0].seq = 3;
+    fake[0].size = 16;
+    assert(ring_retired_chunk(32, 4) == -1);
+    chunks = real_chunks;
+    nchunks = real_nchunks;
+    active = real_active;
+    puts("Staging ring: old preference preserved, active retired reuse, busy and undersized chunks blocked PASS");
+}
+
 static void buffer_reuse(void) {
     uint8_t *src = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x80000);
     memset(src, 0x35, 8192);
@@ -514,6 +545,7 @@ int main(int argc, char **argv) {
     snapshots();
     split_counter_pairs();
     persistent_snapshots();
+    staging_recycle_selection();
     buffer_reuse();
     write_pool_limits();
     atlas(argv[1]);
