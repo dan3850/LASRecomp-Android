@@ -346,37 +346,6 @@ static void persistent_snapshots(void) {
     puts("GMEM persistent snapshots: 61 submissions upload 1 MiB instead of 61 MiB; mutation/in-flight isolation/write isolation PASS");
 }
 
-// Eden-style staging reuse: a completed active chunk is eligible, but a
-// chunk still in the GPU timeline must not be touched or overwritten.
-static void staging_recycle_selection(void) {
-    Chunk *real_chunks = chunks;
-    int real_nchunks = nchunks, real_active = active;
-    Chunk fake[3] = {
-        {.size = 64, .seq = 3},
-        {.size = 256, .seq = 6},
-        {.size = 128, .seq = 4}
-    };
-    chunks = fake;
-    nchunks = 3;
-    active = 2;
-    // Preserve the old preference for other completed storage.
-    assert(ring_retired_chunk(32, 4) == 0);
-    fake[0].seq = 6;
-    // Only the active chunk has finished; recycle it without allocating.
-    assert(ring_retired_chunk(32, 4) == 2);
-    // Busy, even if the buffer is big enough: never reuse.
-    assert(ring_retired_chunk(200, 4) == -1);
-    fake[2].seq = 5;
-    assert(ring_retired_chunk(32, 4) == -1);
-    fake[0].seq = 3;
-    fake[0].size = 16;
-    assert(ring_retired_chunk(32, 4) == -1);
-    chunks = real_chunks;
-    nchunks = real_nchunks;
-    active = real_active;
-    puts("Staging ring: old preference preserved, active retired reuse, busy and undersized chunks blocked PASS");
-}
-
 static void buffer_reuse(void) {
     uint8_t *src = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x80000);
     memset(src, 0x35, 8192);
@@ -395,7 +364,6 @@ static void buffer_reuse(void) {
     assert(((uint8_t *)changed.ptr)[0] == 0x71);
 
     setenv("LARECOMP_VK_STATIC_VTX_CACHE", "1", 1);
-    setenv("LARECOMP_VK_VTX_PARTIAL", "1", 1);
     VkSpan first = guest_vertex_copy((uintptr_t)src, 8192);
     assert(first.buf);
     src[0] = 0x19;
@@ -403,14 +371,8 @@ static void buffer_reuse(void) {
     VkSpan inflight = guest_vertex_copy((uintptr_t)src, 8192);
     assert(inflight.buf != first.buf);
     vk_cmd(); renderer_flush();
-    uint64_t written0 = vtx_partial_written_bytes;
-    uint64_t saved0 = vtx_partial_saved_bytes;
     VkSpan refreshed = guest_vertex_copy((uintptr_t)src, 8192);
     assert(refreshed.buf == first.buf);
-    // Only the first 4 KiB block changed; the remaining half was not
-    // rewritten. This checks the production copy and flush accounting.
-    assert(vtx_partial_written_bytes - written0 == 4096);
-    assert(vtx_partial_saved_bytes - saved0 == 4096);
     unsigned found = 0;
     for (int i = 0; i < VTX_SNAPSHOT_SLOTS; i++) {
         VtxSnapshot *e = &vtx_snapshots[i];
@@ -423,23 +385,8 @@ static void buffer_reuse(void) {
     VkSpan prefix = guest_vertex_copy((uintptr_t)src, 4096);
     assert(prefix.buf == refreshed.buf);
     vk_cmd(); renderer_flush();
-    // A later change in the second half refreshes just that region too.
-    src[4096] = 0x87;
-    written0 = vtx_partial_written_bytes;
-    saved0 = vtx_partial_saved_bytes;
-    VkSpan second = guest_vertex_copy((uintptr_t)src, 8192);
-    assert(second.buf == first.buf);
-    assert(vtx_partial_written_bytes - written0 == 4096);
-    assert(vtx_partial_saved_bytes - saved0 == 4096);
-    for (int i = 0; i < VTX_SNAPSHOT_SLOTS; ++i) {
-        VtxSnapshot *e = &vtx_snapshots[i];
-        if (e->buf != second.buf) continue;
-        assert(!memcmp(e->shadow, src, 8192));
-        assert(!memcmp(e->mapped, src, 8192));
-    }
-    vk_cmd(); renderer_flush();
     vtx_snapshots_clear();
-    puts("Buffer reuse: 101 prefix requests copy 8192 bytes; invalidation, in-flight isolation and 4 KiB-only refresh PASS");
+    puts("Buffer reuse: 101 prefix requests copy 8192 bytes; invalidation, in-flight fallback and completed allocation reuse PASS");
 }
 
 static void write_pool_limits(void) {
@@ -545,7 +492,6 @@ int main(int argc, char **argv) {
     snapshots();
     split_counter_pairs();
     persistent_snapshots();
-    staging_recycle_selection();
     buffer_reuse();
     write_pool_limits();
     atlas(argv[1]);

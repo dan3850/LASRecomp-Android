@@ -578,19 +578,6 @@ static int new_chunk(uint64_t size) {
 }
 
 static void ring_retire(void) {}  // chunks are recycled lazily in vk_transient
-// As in Eden's staging pool, reuse only storage whose last GPU timeline
-// sequence has finished. Prefer a different retired chunk (old behavior),
-// then allow the current full chunk if it too has finished. Crucially, a
-// chunk referenced by the current pending submission can never pass this
-// test: pending > the completed timeline value.
-static int ring_retired_chunk(uint64_t size, uint64_t done) {
-    for (int i = 0; i < nchunks; ++i)
-        if (i != active && chunks[i].seq <= done && chunks[i].size >= size) return i;
-    if (active >= 0 && chunks[active].seq <= done && chunks[active].size >= size)
-        return active;
-    return -1;
-}
-static uint64_t stat_ring_active_recycles, stat_ring_new_chunks;
 static void ring_flush(void) {
     for (int i = 0; i < nchunks; i++) {
         Chunk *c = &chunks[i];
@@ -616,12 +603,10 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
         }
     }
     uint64_t done = vk_completed_seq();
-    int pick = ring_retired_chunk(size, done);
-    if (pick == active && pick >= 0) stat_ring_active_recycles++;
-    if (pick < 0) {
-        pick = new_chunk(size > CHUNK_SIZE ? size : CHUNK_SIZE);
-        stat_ring_new_chunks++;
-    }
+    int pick = -1;
+    for (int i = 0; i < nchunks; i++)
+        if (i != active && chunks[i].seq <= done && chunks[i].size >= size) { pick = i; break; }
+    if (pick < 0) pick = new_chunk(size > CHUNK_SIZE ? size : CHUNK_SIZE);
     active = pick;
     chunks[pick].used = size;
     chunks[pick].dirty_lo = 0; chunks[pick].dirty_hi = size;
@@ -714,7 +699,6 @@ typedef struct {
 static VtxSnapshot vtx_snapshots[VTX_SNAPSHOT_SLOTS];
 static uint64_t vtx_snapshot_bytes;
 static uint64_t vtx_snapshot_reuses;
-static uint64_t vtx_partial_written_bytes, vtx_partial_saved_bytes;
 
 static void vtx_snapshots_clear(void) {
     for (int i = 0; i < VTX_SNAPSHOT_SLOTS; i++) {
@@ -765,39 +749,9 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
         // Only an equal-sized range is refreshed: never read beyond the
         // current binding. A different address/size uses the path below.
         if (e->addr == addr) {
-            // Eden-inspired dirty-region staging: on Android we cannot rely
-            // on guest write tracking, so compare the shadow byte-for-byte.
-            // Copy only changed 4 KiB blocks after the GPU has finished.
-            // No synchronization/pacing change; the old full-copy path remains
-            // available with LARECOMP_VK_VTX_PARTIAL=0 for A/B testing.
-            static int partial = -1;
-            if (partial < 0) {
-                const char *opt = getenv("LARECOMP_VK_VTX_PARTIAL");
-                partial = !opt || atoi(opt) != 0;
-            }
-            if (partial) {
-                uint64_t dirty_lo = UINT64_MAX, dirty_hi = 0, written = 0;
-                const uint8_t *bytes = src;
-                for (uint64_t off = 0; off < size; off += 4096) {
-                    size_t n = (size_t)((size - off) < 4096 ? (size - off) : 4096);
-                    if (!memcmp(e->shadow + off, bytes + off, n)) continue;
-                    memcpy(e->shadow + off, bytes + off, n);
-                    memcpy(e->mapped + off, bytes + off, n);
-                    if (off < dirty_lo) dirty_lo = off;
-                    dirty_hi = off + n;
-                    written += n;
-                }
-                // Flush a single contiguous range: fewer VMA calls and no
-                // writes to blocks whose contents are already identical.
-                if (written) VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc,
-                                                         dirty_lo, dirty_hi - dirty_lo));
-                vtx_partial_written_bytes += written;
-                vtx_partial_saved_bytes += size - written;
-            } else {
-                memcpy(e->shadow, src, (size_t)e->size);
-                memcpy(e->mapped, e->shadow, (size_t)e->size);
-                VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc, 0, e->size));
-            }
+            memcpy(e->shadow, src, (size_t)e->size);
+            memcpy(e->mapped, e->shadow, (size_t)e->size);
+            VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc, 0, e->size));
             e->seq = pending;
             return (VkSpan){e->buf, 0, NULL};
         }
@@ -993,24 +947,8 @@ const char *renderer_stats(void) {
     }
     {
         size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n,
-                 ", vtx partial wrote %.1fMB saved %.1fMB",
-                 vtx_partial_written_bytes / 1048576.0,
-                 vtx_partial_saved_bytes / 1048576.0);
-        vtx_partial_written_bytes = vtx_partial_saved_bytes = 0;
-    }
-    {
-        size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
     }
-    if (stat_ring_active_recycles || stat_ring_new_chunks) {
-        size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n,
-                 ", staging recycles %llu new %llu chunks %d",
-                 (unsigned long long)stat_ring_active_recycles,
-                 (unsigned long long)stat_ring_new_chunks, nchunks);
-    }
-    stat_ring_active_recycles = stat_ring_new_chunks = 0;
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     {
         extern void vk_alias_stats(void);
