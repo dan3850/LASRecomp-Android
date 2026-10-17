@@ -18,6 +18,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Independent GLES driver/shader smoke test; never substitutes the NVN game backend. -->
+        <activity
+            android:name="com.retroaura.lasrecomp.OpenGLTestActivity"
+            android:label="OpenGL ES 3.0 — teste"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
         <!-- Official SDL3 Android lifecycle for the REAL game runtime.
              Deliberately not exposed until the runtime and recompiler link. -->
         <activity

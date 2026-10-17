@@ -47,6 +47,8 @@ public final class GameImportActivity extends Activity {
     private static native boolean nativeSupportsModMenu(String libraryPath);
 
     private static final String GAME_TREE_PREF = "selected_game_tree";
+    // A separate test selection: GLES has no NVN game backend yet.
+    private static final String RENDERER_PREF = "experimental_renderer";
     private static final int PICK_GAME_FOLDER = 101;
     private static final int PICK_GAME_CODE = 102;
     private static final int PICK_SYSTEM_FONT = 103;
@@ -59,6 +61,7 @@ public final class GameImportActivity extends Activity {
     private Button fontButton;
     private Button verifyButton;
     private Button playButton;
+    private Button rendererButton;
     private boolean importing;
 
     private static final class Entry {
@@ -132,9 +135,35 @@ public final class GameImportActivity extends Activity {
         }
     }
 
+    private boolean openglTestSelected() {
+        return "gles-test".equals(getPreferences(MODE_PRIVATE).getString(RENDERER_PREF, "vulkan"));
+    }
+
+    private void showRendererChoice() {
+        // Never present the GLES smoke test as a Zelda renderer.
+        final String[] names = {
+            "Vulkan — jogar Zelda (padrão)",
+            "OpenGL ES 3.0 — teste da GPU (ainda NÃO roda Zelda)"
+        };
+        new AlertDialog.Builder(this).setTitle("Escolher renderizador")
+            .setSingleChoiceItems(names, openglTestSelected() ? 1 : 0, (dialog, choice) -> {
+                getPreferences(MODE_PRIVATE).edit()
+                    .putString(RENDERER_PREF, choice == 1 ? "gles-test" : "vulkan").apply();
+                dialog.dismiss();
+                showGameFilesState();
+                if (choice == 1) {
+                    new AlertDialog.Builder(this).setTitle("OpenGL experimental")
+                        .setMessage("Este modo testa o driver OpenGL ES real com shaders e medição de FPS. " +
+                            "Ainda não executa os comandos NVN do Zelda. Para jogar, selecione Vulkan.")
+                        .setPositiveButton("Entendi", null).show();
+                }
+            }).setNegativeButton("Cancelar", null).show();
+    }
+
     private void showVideoSettings() {
         final String[] sections = {"Resolução interna", "Proporção da tela", "Mostrar FPS", "Diagnóstico de desempenho (CPU/GPU)",
-            "Upscaler (FSR 1 / Bilinear)", "Antisserrilhamento (SMAA)", "Remover desfoque", "Ocultar ícone Hero Mode"};
+            "Upscaler (FSR 1 / Bilinear)", "Antisserrilhamento (SMAA)", "Remover desfoque", "Ocultar ícone Hero Mode",
+            "Renderizador: Vulkan / OpenGL ES (teste)"};
         new AlertDialog.Builder(this).setTitle("Configurações de vídeo")
             .setItems(sections, (dialog, which) -> {
                 if (which == 0) {
@@ -232,6 +261,8 @@ public final class GameImportActivity extends Activity {
                             saveVideoOption("hide_hero_icon", index == 0 ? "0" : "1");
                             choiceDialog.dismiss();
                         }).setNegativeButton("Cancelar", null).show();
+                } else if (which == 8) {
+                    showRendererChoice();
                 }
             }).setPositiveButton("Fechar", null).show();
     }
@@ -258,6 +289,10 @@ public final class GameImportActivity extends Activity {
         playButton = new Button(this);
         playButton.setText("JOGAR");
         playButton.setOnClickListener(v -> {
+            if (!importing && openglTestSelected()) {
+                startActivity(new Intent(this, OpenGLTestActivity.class));
+                return;
+            }
             if (!importing && hasGameFiles(extractedDir()) && hasGameCode()) {
                 Intent game = new Intent();
                 game.setClassName(this, "com.retroaura.lasrecomp.GameSDLActivity");
@@ -267,6 +302,10 @@ public final class GameImportActivity extends Activity {
             }
         });
         layout.addView(playButton);
+
+        rendererButton = new Button(this);
+        rendererButton.setOnClickListener(v -> showRendererChoice());
+        layout.addView(rendererButton);
 
         importButton = new Button(this);
         importButton.setText("IMPORTAR ARQUIVOS DO JOGO");
@@ -680,8 +719,13 @@ public final class GameImportActivity extends Activity {
         boolean files = hasGameFiles(extractedDir());
         boolean code = hasGameCode();
         playButton.setVisibility(View.VISIBLE);
-        playButton.setEnabled(files && code && !importing);
-        playButton.setText(files && code ? "JOGAR" : "JOGAR — AGUARDANDO ARQUIVOS E BIBLIOTECA");
+        boolean gles = openglTestSelected();
+        // GLES diagnostic can run without copyrighted game data or a private game library.
+        playButton.setEnabled(!importing && (gles || (files && code)));
+        playButton.setText(gles ? "TESTAR OPENGL ES 3.0 (NÃO É O JOGO)" :
+            files && code ? "JOGAR — VULKAN" : "JOGAR — AGUARDANDO ARQUIVOS E BIBLIOTECA");
+        rendererButton.setText(gles ? "RENDERIZADOR: OPENGL ES (SOMENTE TESTE)" :
+            "RENDERIZADOR: VULKAN (JOGO)");
         verifyButton.setVisibility(privateGameCodeFile().isFile() ? View.VISIBLE : View.GONE);
         verifyButton.setEnabled(!importing);
         fontButton.setEnabled(!importing);
