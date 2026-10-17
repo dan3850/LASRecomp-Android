@@ -193,24 +193,8 @@ static void run(const char *dir, unsigned test) {
     gmem_host_barrier(cb);
     // Exercise the actual dependency path: submit, timeline wait, invalidate,
     // copyback, then allow the CPU snapshot. No manual completion shortcut.
-    uint64_t submitted = 0;
-    if (test % 3) {
-        renderer_submit();
-        submitted = submit_seq;
-        if (test % 3 == 2) {
-            // Finish on the device without resolving the CPU copyback yet.
-            VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-                .semaphoreCount = 1, .pSemaphores = &g_vk.timeline, .pValues = &submitted};
-            VK_CHECK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
-        }
-        vk_cmd(); // later unrelated work must remain unsubmitted
-    }
     gmem_read_range(HEAP_BASE + 0x20000,32);
     assert(!gmem_writes);
-    if (submitted) {
-        assert(submit_seq == submitted && subs[cur_sub].main_begun);
-        renderer_flush();
-    }
     uint32_t expected[4] = {0};
     if (test < 7) {
         unsigned off = source_addr(test) - HEAP_BASE - 0x10300;
@@ -355,26 +339,6 @@ static void persistent_snapshots(void) {
     VkDescriptorBufferInfo updated = portable_gmem_map(0, false, tab);
     assert(updated.buffer == first.buffer || updated.buffer == changed.buffer);
     assert(gmem_snap_bytes == 2ull << 20);
-    vk_cmd(); renderer_flush();
-    uint64_t partial_before = stat_upload_bytes, saved_before = stat_gmem_reused_bytes;
-    for (unsigned frame = 0; frame < 60; frame++) {
-        guest[0x81234] = (uint8_t)(frame + 70);
-        VkDescriptorBufferInfo partial = portable_gmem_map(0, false, tab);
-        // All buffers are idle, so no replacement allocation is necessary.
-        assert(partial.buffer == first.buffer || partial.buffer == changed.buffer);
-        for (unsigned i = 0; i < GMEM_SNAP_SLOTS; i++) {
-            struct GmemSnapshot *snap = &gmem_snap[i];
-            if (snap->buf == partial.buffer) {
-                assert(!memcmp(snap->shadow, guest + 0x80000, 1 << 20));
-                // Test-only read: check bytes actually written to the mapping.
-                assert(!memcmp(snap->mapped, guest + 0x80000, 1 << 20));
-            }
-        }
-        vk_cmd(); renderer_flush();
-    }
-    assert(stat_upload_bytes - partial_before == 60ull * 4096);
-    assert(stat_gmem_reused_bytes - saved_before == 60ull * ((1 << 20) - 4096));
-    puts("GMEM partial updates: 60 changing 1 MiB snapshots copy 240 KiB; all output bytes preserved PASS");
     vk_cmd(); renderer_flush();
     gmem_snap_clear(); gmem_write_pool_clear();
     assert(!gmem_snap_bytes);

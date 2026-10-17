@@ -21,7 +21,6 @@
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
-static uint64_t stat_gmem_size_bypass, stat_gmem_capacity_bypass;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -948,12 +947,9 @@ const char *renderer_stats(void) {
     }
     {
         size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB bypass-size %.1fMB bypass-capacity %.1fMB",
-                 stat_gmem_reused_bytes / 1048576.0, stat_gmem_size_bypass / 1048576.0,
-                 stat_gmem_capacity_bypass / 1048576.0);
+        snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
-    stat_gmem_size_bypass = stat_gmem_capacity_bypass = 0;
     {
         extern void vk_alias_stats(void);
         vk_alias_stats();
@@ -2387,41 +2383,25 @@ static void gmem_resolve_done(uint64_t done) {
     pthread_mutex_unlock(&gmem_lock);
 }
 
-static uint64_t gmem_dependency_seq(uint64_t addr, uint64_t size) {
-    if (!addr || !size || !atomic_load(&gmem_pending)) return 0;
-    uint64_t seq = 0;
+static bool gmem_overlaps(uint64_t addr, uint64_t size) {
+    if (!addr || !size || !atomic_load(&gmem_pending)) return false;
+    bool overlap = false;
     pthread_mutex_lock(&gmem_lock);
-    for (GmemWrite *w = gmem_writes; w; w = w->next)
+    for (GmemWrite *w = gmem_writes; w && !overlap; w = w->next)
         for (unsigned i = 0; i < w->plan.tab[GMAP_MAX * 4]; ++i) {
             uint64_t start = HEAP_BASE + w->plan.tab[i * 4], len = w->plan.tab[i * 4 + 1];
-            if (addr >= start ? addr - start < len : start - addr < size) {
-                if (w->seq > seq) seq = w->seq;
-                break;
-            }
+            if (addr >= start ? addr - start < len : start - addr < size) { overlap = true; break; }
         }
     pthread_mutex_unlock(&gmem_lock);
-    return seq;
-}
-
-static bool gmem_overlaps(uint64_t addr, uint64_t size) {
-    return gmem_dependency_seq(addr, size) != 0;
+    return overlap;
 }
 
 // Preflight only, before beginning a render pass or capturing its command buffer.
 // renderer_flush may switch submission slots, so never call this during a draw.
 static void gmem_read_range(uint64_t addr, uint64_t size) {
-    uint64_t seq = gmem_dependency_seq(addr, size);
-    if (!seq) return;
-    // A completed compute needs only invalidate/copyback. If it is already
-    // submitted, wait for that dependency without submitting later unrelated
-    // commands. Only a still-recording producer requires a new submission.
-    uint64_t done = vk_completed_seq();
-    if (seq <= done) gmem_resolve_done(done);
-    else {
-        wait_why = "compute -> CPU snapshot";
-        if (seq <= submit_seq) vk_wait_seq(seq);
-        else renderer_flush();
-    }
+    if (!gmem_overlaps(addr, size)) return;
+    wait_why = "compute -> CPU snapshot";
+    renderer_flush();
     if (gmem_overlaps(addr, size)) FATAL("portable GMEM dependency did not complete after the GPU wait\n");
 }
 
@@ -2475,11 +2455,7 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
         const char *e = getenv("LARECOMP_VK_GMEM_SNAPSHOTS");
         gmem_snap_enabled = !e || atoi(e) != 0;
     }
-    if (!gmem_snap_enabled) return (VkSpan){0};
-    if (plan->size < 4096 || plan->size > (2ull << 20)) {
-        stat_gmem_size_bypass += plan->size;
-        return (VkSpan){0};
-    }
+    if (!gmem_snap_enabled || plan->size < 4096 || plan->size > (2ull << 20)) return (VkSpan){0};
     unsigned base = (hash_words(0, plan, sizeof *plan) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS)) * GMEM_SNAP_WAYS;
     uint64_t pending = vk_pending_seq();
     struct GmemSnapshot *match = NULL;
@@ -2503,12 +2479,8 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
         for (unsigned i = base; i < base + GMEM_SNAP_WAYS; ++i)
             if (gmem_snap[i].seq <= done && (!pick || gmem_snap[i].seq < pick->seq)) pick = &gmem_snap[i];
     }
-    if (!pick || gmem_snap_bytes - pick->plan.size + plan->size > GMEM_SNAP_BUDGET) {
-        stat_gmem_capacity_bypass += plan->size;
-        return (VkSpan){0};
-    }
-    bool reuse = pick->buf && pick->plan.size == plan->size;
-    if (!reuse) {
+    if (!pick || gmem_snap_bytes - pick->plan.size + plan->size > GMEM_SNAP_BUDGET) return (VkSpan){0};
+    if (!pick->buf || pick->plan.size != plan->size) {
         if (pick->buf) vmaDestroyBuffer(g_vk.vma, pick->buf, pick->mem);
         free(pick->shadow);
         gmem_snap_bytes -= pick->plan.size;
@@ -2527,32 +2499,13 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
         pick->mapped = info.pMappedData;
         gmem_snap_bytes += plan->size;
     }
-    // A few changing constants must not recopy all static geometry packed
-    // beside them. The selected buffer is completed, and its shadow describes
-    // every byte currently in it (even when reusing a different same-size plan).
-    // Compare every source byte; update only changed 4 KiB blocks. Never read
-    // the write-combined mapped allocation back on the CPU.
-    uint64_t written = 0, dirty_lo = UINT64_MAX, dirty_hi = 0;
     for (unsigned r = 0; r < plan->tab[GMAP_MAX * 4]; ++r) {
         uint64_t off = (uint64_t)plan->tab[r * 4 + 2] * 4;
-        uint64_t len = plan->tab[r * 4 + 1];
-        const uint8_t *src = (const void *)(uintptr_t)(HEAP_BASE + plan->tab[r * 4]);
-        for (uint64_t pos = 0; pos < len;) {
-            uint64_t bytes = len - pos < 4096 ? len - pos : 4096;
-            uint64_t dst = off + pos;
-            if (!reuse || memcmp(pick->shadow + dst, src + pos, bytes)) {
-                memcpy(pick->shadow + dst, src + pos, bytes);
-                memcpy((uint8_t *)pick->mapped + dst, pick->shadow + dst, bytes);
-                if (dst < dirty_lo) dirty_lo = dst;
-                if (dst + bytes > dirty_hi) dirty_hi = dst + bytes;
-                written += bytes;
-            }
-            pos += bytes;
-        }
+        memcpy(pick->shadow + off, (const void *)(uintptr_t)(HEAP_BASE + plan->tab[r * 4]), plan->tab[r * 4 + 1]);
     }
-    if (written) VK_CHECK(vmaFlushAllocation(g_vk.vma, pick->mem, dirty_lo, dirty_hi - dirty_lo));
-    stat_upload_bytes += written;
-    stat_gmem_reused_bytes += plan->size - written;
+    memcpy(pick->mapped, pick->shadow, plan->size);
+    VK_CHECK(vmaFlushAllocation(g_vk.vma, pick->mem, 0, plan->size));
+    stat_upload_bytes += plan->size; // include persistent uploads in the existing total
     pick->plan = *plan;
     pick->seq = pending;
     return (VkSpan){pick->buf, 0, NULL};
