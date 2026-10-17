@@ -193,24 +193,8 @@ static void run(const char *dir, unsigned test) {
     gmem_host_barrier(cb);
     // Exercise the actual dependency path: submit, timeline wait, invalidate,
     // copyback, then allow the CPU snapshot. No manual completion shortcut.
-    uint64_t submitted = 0;
-    if (test % 3) {
-        renderer_submit();
-        submitted = submit_seq;
-        if (test % 3 == 2) {
-            // Finish on the device without resolving the CPU copyback yet.
-            VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-                .semaphoreCount = 1, .pSemaphores = &g_vk.timeline, .pValues = &submitted};
-            VK_CHECK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
-        }
-        vk_cmd(); // later unrelated work must remain unsubmitted
-    }
     gmem_read_range(HEAP_BASE + 0x20000,32);
     assert(!gmem_writes);
-    if (submitted) {
-        assert(submit_seq == submitted && subs[cur_sub].main_begun);
-        renderer_flush();
-    }
     uint32_t expected[4] = {0};
     if (test < 7) {
         unsigned off = source_addr(test) - HEAP_BASE - 0x10300;
@@ -356,195 +340,10 @@ static void persistent_snapshots(void) {
     assert(updated.buffer == first.buffer || updated.buffer == changed.buffer);
     assert(gmem_snap_bytes == 2ull << 20);
     vk_cmd(); renderer_flush();
-    uint64_t partial_before = stat_upload_bytes, saved_before = stat_gmem_reused_bytes;
-    for (unsigned frame = 0; frame < 60; frame++) {
-        guest[0x81234] = (uint8_t)(frame + 70);
-        VkDescriptorBufferInfo partial = portable_gmem_map(0, false, tab);
-        // All buffers are idle, so no replacement allocation is necessary.
-        assert(partial.buffer == first.buffer || partial.buffer == changed.buffer);
-        for (unsigned i = 0; i < GMEM_SNAP_SLOTS; i++) {
-            struct GmemSnapshot *snap = &gmem_snap[i];
-            if (snap->buf == partial.buffer) {
-                assert(!memcmp(snap->shadow, guest + 0x80000, 1 << 20));
-                // Test-only read: check bytes actually written to the mapping.
-                assert(!memcmp(snap->mapped, guest + 0x80000, 1 << 20));
-            }
-        }
-        vk_cmd(); renderer_flush();
-    }
-    assert(stat_upload_bytes - partial_before == 60ull * 4096);
-    assert(stat_gmem_reused_bytes - saved_before == 60ull * ((1 << 20) - 4096));
-    puts("GMEM partial updates: 60 changing 1 MiB snapshots copy 240 KiB; all output bytes preserved PASS");
-    vk_cmd(); renderer_flush();
     gmem_snap_clear(); gmem_write_pool_clear();
     assert(!gmem_snap_bytes);
     memset(st.sbuf, 0, sizeof st.sbuf);
     puts("GMEM persistent snapshots: 61 submissions upload 1 MiB instead of 61 MiB; mutation/in-flight isolation/write isolation PASS");
-}
-
-// Exercise eviction against real mapped Vulkan allocations: the cache must
-// borrow capacity from completed entries in other sets, never pending ones.
-// Hash collisions must no longer force a transient upload when other
-// snapshot slots are free. Keep six colliding 1 MiB buffers in one in-flight
-// submission, then prove each immutable buffer can be found and reused.
-static void snapshot_collision_spill(void) {
-    assert(!gmem_snap_bytes);
-    gmem_snap_enabled = 1;
-    unsigned counts[GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS] = {0};
-    const uint64_t heap = kernel_heap_size();
-    const uint64_t limit = g_vk.props.limits.maxStorageBufferRange;
-    for (unsigned off = 0; off <= (1 << 20); off += 4096) {
-        GmemRange ranges[GMAP_MAX] = {{HEAP_BASE + off, 1 << 20}};
-        GmemPlan p;
-        assert(gmem_plan(&p, ranges, GMAP_MAX, HEAP_BASE, heap, limit));
-        counts[hash_words(0, &p, sizeof p) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS)]++;
-    }
-    unsigned group = 0;
-    for (unsigned i = 0; i < GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS; ++i)
-        if (counts[i] >= 6) { group = i; break; }
-    assert(counts[group] >= 6);  // 257 candidates in only 32 groups
-    VkBuffer retained[6] = {0};
-    GmemPlan plans[6] = {0};
-    unsigned found = 0;
-    uint64_t uploaded = stat_upload_bytes;
-    uint64_t bypassed = stat_gmem_busy_bypass;
-    for (unsigned off = 0; off <= (1 << 20) && found < 6; off += 4096) {
-        GmemRange ranges[GMAP_MAX] = {{HEAP_BASE + off, 1 << 20}};
-        GmemPlan p;
-        assert(gmem_plan(&p, ranges, GMAP_MAX, HEAP_BASE, heap, limit));
-        if (hash_words(0, &p, sizeof p) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS) != group) continue;
-        VkSpan snap = gmem_read_snapshot(&p);
-        assert(snap.buf);
-        for (unsigned i = 0; i < found; ++i) assert(snap.buf != retained[i]);
-        retained[found] = snap.buf;
-        plans[found++] = p;
-    }
-    assert(found == 6 && gmem_snap_bytes == 6ull << 20);
-    assert(stat_upload_bytes - uploaded == 6ull << 20);
-    assert(stat_gmem_busy_bypass == bypassed);
-    for (unsigned i = 0; i < found; ++i)
-        assert(gmem_read_snapshot(&plans[i]).buf == retained[i]);
-    vk_cmd(); renderer_flush();
-    gmem_snap_clear();
-    assert(!gmem_snap_bytes);
-    puts("GMEM cache collisions: six pending snapshots share one old hash set without bypass or extra VRAM PASS");
-}
-
-static void snapshot_capacity_eviction(void) {
-    assert(!gmem_snap_bytes);
-    gmem_snap_enabled = 1;
-    uint8_t *guest = (uint8_t *)(uintptr_t)HEAP_BASE;
-    memset(guest, 0x6b, kernel_heap_size());
-    GmemPlan saved[GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS] = {0};
-    bool occupied[GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS] = {0};
-    unsigned n = 0;
-    // One completed 1 MiB snapshot per set, exactly filling the 32 MiB
-    // budget. Vary addresses (not contents), finding distinct hash sets.
-    for (unsigned off = 0; off <= (1 << 20) && n < GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS; off += 4096) {
-        GmemRange range[GMAP_MAX] = {{HEAP_BASE + off, 1 << 20}};
-        GmemPlan p;
-        assert(gmem_plan(&p, range, GMAP_MAX, HEAP_BASE, kernel_heap_size(),
-                         g_vk.props.limits.maxStorageBufferRange));
-        assert(p.size == 1 << 20);
-        unsigned set = hash_words(0, &p, sizeof p) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS);
-        if (occupied[set]) continue;
-        VkSpan s = gmem_read_snapshot(&p);
-        assert(s.buf);
-        occupied[set] = true;
-        saved[set] = p;
-        n++;
-        vk_cmd(); renderer_flush();
-    }
-    assert(n == GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS);
-    vk_wait_seq(submit_seq);
-    assert(gmem_snap_bytes == GMEM_SNAP_BUDGET);
-
-    GmemRange range[GMAP_MAX] = {{HEAP_BASE, 2 << 20}};
-    GmemPlan bigger;
-    assert(gmem_plan(&bigger, range, GMAP_MAX, HEAP_BASE, kernel_heap_size(),
-                     g_vk.props.limits.maxStorageBufferRange));
-    assert(bigger.size == 2 << 20);
-    unsigned target = hash_words(0, &bigger, sizeof bigger) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS);
-
-    // Mark all other sets as referenced by the still-recording submission.
-    // Only the victim inside the target set is completed. It frees 1 MiB
-    // but the 2 MiB request needs another 1 MiB from another set.
-    for (unsigned set = 0; set < GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS; ++set) {
-        if (set == target) continue;
-        VkSpan s = gmem_read_snapshot(&saved[set]);
-        assert(s.buf);
-    }
-    uint64_t blocked_before = stat_gmem_budget_bypass;
-    uint64_t evicted_before = stat_gmem_evictions;
-    assert(!gmem_read_snapshot(&bigger).buf);
-    assert(stat_gmem_budget_bypass == blocked_before + bigger.size);
-    assert(stat_gmem_evictions == evicted_before);
-    assert(gmem_snap_bytes == GMEM_SNAP_BUDGET);
-
-    // Complete the protected submission. The same request must now succeed
-    // by evicting one other completed entry, without increasing the budget.
-    vk_cmd(); renderer_flush();
-    vk_wait_seq(submit_seq);
-    VkSpan s = gmem_read_snapshot(&bigger);
-    assert(s.buf);
-    assert(gmem_snap_bytes == GMEM_SNAP_BUDGET);
-    assert(stat_gmem_evictions == evicted_before + 1);
-    struct GmemSnapshot *chosen = NULL;
-    for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i)
-        if (gmem_snap[i].buf == s.buf) chosen = &gmem_snap[i];
-    assert(chosen && chosen->plan.size == bigger.size);
-    assert(!memcmp(chosen->shadow, guest, (size_t)bigger.size));
-    assert(!memcmp(chosen->mapped, guest, (size_t)bigger.size));
-    vk_cmd(); renderer_flush();
-    vk_wait_seq(submit_seq);
-    gmem_snap_clear();
-    assert(!gmem_snap_bytes);
-    puts("GMEM cache capacity: pending buffers protected, completed cross-set LRU reclaimed within 32 MiB PASS");
-}
-
-// Persistent uniform staging: immutable repeated bindings, busy GPU fallback,
-// and safe in-place refresh after timeline completion.
-static void uniform_staging(void) {
-    cbuf_snapshots_clear(); // isolate this case from earlier shader tests
-    uint8_t *src = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x90000);
-    memset(src, 0x33, 8192);
-    uint64_t before = stat_upload_bytes, saved = cbuf_saved_bytes;
-    VkSpan first = guest_uniform_copy((uintptr_t)src, 8192);
-    assert(first.buf && !first.ptr);
-    assert(stat_upload_bytes - before == 8192);
-    for (unsigned i = 0; i < 60; ++i) {
-        VkSpan reused = guest_uniform_copy((uintptr_t)src, 4096);
-        assert(reused.buf == first.buf);
-    }
-    assert(cbuf_saved_bytes - saved == 60ull * 4096);
-    src[0] = 0x55;
-    guest_copy_flush();
-    VkSpan still_busy = guest_uniform_copy((uintptr_t)src, 8192);
-    assert(still_busy.buf && still_busy.buf != first.buf);
-    assert(still_busy.ptr && ((uint8_t *)still_busy.ptr)[0] == 0x55);
-    for (unsigned i = 0; i < CBUF_SNAP_SLOTS; ++i) {
-        CbufSnapshot *e = &cbuf_snap[i];
-        if (e->buf == first.buf) {
-            assert(e->shadow[0] == 0x33 && e->mapped[0] == 0x33);
-        }
-    }
-    vk_cmd(); renderer_flush();
-    uint64_t written = cbuf_written_bytes;
-    VkSpan updated = guest_uniform_copy((uintptr_t)src, 8192);
-    assert(updated.buf == first.buf);
-    assert(cbuf_written_bytes - written == 256);
-    unsigned found = 0;
-    for (unsigned i = 0; i < CBUF_SNAP_SLOTS; ++i) {
-        CbufSnapshot *e = &cbuf_snap[i];
-        if (e->buf != first.buf) continue;
-        assert(e->shadow[0] == 0x55 && e->mapped[0] == 0x55);
-        found++;
-    }
-    assert(found == 1);
-    vk_cmd(); renderer_flush();
-    cbuf_snapshots_clear();
-    assert(!cbuf_snap_bytes);
-    puts("Uniform staging: 60 repeated bindings reused, pending GPU data immutable, completed copy refreshed 256 bytes PASS");
 }
 
 static void buffer_reuse(void) {
@@ -688,17 +487,12 @@ int main(int argc, char **argv) {
         fclose(f);
         return 0;
     }
-    // This portable test opts in; production desktop keeps the original default.
-    setenv("LARECOMP_VK_CBUF_CACHE", "1", 1);
     init();
     for (unsigned i = 0; i < 13; ++i) run(argv[1],i);
     snapshots();
     split_counter_pairs();
     persistent_snapshots();
-    snapshot_collision_spill();
-    snapshot_capacity_eviction();
     buffer_reuse();
-    uniform_staging();
     write_pool_limits();
     atlas(argv[1]);
     vkDeviceWaitIdle(g_vk.dev);

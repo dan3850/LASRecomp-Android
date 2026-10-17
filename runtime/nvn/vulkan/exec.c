@@ -21,9 +21,6 @@
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
-static uint64_t stat_gmem_size_bypass, stat_gmem_capacity_bypass;
-static uint64_t stat_gmem_busy_bypass, stat_gmem_budget_bypass, stat_gmem_evicted_bytes, stat_gmem_evictions;
-static uint64_t gmem_snap_bytes; // tracked across submissions; defined with GMEM snapshots below
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -36,7 +33,6 @@ uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)
 #define PROF_T0() uint64_t prof_t0_ = prof ? SDL_GetTicksNS() : 0
 #define PROF_ADD(v) do { if (prof) v += SDL_GetTicksNS() - prof_t0_; } while (0)
 static _Atomic int stat_compiles;
-static uint64_t stat_first_use_wait_ns, stat_first_use_waits, stat_first_use_timeouts, stat_first_use_failed;
 static uint64_t op_counts[CMD_COUNT];
 bool g_debug_frame;
 static char stats_text[2048];
@@ -681,124 +677,6 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     return s;
 }
 
-// Eden-inspired persistent staging for read-only guest uniform buffers.
-// This is separate from the per-submission guest_copy cache: every reuse
-// byte-compares CPU memory, because Android cannot reliably track guest
-// writes at page granularity. A GPU-in-flight allocation is NEVER modified.
-// LARECOMP_VK_CBUF_CACHE=0 disables on Android for an exact A/B comparison.
-#define CBUF_SNAP_SLOTS 256
-#define CBUF_SNAP_MIN 512ull
-#define CBUF_SNAP_MAX (64ull << 10)
-#define CBUF_SNAP_BUDGET (8ull << 20)
-typedef struct {
-    uint64_t addr, size, seq;
-    VkBuffer buf;
-    VmaAllocation alloc;
-    uint8_t *mapped, *shadow;
-} CbufSnapshot;
-static CbufSnapshot cbuf_snap[CBUF_SNAP_SLOTS];
-static uint64_t cbuf_snap_bytes, cbuf_saved_bytes, cbuf_written_bytes, cbuf_busy_bytes;
-
-static void cbuf_snapshots_clear(void) {
-    for (unsigned i = 0; i < CBUF_SNAP_SLOTS; ++i) {
-        CbufSnapshot *e = &cbuf_snap[i];
-        if (e->buf) vmaDestroyBuffer(g_vk.vma, e->buf, e->alloc);
-        free(e->shadow);
-    }
-    memset(cbuf_snap, 0, sizeof cbuf_snap);
-    cbuf_snap_bytes = cbuf_saved_bytes = cbuf_written_bytes = cbuf_busy_bytes = 0;
-}
-
-static VkSpan guest_uniform_copy(uint64_t addr, uint64_t size) {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *opt = getenv("LARECOMP_VK_CBUF_CACHE");
-#ifdef __ANDROID__
-        enabled = !opt || atoi(opt) != 0;
-#else
-        enabled = opt && atoi(opt) != 0;
-#endif
-        LOG("[vk] byte-verified persistent uniform staging %s (8 MiB cap)\n",
-            enabled ? "enabled" : "disabled");
-    }
-    if (!enabled || !addr || size < CBUF_SNAP_MIN || size > CBUF_SNAP_MAX)
-        return guest_copy(addr, size);
-    // Do not change the existing single-submission memoization semantics.
-    // An explicit guest_copy_flush invalidates that memo immediately; this
-    // cache remains correct because it always checks the source bytes.
-    uint64_t h = (addr >> 4) * 0x9e3779b97f4a7c15ull;
-    unsigned slot = (unsigned)(h ^ (h >> 32)) & (CBUF_SNAP_SLOTS - 1);
-    CbufSnapshot *e = &cbuf_snap[slot];
-    const uint8_t *src = (const uint8_t *)(uintptr_t)addr;
-    uint64_t pending = vk_pending_seq();
-    if (e->buf && e->addr == addr && e->size >= size &&
-        !memcmp(e->shadow, src, (size_t)size)) {
-        e->seq = pending;
-        cbuf_saved_bytes += size;
-        return (VkSpan){e->buf, 0, NULL};
-    }
-    if (e->buf && e->seq > vk_completed_seq()) {
-        // The previous draw may still read this allocation. Use the
-        // transient ring, just like Eden's busy-staging fallback.
-        cbuf_busy_bytes += size;
-        return guest_copy(addr, size);
-    }
-    if (e->buf && e->addr == addr && e->size == size) {
-        // The GPU is done: update only different 256-byte regions.
-        // Never read a write-combined Vulkan mapping; compare the shadow.
-        uint64_t dirty_lo = UINT64_MAX, dirty_hi = 0, written = 0;
-        for (uint64_t off = 0; off < size; off += 256) {
-            uint64_t n = size - off < 256 ? size - off : 256;
-            if (!memcmp(e->shadow + off, src + off, (size_t)n)) continue;
-            memcpy(e->shadow + off, src + off, (size_t)n);
-            memcpy(e->mapped + off, src + off, (size_t)n);
-            if (off < dirty_lo) dirty_lo = off;
-            dirty_hi = off + n;
-            written += n;
-        }
-        if (written) {
-            VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc, dirty_lo, dirty_hi - dirty_lo));
-            cbuf_written_bytes += written;
-            stat_upload_bytes += written;
-        }
-        e->seq = pending;
-        return (VkSpan){e->buf, 0, NULL};
-    }
-    if (e->buf) {
-        vmaDestroyBuffer(g_vk.vma, e->buf, e->alloc);
-        free(e->shadow);
-        cbuf_snap_bytes -= e->size;
-        memset(e, 0, sizeof *e);
-    }
-    if (cbuf_snap_bytes + size > CBUF_SNAP_BUDGET) return guest_copy(addr, size);
-    uint8_t *shadow = malloc((size_t)size);
-    if (!shadow) return guest_copy(addr, size);
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = size, .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
-        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                 VMA_ALLOCATION_CREATE_MAPPED_BIT};
-    VkBuffer buf = VK_NULL_HANDLE;
-    VmaAllocation alloc = NULL;
-    VmaAllocationInfo info = {0};
-    if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &buf, &alloc, &info) != VK_SUCCESS ||
-        !info.pMappedData) {
-        if (buf) vmaDestroyBuffer(g_vk.vma, buf, alloc);
-        free(shadow);
-        return guest_copy(addr, size);
-    }
-    memcpy(shadow, src, (size_t)size);
-    memcpy(info.pMappedData, shadow, (size_t)size);
-    VK_CHECK(vmaFlushAllocation(g_vk.vma, alloc, 0, size));
-    *e = (CbufSnapshot){.addr = addr, .size = size, .seq = pending,
-                        .buf = buf, .alloc = alloc,
-                        .mapped = info.pMappedData, .shadow = shadow};
-    cbuf_snap_bytes += size;
-    cbuf_written_bytes += size;
-    stat_upload_bytes += size;
-    return (VkSpan){buf, 0, NULL};
-}
-
 // On Android the Adreno driver does not expose VK_EXT_external_memory_host, and
 // the guest heap's OS page write tracking is unavailable. The regular vertex
 // cache is therefore disabled and the same geometry gets copied to the
@@ -910,8 +788,7 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
 }
 
 // ================================================================== worker threads (shader / pipeline builds)
-// First-use compiles run on workers. Android waits for missing first-use builds
-// instead of displaying a partly rendered scene; other platforms may opt in.
+// First-use compiles run off the render thread; draws needing them are skipped until ready (as on Metal).
 // LARECOMP_SYNC_SHADERS=1 builds on first use, blocking (deterministic tests).
 typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
 static Job *jobs_head, *jobs_tail;
@@ -993,50 +870,6 @@ static void run_job(void (*fn)(void *), void *arg) {
     pthread_mutex_unlock(&jobs_lock);
 }
 
-// First-use rendering: do not silently drop draws/dispatches while their shaders
-// or pipelines are merely being compiled. A missed pre-pass can leave whole
-// portions of the scene black while the game simulation keeps advancing.
-// Jobs execute on independent workers, so waiting here does not block them.
-// A finite timeout preserves the old skip behavior if a worker becomes stuck.
-// LARECOMP_VK_WAIT_FIRST_USE=0 restores the old async/skip policy on Android.
-// LARECOMP_VK_WAIT_FIRST_USE=1 enables this policy on other platforms.
-static bool first_use_build_ready(_Atomic int *state, const char *kind) {
-    int s = atomic_load_explicit(state, memory_order_acquire);
-    if (s == 1) return true;
-    if (s == 2) { stat_first_use_failed++; return false; }
-    static int wait_enabled = -1;
-    if (wait_enabled < 0) {
-        const char *env = getenv("LARECOMP_VK_WAIT_FIRST_USE");
-#ifdef __ANDROID__
-        wait_enabled = !env || atoi(env) != 0;
-#else
-        wait_enabled = env && atoi(env) != 0;
-#endif
-        LOG("[vk] wait for first-use shader/pipeline builds: %s (max 5s per build)\n",
-            wait_enabled ? "enabled" : "disabled");
-    }
-    if (!wait_enabled) return false;
-
-    uint64_t start = SDL_GetTicksNS();
-    do {
-        SDL_Delay(1);
-        s = atomic_load_explicit(state, memory_order_acquire);
-    } while (s == 0 && SDL_GetTicksNS() - start < 5000000000ull);
-    uint64_t elapsed = SDL_GetTicksNS() - start;
-    stat_first_use_waits++;
-    stat_first_use_wait_ns += elapsed;
-    if (s == 0) {
-        stat_first_use_timeouts++;
-        static unsigned warnings;
-        if (warnings++ < 10)
-            LOG("[vk] first-use %s still compiling after %.0f ms; skipping to avoid a hang\n",
-                kind, elapsed / 1000000.0);
-    } else if (s == 2) {
-        stat_first_use_failed++;
-    }
-    return s == 1;
-}
-
 // ================================================================== state
 typedef struct {
     NvnTexture *color[8];
@@ -1114,34 +947,9 @@ const char *renderer_stats(void) {
     }
     {
         size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n,
-                 ", gmem saved %.1fMB bypass-size %.1fMB bypass-capacity %.1fMB (busy %.1fMB budget %.1fMB) evicted %.1fMB/%llu cache %.1fMB",
-                 stat_gmem_reused_bytes / 1048576.0, stat_gmem_size_bypass / 1048576.0,
-                 stat_gmem_capacity_bypass / 1048576.0, stat_gmem_busy_bypass / 1048576.0,
-                 stat_gmem_budget_bypass / 1048576.0, stat_gmem_evicted_bytes / 1048576.0,
-                 (unsigned long long)stat_gmem_evictions, gmem_snap_bytes / 1048576.0);
-    }
-    {
-        size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n,
-                 ", uniform saved %.1fMB refreshed %.1fMB busy %.1fMB cache %.1fMB",
-                 cbuf_saved_bytes / 1048576.0, cbuf_written_bytes / 1048576.0,
-                 cbuf_busy_bytes / 1048576.0, cbuf_snap_bytes / 1048576.0);
-        cbuf_saved_bytes = cbuf_written_bytes = cbuf_busy_bytes = 0;
+        snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
-    stat_gmem_size_bypass = stat_gmem_capacity_bypass = 0;
-    stat_gmem_busy_bypass = stat_gmem_budget_bypass = stat_gmem_evicted_bytes = stat_gmem_evictions = 0;
-    {
-        size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n,
-                 ", first-use wait %.0fms/%llu timeout %llu failed %llu",
-                 stat_first_use_wait_ns / 1000000.0,
-                 (unsigned long long)stat_first_use_waits,
-                 (unsigned long long)stat_first_use_timeouts,
-                 (unsigned long long)stat_first_use_failed);
-        stat_first_use_wait_ns = stat_first_use_waits = stat_first_use_timeouts = stat_first_use_failed = 0;
-    }
     {
         extern void vk_alias_stats(void);
         vk_alias_stats();
@@ -2310,7 +2118,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         NvnShaderStage *ss = &st.program->stages[stage];
         uint64_t size = ss->const_size ? ss->const_size : 16;
         if (size < si->cbuf_size[1]) size = si->cbuf_size[1];
-        return ubo_span(guest_uniform_copy(ss->code_addr + ss->const_offset, size), size);
+        return ubo_span(guest_copy(ss->code_addr + ss->const_offset, size), size);  // (constant: shared per submission)
     }
     int idx = k - 3;  // cbuf_base
     Range r = (idx >= 0 && idx < 18) ? st.ubuf[stage][idx] : (Range){0, 0};
@@ -2322,7 +2130,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
-    return ubo_span(guest_uniform_copy(r.addr, size), size);
+    return ubo_span(guest_copy(r.addr, size), size);
 }
 
 // Global memory (shader LDG/STG, maxwell_gmem_base = HEAP_BASE): the guest heap imported as a GPU buffer
@@ -2575,41 +2383,25 @@ static void gmem_resolve_done(uint64_t done) {
     pthread_mutex_unlock(&gmem_lock);
 }
 
-static uint64_t gmem_dependency_seq(uint64_t addr, uint64_t size) {
-    if (!addr || !size || !atomic_load(&gmem_pending)) return 0;
-    uint64_t seq = 0;
+static bool gmem_overlaps(uint64_t addr, uint64_t size) {
+    if (!addr || !size || !atomic_load(&gmem_pending)) return false;
+    bool overlap = false;
     pthread_mutex_lock(&gmem_lock);
-    for (GmemWrite *w = gmem_writes; w; w = w->next)
+    for (GmemWrite *w = gmem_writes; w && !overlap; w = w->next)
         for (unsigned i = 0; i < w->plan.tab[GMAP_MAX * 4]; ++i) {
             uint64_t start = HEAP_BASE + w->plan.tab[i * 4], len = w->plan.tab[i * 4 + 1];
-            if (addr >= start ? addr - start < len : start - addr < size) {
-                if (w->seq > seq) seq = w->seq;
-                break;
-            }
+            if (addr >= start ? addr - start < len : start - addr < size) { overlap = true; break; }
         }
     pthread_mutex_unlock(&gmem_lock);
-    return seq;
-}
-
-static bool gmem_overlaps(uint64_t addr, uint64_t size) {
-    return gmem_dependency_seq(addr, size) != 0;
+    return overlap;
 }
 
 // Preflight only, before beginning a render pass or capturing its command buffer.
 // renderer_flush may switch submission slots, so never call this during a draw.
 static void gmem_read_range(uint64_t addr, uint64_t size) {
-    uint64_t seq = gmem_dependency_seq(addr, size);
-    if (!seq) return;
-    // A completed compute needs only invalidate/copyback. If it is already
-    // submitted, wait for that dependency without submitting later unrelated
-    // commands. Only a still-recording producer requires a new submission.
-    uint64_t done = vk_completed_seq();
-    if (seq <= done) gmem_resolve_done(done);
-    else {
-        wait_why = "compute -> CPU snapshot";
-        if (seq <= submit_seq) vk_wait_seq(seq);
-        else renderer_flush();
-    }
+    if (!gmem_overlaps(addr, size)) return;
+    wait_why = "compute -> CPU snapshot";
+    renderer_flush();
     if (gmem_overlaps(addr, size)) FATAL("portable GMEM dependency did not complete after the GPU wait\n");
 }
 
@@ -2646,16 +2438,8 @@ static struct GmemSnapshot {
     uint8_t *shadow;
     uint64_t seq;
 } gmem_snap[GMEM_SNAP_SLOTS];
+static uint64_t gmem_snap_bytes;
 static int gmem_snap_enabled = -1;
-
-// Caller must prove that the GPU has finished all uses of this entry.
-// Never retire a mapped snapshot whose seq is still recording or in flight.
-static void gmem_snap_discard(struct GmemSnapshot *s) {
-    if (s->buf) vmaDestroyBuffer(g_vk.vma, s->buf, s->mem);
-    free(s->shadow);
-    gmem_snap_bytes -= s->plan.size;
-    memset(s, 0, sizeof *s);
-}
 
 static void gmem_snap_clear(void) { // GPU idle, like the vertex snapshots
     for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i) {
@@ -2671,21 +2455,11 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
         const char *e = getenv("LARECOMP_VK_GMEM_SNAPSHOTS");
         gmem_snap_enabled = !e || atoi(e) != 0;
     }
-    if (!gmem_snap_enabled) return (VkSpan){0};
-    if (plan->size < 4096 || plan->size > (2ull << 20)) {
-        stat_gmem_size_bypass += plan->size;
-        return (VkSpan){0};
-    }
-    // Fully associative within the existing 128 entries / 32 MiB budget.
-    // The previous four-way hash set often saturated with pending versions
-    // of a hot range while many other slots were free (Android outdoor logs:
-    // ~6 MiB resident yet >100 MiB per interval bypassed as busy).
-    // Checking all entries lets colliding plans borrow spare slots without
-    // changing the memory budget or touching an in-flight allocation.
+    if (!gmem_snap_enabled || plan->size < 4096 || plan->size > (2ull << 20)) return (VkSpan){0};
+    unsigned base = (hash_words(0, plan, sizeof *plan) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS)) * GMEM_SNAP_WAYS;
     uint64_t pending = vk_pending_seq();
-    uint64_t done = vk_completed_seq();
     struct GmemSnapshot *match = NULL;
-    for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i) {
+    for (unsigned i = base; i < base + GMEM_SNAP_WAYS; ++i) {
         struct GmemSnapshot *s = &gmem_snap[i];
         if (!s->buf || memcmp(&s->plan, plan, sizeof *plan)) continue;
         bool same = true;
@@ -2695,60 +2469,22 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
                        plan->tab[r * 4 + 1])) { same = false; break; }
         }
         if (same) { s->seq = pending; stat_gmem_reused_bytes += plan->size; return (VkSpan){s->buf, 0, NULL}; }
-        // Prefer the most recently completed version: it is usually closest
-        // to the new contents, reducing dirty blocks on an in-place update.
-        if (s->seq <= done && (!match || s->seq > match->seq)) match = s;
+        match = s;
     }
-    struct GmemSnapshot *pick = match;
-    // A new snapshot can live anywhere; never force a transient upload just
-    // because the four entries sharing a hash are still in use.
-    for (unsigned i = 0; !pick && i < GMEM_SNAP_SLOTS; ++i)
+    uint64_t done = vk_completed_seq();
+    struct GmemSnapshot *pick = match && match->seq <= done ? match : NULL;
+    for (unsigned i = base; !pick && i < base + GMEM_SNAP_WAYS; ++i)
         if (!gmem_snap[i].buf) pick = &gmem_snap[i];
     if (!pick) {
-        for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i)
-            if (gmem_snap[i].buf && gmem_snap[i].seq <= done &&
-                (!pick || gmem_snap[i].seq < pick->seq)) pick = &gmem_snap[i];
+        for (unsigned i = base; i < base + GMEM_SNAP_WAYS; ++i)
+            if (gmem_snap[i].seq <= done && (!pick || gmem_snap[i].seq < pick->seq)) pick = &gmem_snap[i];
     }
-    if (!pick) {
-        // Every slot is still in use. Never stall or overwrite GPU reads.
-        stat_gmem_capacity_bypass += plan->size;
-        stat_gmem_busy_bypass += plan->size;
-        return (VkSpan){0};
-    }
-    // Completed entries can retain the entire 32 MiB budget.
-    // Reclaim the globally oldest completed snapshots before bypassing this
-    // allocation; no budget increase and no timeline wait. Preflight ensures
-    // a failed request does not evict useful entries for no benefit.
-    uint64_t remaining = gmem_snap_bytes - pick->plan.size + plan->size;
-    if (remaining > GMEM_SNAP_BUDGET) {
-        uint64_t need = remaining - GMEM_SNAP_BUDGET, reclaimable = 0;
-        for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i)
-            if (&gmem_snap[i] != pick && gmem_snap[i].buf && gmem_snap[i].seq <= done)
-                reclaimable += gmem_snap[i].plan.size;
-        if (reclaimable < need) {
-            stat_gmem_capacity_bypass += plan->size;
-            stat_gmem_budget_bypass += plan->size;
-            return (VkSpan){0};
-        }
-        while (need) {
-            struct GmemSnapshot *oldest = NULL;
-            for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i) {
-                struct GmemSnapshot *s = &gmem_snap[i];
-                if (s == pick || !s->buf || s->seq > done) continue;
-                if (!oldest || s->seq < oldest->seq) oldest = s;
-            }
-            // Preflight above established that completed entries suffice.
-            if (!oldest) FATAL("GMEM snapshot eviction preflight mismatch\n");
-            uint64_t freed = oldest->plan.size;
-            gmem_snap_discard(oldest);
-            stat_gmem_evictions++;
-            stat_gmem_evicted_bytes += freed;
-            need = need > freed ? need - freed : 0;
-        }
-    }
-    bool reuse = pick->buf && pick->plan.size == plan->size;
-    if (!reuse) {
-        gmem_snap_discard(pick);
+    if (!pick || gmem_snap_bytes - pick->plan.size + plan->size > GMEM_SNAP_BUDGET) return (VkSpan){0};
+    if (!pick->buf || pick->plan.size != plan->size) {
+        if (pick->buf) vmaDestroyBuffer(g_vk.vma, pick->buf, pick->mem);
+        free(pick->shadow);
+        gmem_snap_bytes -= pick->plan.size;
+        memset(pick, 0, sizeof *pick);
         pick->shadow = malloc(plan->size);
         if (!pick->shadow) return (VkSpan){0};
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = plan->size,
@@ -2763,32 +2499,13 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
         pick->mapped = info.pMappedData;
         gmem_snap_bytes += plan->size;
     }
-    // A few changing constants must not recopy all static geometry packed
-    // beside them. The selected buffer is completed, and its shadow describes
-    // every byte currently in it (even when reusing a different same-size plan).
-    // Compare every source byte; update only changed 4 KiB blocks. Never read
-    // the write-combined mapped allocation back on the CPU.
-    uint64_t written = 0, dirty_lo = UINT64_MAX, dirty_hi = 0;
     for (unsigned r = 0; r < plan->tab[GMAP_MAX * 4]; ++r) {
         uint64_t off = (uint64_t)plan->tab[r * 4 + 2] * 4;
-        uint64_t len = plan->tab[r * 4 + 1];
-        const uint8_t *src = (const void *)(uintptr_t)(HEAP_BASE + plan->tab[r * 4]);
-        for (uint64_t pos = 0; pos < len;) {
-            uint64_t bytes = len - pos < 4096 ? len - pos : 4096;
-            uint64_t dst = off + pos;
-            if (!reuse || memcmp(pick->shadow + dst, src + pos, bytes)) {
-                memcpy(pick->shadow + dst, src + pos, bytes);
-                memcpy((uint8_t *)pick->mapped + dst, pick->shadow + dst, bytes);
-                if (dst < dirty_lo) dirty_lo = dst;
-                if (dst + bytes > dirty_hi) dirty_hi = dst + bytes;
-                written += bytes;
-            }
-            pos += bytes;
-        }
+        memcpy(pick->shadow + off, (const void *)(uintptr_t)(HEAP_BASE + plan->tab[r * 4]), plan->tab[r * 4 + 1]);
     }
-    if (written) VK_CHECK(vmaFlushAllocation(g_vk.vma, pick->mem, dirty_lo, dirty_hi - dirty_lo));
-    stat_upload_bytes += written;
-    stat_gmem_reused_bytes += plan->size - written;
+    memcpy(pick->mapped, pick->shadow, plan->size);
+    VK_CHECK(vmaFlushAllocation(g_vk.vma, pick->mem, 0, plan->size));
+    stat_upload_bytes += plan->size; // include persistent uploads in the existing total
     pick->plan = *plan;
     pick->seq = pending;
     return (VkSpan){pick->buf, 0, NULL};
@@ -3099,7 +2816,6 @@ void vk_exec_reset(void) {
     counter_prev_tick = 0;
     gmem_snap_clear();
     vtx_snapshots_clear();  // backend reset occurs after GPU idle
-    cbuf_snapshots_clear();   // uniform staging is also keyed by guest addresses
     gmem_resolve_done(vk_completed_seq());
     gmem_write_pool_clear();
     memset(prog_tab, 0, sizeof prog_tab);
@@ -3320,7 +3036,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
-    if (!cp || !first_use_build_ready(&cp->p.state, "compute pipeline")) { stat_skipped++; return; }
+    if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
     {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
         static uint64_t skip = ~0ull;
         if (skip == ~0ull) { const char *e = getenv("LARECOMP_SKIP_CS"); skip = e ? strtoull(e, NULL, 16) : 0; }
@@ -3418,7 +3134,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
     Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (!pr || !first_use_build_ready(&pr->state, "graphics shader")) { stat_skipped++; return; }
+    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
@@ -3432,7 +3148,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
-            if (!pr || !first_use_build_ready(&pr->state, "mirror graphics shader")) { stat_skipped++; return; }
+            if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
@@ -3551,7 +3267,7 @@ static void draw_(CmdRec *r, bool indexed) {
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
     }
-    if (!first_use_build_ready(&pp->state, "graphics pipeline")) { stat_skipped++; return; }
+    if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
