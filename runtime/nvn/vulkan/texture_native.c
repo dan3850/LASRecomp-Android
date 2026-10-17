@@ -76,7 +76,7 @@ bool vk_native_texture_upload(TexBackend *b, uint32_t mip, uint32_t layer,
     if (!vk_native_texture_enabled() || !b || !pixels || b->gpu_owned ||
         b->aspect != VK_IMAGE_ASPECT_COLOR_BIT || b->depth != 1 ||
         b->samples != 1 || !b->image || mip >= b->levels || layer >= b->layers ||
-        !w || !h || !bpp || bpp > 16) return false;
+        !w || !h || (bpp != 1 && bpp != 2 && bpp != 4 && bpp != 8 && bpp != 16)) return false;
 
     uint32_t max_w = b->width >> mip, max_h = b->height >> mip;
     if (!max_w) max_w = 1;
@@ -141,7 +141,8 @@ bool vk_native_texture_upload(TexBackend *b, uint32_t mip, uint32_t layer,
     size_t offsets[MAX_RUNS];
     size_t staged = 0;
     for (size_t i = 0; i < count; ++i) {
-        staged = (staged + 3) & ~(size_t)3;
+        size_t align = bpp > 4 ? bpp : 4;
+        staged = (staged + align - 1) & ~(align - 1);
         offsets[i] = staged;
         size_t region_size = (size_t)runs[i].count * row;
         if (region_size > SIZE_MAX - staged) { ++stat_fallback; return false; }

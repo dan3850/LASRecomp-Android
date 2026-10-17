@@ -621,10 +621,31 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                                src + ((uint64_t)z * l.hb + y) * t->stride, l.wb * fi->bpb);
                 } else tegra_deswizzle(src, blocks, l.wb, l.hb, l.d, fi->bpb, l.block_height_log2, l.block_depth_log2);
                 if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, blocks, l.w, l.h, l.wb * fi->bpb);
-                VkSpan s = vk_transient(np, 16);
-                bool ok = las_bcn_decode(b->bcn_format, blocks, ns, l.w, l.h, l.d, s.ptr, np);
+                // CPU-decoded BCn: keep the final VkImage resident and stage only
+                // rows that changed, rather than always staging the whole mip.
+                uint32_t pixel_bytes = las_bcn_pixel_bytes(b->bcn_format);
+                bool native = vk_native_texture_enabled() && b->depth == 1 && l.d == 1 &&
+                              l.w && l.h && pixel_bytes;
+                uint8_t *cpu = native ? malloc(np) : NULL;
+                VkSpan s = {0};
+                if (!cpu) { s = vk_transient(np, 16); cpu = s.ptr; }
+                bool ok = las_bcn_decode(b->bcn_format, blocks, ns, l.w, l.h, l.d, cpu, np);
                 free(blocks);
-                if (!ok) { b->uploaded = false; vk_diag_event(VD_UPLOAD_SKIPPED, "BCn decode failed texture=%llu level=%u", (unsigned long long)t->debug_id, lv); return; }
+                if (!ok) {
+                    if (!s.buf) free(cpu);
+                    b->uploaded = false;
+                    vk_diag_event(VD_UPLOAD_SKIPPED, "BCn decode failed texture=%llu level=%u", (unsigned long long)t->debug_id, lv);
+                    return;
+                }
+                if (!s.buf) {
+                    uint32_t w = l.w < level_w(b, lv) ? l.w : level_w(b, lv);
+                    uint32_t hh = l.h < level_h(b, lv) ? l.h : level_h(b, lv);
+                    bool handled = vk_native_texture_upload(b, lv, layer, w, hh, pixel_bytes,
+                                                            cpu, (size_t)l.w * pixel_bytes);
+                    if (!handled) s = vk_transient_copy(cpu, np, 16);
+                    free(cpu);
+                    if (handled) continue;
+                }
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
                     .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, b->depth > 1 ? 0 : layer, 1},
                     .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv),
@@ -640,9 +661,21 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                 if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * 16, src + (uint64_t)y * t->stride, l.wb * 16);
                 else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, 16, l.block_height_log2, l.block_depth_log2);
                 if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, blocks, l.w, l.h, l.wb * 16);
-                VkSpan s = vk_transient((uint64_t)l.w * l.h * 4, 16);
-                astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
+                uint64_t rgba_bytes = (uint64_t)l.w * l.h * 4;
+                bool native = vk_native_texture_enabled() && b->depth == 1 && l.d == 1 && l.w && l.h;
+                uint8_t *cpu = native ? malloc(rgba_bytes) : NULL;
+                VkSpan s = {0};
+                if (!cpu) { s = vk_transient(rgba_bytes, 16); cpu = s.ptr; }
+                astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, cpu);
                 free(blocks);
+                if (!s.buf) {
+                    uint32_t w = l.w < level_w(b, lv) ? l.w : level_w(b, lv);
+                    uint32_t hh = l.h < level_h(b, lv) ? l.h : level_h(b, lv);
+                    bool handled = vk_native_texture_upload(b, lv, layer, w, hh, 4, cpu, (size_t)l.w * 4);
+                    if (!handled) s = vk_transient_copy(cpu, rgba_bytes, 16);
+                    free(cpu);
+                    if (handled) continue;
+                }
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
                                         .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
@@ -654,8 +687,25 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             uint64_t sz = (uint64_t)row * l.hb * l.d;
             bool expand = mf.expand_rgb && fi->bpb == 3;
             uint32_t out_row = expand ? l.wb * 4 : row;
-            VkSpan s = vk_transient((uint64_t)out_row * l.hb * l.d, 16);
-            uint8_t *lin = expand ? malloc(sz) : s.ptr;
+            uint64_t plane_bytes = (uint64_t)out_row * l.hb * l.d;
+            // Only uncompressed, linearized 1/2/4/8/16-byte texels can be
+            // copied as independent rows. Native BC/ASTC blocks and 3D
+            // textures retain the exact original full-subresource path.
+            bool native = vk_native_texture_enabled() && fi->bw == 1 && fi->bh == 1 &&
+                          b->depth == 1 && l.d == 1 && b->aspect == VK_IMAGE_ASPECT_COLOR_BIT &&
+                          (expand || fi->bpb == 1 || fi->bpb == 2 || fi->bpb == 4 ||
+                           fi->bpb == 8 || fi->bpb == 16);
+            uint8_t *cpu = native ? malloc(plane_bytes) : NULL;
+            VkSpan s = {0};
+            if (!cpu) { s = vk_transient(plane_bytes, 16); cpu = s.ptr; }
+            uint8_t *lin = expand ? malloc(sz) : cpu;
+            if (!lin) {
+                if (!s.buf) free(cpu);
+                b->uploaded = false;
+                vk_diag_event(VD_UPLOAD_SKIPPED, "RGB expansion allocation failed id=%llu",
+                              (unsigned long long)t->debug_id);
+                return;
+            }
             const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
             if (linear) {
                 for (uint32_t y = 0; y < l.hb; y++) memcpy(lin + (uint64_t)y * row, src + (uint64_t)y * t->stride, row);
@@ -664,7 +714,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             }
             if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, lin, l.w, l.h, row);
             if (expand) {  // RGB8 -> RGBA8
-                uint8_t *o = s.ptr;
+                uint8_t *o = cpu;
                 uint64_t n = (uint64_t)l.wb * l.hb * l.d;
                 for (uint64_t i = 0; i < n; i++) { o[i * 4] = lin[i * 3]; o[i * 4 + 1] = lin[i * 3 + 1]; o[i * 4 + 2] = lin[i * 3 + 2]; o[i * 4 + 3] = 255; }
                 free(lin);
@@ -682,8 +732,17 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                                     .imageExtent = {w, b->base_type == VK_IMAGE_VIEW_TYPE_1D || b->base_type == VK_IMAGE_VIEW_TYPE_1D_ARRAY ? 1 : hh,
                                                     b->depth > 1 ? d : 1}};
             if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) continue;  // packed D/S: no CPU layout
+            if (!s.buf) {
+                bool handled = vk_native_texture_upload(b, lv, layer,
+                    rg.imageExtent.width, rg.imageExtent.height,
+                    expand ? 4 : fi->bpb, cpu, out_row);
+                if (!handled) s = vk_transient_copy(cpu, plane_bytes, 16);
+                free(cpu);
+                if (handled) continue;
+                rg.bufferOffset = s.off;
+            }
             vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
-                vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+            vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
         }
     }
 }
