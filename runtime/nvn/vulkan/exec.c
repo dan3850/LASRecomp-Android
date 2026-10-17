@@ -180,22 +180,26 @@ static LasRecovery recovery60;
 static _Atomic uint32_t recovery60_gpu_us;
 static _Atomic uint64_t recovery60_last_gpu_ns;
 static _Atomic bool recovery60_probe;
-static int recovery60_enabled=-1;
-static uint64_t recovery60_probes, recovery60_short_reports;
+static _Atomic int recovery60_enabled = -1;
+static _Atomic uint64_t recovery60_probes, recovery60_short_reports;
 static _Atomic uint64_t recovery60_last_spike_ns;
 static int vk_counter_mode(void); // declared below; also used by recovery gate
 static bool recovery60_on(void) {
-    if (recovery60_enabled<0) {
+    if (atomic_load_explicit(&recovery60_enabled,memory_order_acquire)<0) {
         const char *v=getenv("LARECOMP_VK_RECOVERY60");
 #ifdef __ANDROID__
-        recovery60_enabled=!v || atoi(v)!=0;
+        int enabled=!v || atoi(v)!=0;
 #else
-        recovery60_enabled=v && atoi(v)!=0;
+        int enabled=v && atoi(v)!=0;
 #endif
-        LOG("[recover60] guarded native-mode recovery %s (LARECOMP_VK_RECOVERY60=%s)\n",
-            recovery60_enabled?"enabled":"disabled",v?v:"unset");
+        int expected=-1;
+        if (atomic_compare_exchange_strong_explicit(&recovery60_enabled,
+                &expected, enabled, memory_order_release, memory_order_acquire))
+            LOG("[recover60] guarded native-mode recovery %s (LARECOMP_VK_RECOVERY60=%s)\n",
+                enabled?"enabled":"disabled",v?v:"unset");
     }
-    return recovery60_enabled!=0 && vk_counter_mode()==2;
+    return atomic_load_explicit(&recovery60_enabled,memory_order_relaxed)!=0 &&
+           vk_counter_mode()==2;
 }
 static bool recovery60_report_end(const uint64_t *start, const uint64_t *out) {
     return recovery60_on() && start && out == start+2 &&
@@ -281,12 +285,12 @@ static void counter_pace_diag_flush(void) {
             (unsigned long long)counter_pace_diag.provisional_false_slow,
             (unsigned long long)counter_pace_diag.eager_polls,
             (unsigned long long)counter_pace_diag.eager_queries);
-        if (recovery60_enabled>0)
+        if (atomic_load_explicit(&recovery60_enabled,memory_order_relaxed)>0)
             LOG("[recover60] state=%u gpu-avg=%.2fms attempts=%llu provisional-pulses=%llu\n",
                 atomic_load_explicit(&recovery60_probe,memory_order_relaxed) ? 1u : 0u,
                 atomic_load_explicit(&recovery60_gpu_us,memory_order_relaxed)/1000.0,
-                (unsigned long long)recovery60_probes,
-                (unsigned long long)recovery60_short_reports);
+                (unsigned long long)atomic_load_explicit(&recovery60_probes,memory_order_relaxed),
+                (unsigned long long)atomic_load_explicit(&recovery60_short_reports,memory_order_relaxed);
     }
     memset(&counter_pace_diag, 0, sizeof counter_pace_diag);
     counter_pace_diag.since_ns = now;
@@ -365,10 +369,12 @@ void vk_pace_frame(void) {
         int transition=las_recovery_frame(&recovery60,p,gpu_us);
         if (transition) {
             atomic_store_explicit(&recovery60_probe,transition>0,memory_order_relaxed);
-            if (transition>0) recovery60_probes++;
+            if (transition>0)
+                atomic_fetch_add_explicit(&recovery60_probes,1,memory_order_relaxed);
             LOG("[recover60] %s real-period %.2f ms GPU-avg %.2f ms attempts %llu\n",
                 transition>0?"probe begin":"probe ended; restoring real counters",
-                p/1e6,gpu_us/1000.0,(unsigned long long)recovery60_probes);
+                p/1e6,gpu_us/1000.0,
+                (unsigned long long)atomic_load_explicit(&recovery60_probes,memory_order_relaxed));
         }
     }
     double busy = (p > wt ? p - wt : 0) / 1e6;
@@ -3437,6 +3443,8 @@ void vk_exec_reset(void) {
     atomic_store_explicit(&recovery60_gpu_us,0,memory_order_relaxed);
     atomic_store_explicit(&recovery60_last_gpu_ns,0,memory_order_relaxed);
     atomic_store_explicit(&recovery60_last_spike_ns,0,memory_order_relaxed);
+    atomic_store_explicit(&recovery60_probes,0,memory_order_relaxed);
+    atomic_store_explicit(&recovery60_short_reports,0,memory_order_relaxed);
     vk_resident_reset();  // called with GPU idle during backend reset
     vk_gmem_atlas_reset(); // release dedicated guest-memory atlas slabs
     memset(ds_reuse,0,sizeof ds_reuse);
@@ -5239,7 +5247,7 @@ static void exec_list(uint64_t handle, int depth) {
                                 recovery60_report_end(prev_out,out);
             if(recovery_end) {
                 out[1]=prev_out[1]+ns_to_gpu_ticks(2000000ull);
-                recovery60_short_reports++;
+                atomic_fetch_add_explicit(&recovery60_short_reports,1,memory_order_relaxed);
             }
             prev_out = out;
             {   // (test) LARECOMP_TEST_COUNTER_DELAY_MS=<ms>: stall the host after a frame's first counter - a slow CPU
