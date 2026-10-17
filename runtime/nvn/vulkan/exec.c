@@ -202,7 +202,8 @@ static bool recovery60_on(void) {
            vk_counter_mode()==2;
 }
 static bool recovery60_report_end(const uint64_t *start, const uint64_t *out) {
-    return recovery60_on() && start && out == start+2 &&
+    return recovery60_on() && start &&
+           (uintptr_t)out == (uintptr_t)start + 16 &&
            atomic_load_explicit(&recovery60_probe,memory_order_relaxed);
 }
 
@@ -430,7 +431,8 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
             // could already have been replaced by a real query result before
             // the game's native 30/60 decision. Respect measured headroom:
             // never shorten an actually slow GPU report.
-            if (q->recovery[k] && k && q->out[k] == q->out[k-1]+2 &&
+            if (q->recovery[k] && k &&
+                (uintptr_t)q->out[k] == (uintptr_t)q->out[k-1] + 16 &&
                 t[k]>=t[k-1] &&
                 (double)(t[k]-t[k-1])*per <= 12000000.0) {
                 delivered = q->out[k-1][1] + ns_to_gpu_ticks(2000000ull);
