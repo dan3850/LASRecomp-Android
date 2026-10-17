@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# LASRecomp Android - Eden GMEM incremental, build e assinatura no Termux.
+# LASRecomp Android - Vulkan incremental, build e assinatura no Termux.
 # Sem git reset/clean, sem Actions, sem apagar caches, objetos ou lib privada.
 set -euo pipefail
 
@@ -73,8 +73,9 @@ fi
 if [[ -n "${LASRECOMP_GAME_SO:-}" ]]; then
     echo "Biblioteca privada LOCAL: $LASRECOMP_GAME_SO"
 else
-    echo 'AVISO: liblasgame.so privada nao encontrada; APK podera nao iniciar o jogo.'
+    fail 'Biblioteca privada nao encontrada. Defina LASRECOMP_GAME_SO com o caminho da sua liblasgame.so existente.'
 fi
+[[ -s "$LASRECOMP_GAME_SO" ]] || fail "Biblioteca privada inexistente: $LASRECOMP_GAME_SO"
 
 echo
 echo '=== Compilacao incremental e assinatura ==='
@@ -84,7 +85,7 @@ APK="$PROJECT/build/termux-native/LASRecomp-Android-Termux.apk"
 [[ -s "$APK" ]] || fail "APK assinado nao foi gerado: $APK"
 mkdir -p "$DEST"
 SHORT="$(git rev-parse --short=12 HEAD)"
-OUTPUT="$DEST/LASRecomp-eden-GMEM-$SHORT-signed.apk"
+OUTPUT="$DEST/LASRecomp-eden-Vulkan-$SHORT-signed.apk"
 cp -f -- "$APK" "$OUTPUT"
 echo
 echo "BRANCH: $(git branch --show-current)"

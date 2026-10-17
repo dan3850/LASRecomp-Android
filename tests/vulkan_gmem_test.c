@@ -83,7 +83,8 @@ static void init(void) {
     VK_CHECK(vkEnumeratePhysicalDevices(g_vk.inst, &count, &g_vk.phys));
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     printf("Vulkan device: %s; host import disabled\n", g_vk.props.deviceName);
-    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .synchronization2 = true};
+    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .synchronization2 = true, .dynamicRendering = true};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &f13, .timelineSemaphore = true};
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12,
@@ -91,7 +92,8 @@ static void init(void) {
     uint32_t nq = 16;
     VkQueueFamilyProperties qp[16];
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, qp);
-    while (g_vk.qfam < nq && !(qp[g_vk.qfam].queueFlags & VK_QUEUE_COMPUTE_BIT)) ++g_vk.qfam;
+    VkQueueFlags want = VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT;
+    while (g_vk.qfam < nq && (qp[g_vk.qfam].queueFlags & want) != want) ++g_vk.qfam;
     assert(g_vk.qfam < nq);
     float prio = 1;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -372,11 +374,11 @@ static void buffer_reuse(void) {
     assert(inflight.buf != first.buf);
     vk_cmd(); renderer_flush();
     VkSpan refreshed = guest_vertex_copy((uintptr_t)src, 8192);
-    assert(refreshed.buf == first.buf);
+    assert(refreshed.buf == inflight.buf); // the already-copied version is still identical
     unsigned found = 0;
     for (int i = 0; i < VTX_SNAPSHOT_SLOTS; i++) {
         VtxSnapshot *e = &vtx_snapshots[i];
-        if (e->buf != first.buf) continue;
+        if (e->buf != refreshed.buf) continue;
         assert(!memcmp(e->shadow, src, 8192));
         // Shadow is cached CPU memory; avoid reading write-combined mappings.
         found++;
@@ -386,7 +388,188 @@ static void buffer_reuse(void) {
     assert(prefix.buf == refreshed.buf);
     vk_cmd(); renderer_flush();
     vtx_snapshots_clear();
-    puts("Buffer reuse: 101 prefix requests copy 8192 bytes; invalidation, in-flight fallback and completed allocation reuse PASS");
+    puts("Buffer reuse: 101 prefix requests copy 8192 bytes; invalidation, in-flight versions and prefix reuse PASS");
+}
+
+static VkShaderModule vertex_test_module(const char *dir, const char *name) {
+    char path[1024]; snprintf(path, sizeof path, "%s/%s.spv", dir, name);
+    FILE *f = fopen(path, "rb"); assert(f);
+    fseek(f, 0, SEEK_END); long len = ftell(f); rewind(f);
+    uint32_t *code = malloc(len); assert(code && fread(code, 1, len, f) == (size_t)len); fclose(f);
+    VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = len, .pCode = code};
+    VkShaderModule module; VK_CHECK(vkCreateShaderModule(g_vk.dev, &ci, NULL, &module)); free(code);
+    return module;
+}
+
+static void vertex_pattern(uint8_t *src, unsigned version) {
+    memset(src, 0x10 + version, 8192);
+    const float color[] = {version * 0.25f, 0.25f, 0.5f, 1.0f};
+    memcpy(src, color, sizeof color);
+    guest_copy_flush(); // model an explicit guest update between recorded draws
+}
+
+static void vertex_versions(const char *dir) {
+    uint8_t *src = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x80000);
+    VkShaderModule vs = vertex_test_module(dir, "snapshot.vert"), fs = vertex_test_module(dir, "snapshot.frag");
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayout layout; VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &layout));
+    VkPipelineShaderStageCreateInfo stages[] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main"}};
+    VkVertexInputBindingDescription binding = {0, 0, VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attr = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
+    VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &binding,
+        .vertexAttributeDescriptionCount = 1, .pVertexAttributeDescriptions = &attr};
+    VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1};
+    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+    VkPipelineColorBlendAttachmentState blend = {.colorWriteMask = 15};
+    VkPipelineColorBlendStateCreateInfo bs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1, .pAttachments = &blend};
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2, .pDynamicStates = dyn};
+    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkPipelineRenderingCreateInfo rendering = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1, .pColorAttachmentFormats = &format};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &rendering,
+        .stageCount = 2, .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia,
+        .pViewportState = &vp, .pRasterizationState = &rs, .pMultisampleState = &ms,
+        .pColorBlendState = &bs, .pDynamicState = &ds, .layout = layout};
+    VkPipeline pipeline; VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, VK_NULL_HANDLE, 1, &pi, NULL, &pipeline));
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+        .format = format, .extent = {5, 1, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO};
+    VkImage image; VmaAllocation mem; VK_CHECK(vmaCreateImage(g_vk.vma, &ii, &ai, &image, &mem, NULL));
+    VkImageViewCreateInfo iv = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = format, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkImageView view; VK_CHECK(vkCreateImageView(g_vk.dev, &iv, NULL, &view));
+    VkBufferCreateInfo rbi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 20, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo rai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo rinfo; VmaAllocation rmem; VkSpan readback = {0};
+    VK_CHECK(vmaCreateBuffer(g_vk.vma, &rbi, &rai, &readback.buf, &rmem, &rinfo));
+    readback.ptr = rinfo.pMappedData;
+    VkCommandBuffer cb = vk_cmd();
+    vk_image_init_layout(cb, image, VK_IMAGE_ASPECT_COLOR_BIT);
+    VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0,0},{5,1}},
+        .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &attachment};
+    vkCmdBeginRendering(cb, &ri);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    VkSpan versions[5];
+    uint64_t before = stat_upload_bytes, waited = stat_wait_ns;
+    for (unsigned i = 0; i < 5; ++i) {
+        vertex_pattern(src, i);
+        versions[i] = guest_vertex_copy((uintptr_t)src, 8192);
+        VkDeviceSize off = versions[i].off;
+        vkCmdBindVertexBuffers(cb, 0, 1, &versions[i].buf, &off);
+        VkViewport viewport = {(float)i, 0, 1, 1, 0, 1};
+        VkRect2D scissor = {{(int)i, 0}, {1, 1}};
+        vkCmdSetViewport(cb, 0, 1, &viewport); vkCmdSetScissor(cb, 0, 1, &scissor);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        if (i < 4) for (unsigned j = 0; j < i; ++j) assert(versions[i].buf != versions[j].buf);
+    }
+    assert(vtx_snapshot_bytes == 4 * 8192 && vtx_snapshot_busy == 1);
+    assert(stat_upload_bytes - before == 5 * 8192 && stat_wait_ns == waited);
+    vkCmdEndRendering(cb); vk_full_barrier(cb);
+    VkBufferImageCopy copy = {.bufferOffset = readback.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageExtent = {5,1,1}};
+    vkCmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_GENERAL, readback.buf, 1, &copy);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT, .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &dep);
+
+    // Deterministically keep the real GPU reads pending behind a host-signalled
+    // timeline gate. No sleep or GPU-speed assumption can make this test pass.
+    VkSemaphoreTypeCreateInfo type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+    VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &type};
+    VkSemaphore gate; VK_CHECK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &gate));
+    VkSemaphoreSubmitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = gate,
+        .value = 1, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkSubmitInfo2 submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait};
+    VK_CHECK(vkQueueSubmit2(g_vk.queue, 1, &submit, VK_NULL_HANDLE));
+    renderer_submit();
+    assert(vk_completed_seq() < submit_seq);
+    before = stat_upload_bytes;
+    for (unsigned repeat = 0; repeat < 32; ++repeat) {
+        unsigned i = repeat % 4;
+        vertex_pattern(src, i);
+        assert(guest_vertex_copy((uintptr_t)src, 8192).buf == versions[i].buf);
+    }
+    assert(stat_upload_bytes == before); // versions survive across submissions
+    vertex_pattern(src, 9);
+    assert(guest_vertex_copy((uintptr_t)src, 8192).ptr); // all four readers are still pending
+    for (unsigned i = 0; i < VTX_SNAPSHOT_SLOTS; ++i)
+        if (vtx_snapshots[i].buf) assert(vtx_snapshots[i].shadow[8191] <= 0x13);
+    vk_cmd(); renderer_submit();
+    VkSemaphoreSignalInfo signal = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = gate, .value = 1};
+    VK_CHECK(vkSignalSemaphore(g_vk.dev, &signal));
+    vk_wait_seq(submit_seq); VK_CHECK(vmaInvalidateAllocation(g_vk.vma, rmem, 0, 20));
+    const uint8_t *pixels = readback.ptr;
+    for (unsigned i = 0; i < 5; ++i) {
+        assert(abs((int)pixels[i * 4] - (int)lroundf(i * 255.0f / 4)) <= 1);
+        assert(abs((int)pixels[i * 4 + 1] - 64) <= 1 && abs((int)pixels[i * 4 + 2] - 128) <= 1 && pixels[i * 4 + 3] == 255);
+    }
+    uint64_t capacity = vtx_snapshot_bytes;
+    VkSpan refreshed = guest_vertex_copy((uintptr_t)src, 8192);
+    assert(!refreshed.ptr && vtx_snapshot_bytes == capacity); // completed buffer refreshed in place
+    bool found = false;
+    for (unsigned i = 0; i < 4; ++i) found |= refreshed.buf == versions[i].buf;
+    assert(found);
+    // Matching a prefix never validates a changed tail for a later larger draw.
+    src[8191] ^= 1;
+    assert(guest_vertex_copy((uintptr_t)src, 4096).buf == refreshed.buf);
+    VkSpan tail = guest_vertex_copy((uintptr_t)src, 8192);
+    assert(tail.buf != refreshed.buf);
+    vk_cmd(); renderer_flush(); vtx_snapshots_clear();
+    vkDestroySemaphore(g_vk.dev, gate, NULL); vkDestroyImageView(g_vk.dev, view, NULL); vmaDestroyImage(g_vk.vma, image, mem);
+    vkDestroyPipeline(g_vk.dev, pipeline, NULL); vkDestroyPipelineLayout(g_vk.dev, layout, NULL);
+    vkDestroyShaderModule(g_vk.dev, vs, NULL); vkDestroyShaderModule(g_vk.dev, fs, NULL);
+    vmaDestroyBuffer(g_vk.vma, readback.buf, rmem);
+    puts("Vertex snapshots: four pending versions + transient overflow render five correct colors; 32 cross-submission reuses upload zero bytes; completed refresh/prefix tail isolation PASS");
+}
+
+static void vertex_collisions_and_budget(void) {
+    uint64_t addresses[4], count = 0, start = HEAP_BASE + 0x30000;
+    for (uint64_t a = start; a < start + 0x50000 && count < 4; a += 16)
+        if (vtx_snapshot_bucket(a) == vtx_snapshot_bucket(start)) addresses[count++] = a;
+    assert(count == 4);
+    VkBuffer buffers[4];
+    for (unsigned i = 0; i < 4; ++i) {
+        memset((void *)(uintptr_t)addresses[i], i + 1, 8192);
+        buffers[i] = guest_vertex_copy(addresses[i], 8192).buf;
+        for (unsigned j = 0; j < i; ++j) assert(buffers[i] != buffers[j]);
+    }
+    assert(vtx_snapshot_bytes == 4 * 8192 && !vtx_snapshot_busy);
+    vk_cmd(); renderer_flush(); vtx_snapshots_clear();
+    // Consume the entire byte budget in distinct buckets with synthetic data.
+    bool used[VTX_SNAPSHOT_SLOTS] = {0};
+    uint64_t last = 0;
+    for (uint64_t a = start; a < start + 0x50000; a += 16) {
+        unsigned bucket = vtx_snapshot_bucket(a);
+        if (used[bucket]) continue;
+        used[bucket] = true;
+        VkSpan s = guest_vertex_copy(a, VTX_SNAPSHOT_MAX);
+        if (vtx_snapshot_bytes == VTX_SNAPSHOT_BUDGET) { last = a; break; }
+        assert(!s.ptr);
+    }
+    assert(last && vtx_snapshot_bytes == VTX_SNAPSHOT_BUDGET);
+    // A different-size miss cannot exceed the budget or evict an in-flight way.
+    VkSpan overflow = guest_vertex_copy(last + 16, VTX_SNAPSHOT_MAX - 16);
+    assert(overflow.ptr && vtx_snapshot_bytes == VTX_SNAPSHOT_BUDGET);
+    vk_cmd(); renderer_flush(); vtx_snapshots_clear();
+    assert(!vtx_snapshot_bytes);
+    puts("Vertex snapshots: colliding addresses isolated; 32 MiB byte budget and idle reset PASS");
 }
 
 static void write_pool_limits(void) {
@@ -485,6 +668,13 @@ int main(int argc, char **argv) {
               "layout(std430,binding=1) buffer Output { vec4 rgba; };\n"
               "void main() { rgba = textureLod(atlas_,vec2(0.5/64.0,0.5/8.0),0.0); }\n",f);
         fclose(f);
+        snprintf(path, sizeof path, "%s/snapshot.vert", argv[2]); f = fopen(path, "wb"); assert(f);
+        fputs("#version 450\nlayout(location=0) in vec4 color; layout(location=0) out vec4 value;\n"
+              "void main(){ vec2 p[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));"
+              "gl_Position=vec4(p[gl_VertexIndex],0,1); value=color; }\n", f); fclose(f);
+        snprintf(path, sizeof path, "%s/snapshot.frag", argv[2]); f = fopen(path, "wb"); assert(f);
+        fputs("#version 450\nlayout(location=0) in vec4 value; layout(location=0) out vec4 color;"
+              "void main(){ color=value; }\n", f); fclose(f);
         return 0;
     }
     init();
@@ -493,6 +683,8 @@ int main(int argc, char **argv) {
     split_counter_pairs();
     persistent_snapshots();
     buffer_reuse();
+    vertex_versions(argv[1]);
+    vertex_collisions_and_budget();
     write_pool_limits();
     atlas(argv[1]);
     vkDeviceWaitIdle(g_vk.dev);

@@ -684,10 +684,13 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
 // transient ring on every submission. Retain a small mapped-buffer snapshot
 // for repeated guest vertex/index ranges. Always compare EVERY byte of the
 // source on reuse: never infer immutability from an address, a hash, or a frame.
-// A changed in-flight entry uses the original transient path until it is safe
-// to update. No Vulkan resource is overwritten while a queued draw may read it.
+// Keep up to four versions/colliding addresses per bucket: changed geometry
+// can use another snapshot while earlier draws still read the previous one.
+// Only completed allocations may be updated or evicted; if all ways are busy,
+// use the original transient path without waiting for the GPU.
 // LARECOMP_VK_STATIC_VTX_CACHE=0 restores the original path for A/B testing.
 #define VTX_SNAPSHOT_SLOTS 1024
+#define VTX_SNAPSHOT_WAYS 4
 #define VTX_SNAPSHOT_MIN 4096ull
 #define VTX_SNAPSHOT_MAX (512ull << 10)
 #define VTX_SNAPSHOT_BUDGET (32ull << 20)
@@ -700,6 +703,12 @@ typedef struct {
 static VtxSnapshot vtx_snapshots[VTX_SNAPSHOT_SLOTS];
 static uint64_t vtx_snapshot_bytes;
 static uint64_t vtx_snapshot_reuses;
+static uint64_t vtx_snapshot_refreshes, vtx_snapshot_busy;
+
+static unsigned vtx_snapshot_bucket(uint64_t addr) {
+    uint64_t h = (addr >> 4) * 0x9E3779B97F4A7C15ull;
+    return ((uint32_t)(h ^ (h >> 32)) & (VTX_SNAPSHOT_SLOTS / VTX_SNAPSHOT_WAYS - 1)) * VTX_SNAPSHOT_WAYS;
+}
 
 static void vtx_snapshots_clear(void) {
     for (int i = 0; i < VTX_SNAPSHOT_SLOTS; i++) {
@@ -709,6 +718,7 @@ static void vtx_snapshots_clear(void) {
     }
     memset(vtx_snapshots, 0, sizeof vtx_snapshots);
     vtx_snapshot_bytes = vtx_snapshot_reuses = 0;
+    vtx_snapshot_refreshes = vtx_snapshot_busy = 0;
 }
 
 static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
@@ -720,7 +730,7 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
 #else
         enabled = opt && atoi(opt) != 0;
 #endif
-        if (enabled) LOG("[vk] byte-verified vertex/index snapshot cache enabled (32 MB limit)\n");
+        if (enabled) LOG("[vk] byte-verified vertex/index snapshot cache enabled (4 ways, 32 MB limit)\n");
     }
     if (!enabled || size < VTX_SNAPSHOT_MIN || size > VTX_SNAPSHOT_MAX || !addr)
         return guest_copy(addr, size);
@@ -728,43 +738,53 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
     // Cache by guest address, not exact draw size: one larger snapshot also
     // covers draws that access a shorter prefix of the same vertex stream.
     // The byte comparison below still protects against guest writes.
-    uint64_t h = (addr >> 4) * 0x9E3779B97F4A7C15ull;
-    uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (VTX_SNAPSHOT_SLOTS - 1);
-    VtxSnapshot *e = &vtx_snapshots[slot];
+    unsigned base = vtx_snapshot_bucket(addr);
     uint64_t pending = vk_pending_seq();
     const void *src = (const void *)(uintptr_t)addr;
 
-    if (e->buf && e->addr == addr && e->size >= size &&
-        !memcmp(e->shadow, src, (size_t)size)) {
-        e->seq = pending;
-        vtx_snapshot_reuses++;
-        return (VkSpan){e->buf, 0, NULL};
-    }
-
-    // An older submitted or still-recording command may use this snapshot.
-    // Avoid a wait: use the normal per-submission copy for the new contents.
-    if (e->buf && e->seq > vk_completed_seq()) return guest_copy(addr, size);
-    if (e->buf && e->size == size) {
-        // Completion was checked above: preserve the allocation instead of
-        // destroying/recreating a Vulkan buffer for every changed snapshot.
-        // Only an equal-sized range is refreshed: never read beyond the
-        // current binding. A different address/size uses the path below.
-        if (e->addr == addr) {
-            memcpy(e->shadow, src, (size_t)e->size);
-            memcpy(e->mapped, e->shadow, (size_t)e->size);
-            VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc, 0, e->size));
+    for (unsigned i = base; i < base + VTX_SNAPSHOT_WAYS; ++i) {
+        VtxSnapshot *e = &vtx_snapshots[i];
+        if (e->buf && e->addr == addr && e->size >= size &&
+            !memcmp(e->shadow, src, (size_t)size)) {
             e->seq = pending;
+            vtx_snapshot_reuses++;
             return (VkSpan){e->buf, 0, NULL};
         }
     }
+
+    // Query completion only on a byte-comparison miss. Recycle a compatible
+    // completed allocation first, then an empty way, then the oldest completed
+    // way. A still-recording command has seq == pending and is protected too.
+    uint64_t done = vk_completed_seq();
+    VtxSnapshot *e = NULL, *empty = NULL, *oldest = NULL;
+    for (unsigned i = base; i < base + VTX_SNAPSHOT_WAYS; ++i) {
+        VtxSnapshot *s = &vtx_snapshots[i];
+        if (!s->buf) { if (!empty) empty = s; continue; }
+        if (s->seq > done) continue;
+        if (s->size == size && (!e || s->addr == addr)) e = s;
+        if (!oldest || s->seq < oldest->seq) oldest = s;
+    }
+    if (!e) e = empty ? empty : oldest;
+    if (!e) { vtx_snapshot_busy++; return guest_copy(addr, size); }
+    if (e->buf && e->size == size) {
+        // An equal-sized buffer is usable even for a different guest address:
+        // replace every byte and its key, only after all readers completed.
+        memcpy(e->shadow, src, (size_t)size);
+        memcpy(e->mapped, e->shadow, (size_t)size);
+        VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc, 0, size));
+        e->addr = addr;
+        e->seq = pending;
+        stat_upload_bytes += size;
+        vtx_snapshot_refreshes++;
+        return (VkSpan){e->buf, 0, NULL};
+    }
+    if (vtx_snapshot_bytes - e->size + size > VTX_SNAPSHOT_BUDGET) return guest_copy(addr, size);
     if (e->buf) {
         vmaDestroyBuffer(g_vk.vma, e->buf, e->alloc);
         free(e->shadow);
         vtx_snapshot_bytes -= e->size;
         memset(e, 0, sizeof *e);
     }
-    if (vtx_snapshot_bytes + size > VTX_SNAPSHOT_BUDGET) return guest_copy(addr, size);
-
     uint8_t *shadow = malloc((size_t)size);
     if (!shadow) return guest_copy(addr, size);
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
@@ -785,6 +805,8 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
     *e = (VtxSnapshot){.addr = addr, .size = size, .seq = pending,
                        .buf = buf, .alloc = alloc, .shadow = shadow, .mapped = info.pMappedData};
     vtx_snapshot_bytes += size;
+    stat_upload_bytes += size;
+    vtx_snapshot_refreshes++;
     return (VkSpan){buf, 0, NULL};
 }
 
@@ -941,10 +963,12 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
-    if (vtx_snapshot_reuses) {
+    if (vtx_snapshot_reuses || vtx_snapshot_refreshes || vtx_snapshot_busy) {
         size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n, ", vtx reused %llu", (unsigned long long)vtx_snapshot_reuses);
-        vtx_snapshot_reuses = 0;
+        snprintf(stats_text + n, sizeof stats_text - n, ", vtx reused %llu refreshed %llu busy %llu",
+            (unsigned long long)vtx_snapshot_reuses, (unsigned long long)vtx_snapshot_refreshes,
+            (unsigned long long)vtx_snapshot_busy);
+        vtx_snapshot_reuses = vtx_snapshot_refreshes = vtx_snapshot_busy = 0;
     }
     {
         size_t n = strlen(stats_text);

@@ -39,8 +39,8 @@ with tempfile.TemporaryDirectory(prefix="las-vulkan-") as tmp:
     libraries = shlex.split(os.environ.get("VULKAN_TEST_LDFLAGS", "-lvulkan"))
     run(*cxx, "-Wl,--gc-sections", *objects, *libraries, "-lpthread", "-lm", "-o", out / "gpu-test")
     run(out / "gpu-test", "--emit", out)
-    for src in sorted(out.glob("*.comp")):
-        spv = src.with_suffix(".spv")
+    for src in sorted(p for p in out.iterdir() if p.suffix in {".comp", ".vert", ".frag"}):
+        spv = Path(str(src) + ".spv") if src.suffix != ".comp" else src.with_suffix(".spv")
         run("glslangValidator", "-V", "--target-env", "vulkan1.3", src, "-o", spv)
         run("spirv-val", "--target-env", "vulkan1.3", spv)
     run(out / "gpu-test", out)
