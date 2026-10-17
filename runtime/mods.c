@@ -98,3 +98,10 @@ int rt_mod_nop(uint64_t pc) {
     }
     return enabled;
 }
+
+int rt_mod_stable60_active(void) {
+    // Game-library capability and menu selection were established before the
+    // guest starts. The only dynamic state is this atomic selection flag.
+    return library_kind != 0 &&
+        atomic_load_explicit(&mod_enabled, memory_order_acquire) > 0;
+}

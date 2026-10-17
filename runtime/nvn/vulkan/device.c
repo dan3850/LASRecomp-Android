@@ -19,6 +19,9 @@
 
 #include "../../paths.h"
 #include "../../settings.h"
+#include "../../mods.h"
+#include "../../platform.h"
+#include "mod60_pacer.h"
 #include "../../ui/menu.h"
 #include "vk.h"
 #include "diagnostics.h"
@@ -802,7 +805,58 @@ void backend_represent(void) {
     else SDL_Delay(16);
 }
 
+// On emulators the Switch game's native 60 Hz presentation is throttled
+// externally. LASRecomp's MAILBOX swapchain intentionally does NOT limit
+// frame production: with the Stable60 NOPs active it has reached 300-450fps,
+// making the game simulation run far too quickly. Cap only THAT mod's game
+// frames, at real 60 Hz on the host, without tampering with gameplay delta,
+// GPU timestamps, VI interrupts or shaders. Clock resets after every stall:
+// never accelerate frames to make up for missed deadlines.
+#ifdef __ANDROID__
+static void stable60_mod_pace(void) {
+    static int enabled=-1;
+    static LasMod60Pacer pacer;
+    static bool announced;
+    static uint64_t reported, waits_ns, paced_frames;
+    if (enabled<0) {
+        const char *v=getenv("LARECOMP_MOD60_PACE");
+        enabled=!v || atoi(v)!=0;
+        LOG("[mod60-pacer] native 60Hz mod cap %s (LARECOMP_MOD60_PACE=%s)\n",
+            enabled?"enabled":"disabled",v?v:"unset");
+    }
+    bool active=enabled && rt_mod_stable60_active();
+    uint64_t now=plat_now_ns();
+    uint64_t deadline=las_mod60_deadline(&pacer,active,now);
+    if (!active) {
+        announced=false; reported=waits_ns=paced_frames=0;
+        return;
+    }
+    if (!announced) {
+        LOG("[mod60-pacer] Stable60 selected: limiting real game frames to 60/s\n");
+        announced=true;
+        reported=now;
+    }
+    if (deadline) {
+        plat_sleep_until_ns(deadline);
+        uint64_t awake=plat_now_ns();
+        if (awake>now) waits_ns+=awake-now;
+        now=awake;
+    }
+    las_mod60_complete(&pacer,now);
+    ++paced_frames;
+    if (now>=reported && now-reported>=2000000000ull) {
+        LOG("[mod60-pacer] frames=%llu waited=%.1fms / %.1fs\n",
+            (unsigned long long)paced_frames, waits_ns/1000000.0,
+            (now-reported)/1000000000.0);
+        reported=now; paced_frames=waits_ns=0;
+    }
+}
+#endif
+
 void backend_present(NvnTexture *t) {
+#ifdef __ANDROID__
+    stable60_mod_pace();
+#endif
     g_last_presented = t;
     extern void vk_alias_before_present(NvnTexture *);
     vk_alias_before_present(t);
