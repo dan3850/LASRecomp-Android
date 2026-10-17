@@ -291,7 +291,7 @@ static void counter_pace_diag_flush(void) {
                 atomic_load_explicit(&recovery60_probe,memory_order_relaxed) ? 1u : 0u,
                 atomic_load_explicit(&recovery60_gpu_us,memory_order_relaxed)/1000.0,
                 (unsigned long long)atomic_load_explicit(&recovery60_probes,memory_order_relaxed),
-                (unsigned long long)atomic_load_explicit(&recovery60_short_reports,memory_order_relaxed);
+                (unsigned long long)atomic_load_explicit(&recovery60_short_reports,memory_order_relaxed));
     }
     memset(&counter_pace_diag, 0, sizeof counter_pace_diag);
     counter_pace_diag.since_ns = now;
