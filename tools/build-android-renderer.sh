@@ -39,6 +39,7 @@ INC=(
 
 # Reproduce the source-to-C-string transformation the upstream Makefile uses.
 mkdir -p "$OBJDIR/inc"
+python3 "$ROOT/tools/vulkan-cache-build-id.py" --output "$OBJDIR/inc/vulkan_cache_build_id.h"
 LC_ALL=C tr -d '\r' < "$ROOT/third_party/smaa/SMAA.hlsl" \
     | LC_ALL=C tr '\200-\377' '?' \
     | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$/\\n"/' \

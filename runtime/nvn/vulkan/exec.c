@@ -16,6 +16,8 @@
 #include "diagnostics.h"
 #include "gmem.h"
 #include "gmem_delta.h"
+#include "replay.h"
+#include "cache_identity.h"
 #include "../bcn_decode.h"
 #include "../renderer.h"
 #include "../../settings.h"
@@ -811,12 +813,29 @@ static VkSpan guest_vertex_copy(uint64_t addr, uint64_t size) {
 }
 
 // ================================================================== worker threads (shader / pipeline builds)
-// First-use compiles run off the render thread; draws needing them are skipped until ready (as on Metal).
+// First-use compiles run off the render thread. A draw waits for its exact
+// required resource; compilation must never silently omit geometry/dispatches.
 // LARECOMP_SYNC_SHADERS=1 builds on first use, blocking (deterministic tests).
 typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
 static Job *jobs_head, *jobs_tail;
 static pthread_mutex_t jobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t jobs_cond = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t build_state_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t build_state_cond = PTHREAD_COND_INITIALIZER;
+static void build_finished(_Atomic int *state, int value) {
+    pthread_mutex_lock(&build_state_lock);
+    atomic_store(state, value);
+    pthread_cond_broadcast(&build_state_cond);
+    pthread_mutex_unlock(&build_state_lock);
+}
+static bool build_ready(_Atomic int *state, const char *what) {
+    pthread_mutex_lock(&build_state_lock);
+    while (!atomic_load(state)) pthread_cond_wait(&build_state_cond, &build_state_lock);
+    int value = atomic_load(state);
+    pthread_mutex_unlock(&build_state_lock);
+    if (value != 1) FATAL("required %s failed; refusing to omit its draw/dispatch\n", what);
+    return value == 1;
+}
 
 static void *worker(void *a) {
     (void)a;
@@ -834,9 +853,7 @@ static void *worker(void *a) {
 }
 
 static bool sync_shaders(void) {
-    static int v = -1;
-    if (v < 0) v = getenv("LARECOMP_SYNC_SHADERS") != NULL;
-    return v;
+    return getenv("LARECOMP_SYNC_SHADERS") != NULL;
 }
 
 // Shader translation: one dedicated thread (the translator isn't re-entrant - translate.c's RSC2 string ring - and
@@ -860,11 +877,28 @@ static void *translator(void *a) {
     return NULL;
 }
 static bool sync_shaders(void);
+static pthread_once_t translator_once = PTHREAD_ONCE_INIT, workers_once = PTHREAD_ONCE_INIT;
+static bool translator_started;
+static int workers_started;
+static void start_translator(void) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, translator, NULL) == 0) { pthread_detach(t); translator_started = true; }
+}
+static void start_workers(void) {
+    int n = SDL_GetNumLogicalCPUCores() - 4;
+    if (n < 4) n = 4;
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; ++i) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, worker, NULL) == 0) { pthread_detach(t); workers_started++; }
+    }
+}
 static void run_translate(void (*fn)(void *), void *arg) {
     if (sync_shaders()) { fn(arg); return; }
-    static bool started;
-    if (!started) { started = true; pthread_t t; pthread_create(&t, NULL, translator, NULL); }
+    pthread_once(&translator_once, start_translator);
+    if (!translator_started) { fn(arg); return; }
     Job *j = malloc(sizeof *j);
+    if (!j) { fn(arg); return; }
     j->fn = fn; j->arg = arg; j->next = NULL;
     pthread_mutex_lock(&tjobs_lock);
     if (tjobs_tail) tjobs_tail->next = j; else tjobs_head = j;
@@ -875,16 +909,10 @@ static void run_translate(void (*fn)(void *), void *arg) {
 
 static void run_job(void (*fn)(void *), void *arg) {
     if (sync_shaders()) { fn(arg); return; }
-    static bool started;
-    if (!started) {
-        started = true;
-        // first entry into an area builds dozens of pipelines at once: use most of the CPU (draws wait for them)
-        int n = SDL_GetNumLogicalCPUCores() - 4;
-        if (n < 4) n = 4;
-        if (n > 16) n = 16;
-        for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, worker, NULL); }
-    }
+    pthread_once(&workers_once, start_workers);
+    if (!workers_started) { fn(arg); return; }
     Job *j = malloc(sizeof *j);
+    if (!j) { fn(arg); return; }
     j->fn = fn; j->arg = arg; j->next = NULL;
     pthread_mutex_lock(&jobs_lock);
     if (jobs_tail) jobs_tail->next = j; else jobs_head = j;
@@ -975,6 +1003,16 @@ const char *renderer_stats(void) {
         snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, ", ");
+        n = strlen(stats_text);
+        replay_stats(stats_text + n, sizeof stats_text - n);
+        n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, ", ");
+        n = strlen(stats_text);
+        vk_spirv_cache_stats(stats_text + n, sizeof stats_text - n);
+    }
     {
         extern void vk_alias_stats(void);
         vk_alias_stats();
@@ -1419,16 +1457,24 @@ typedef struct {
     VkPipelineLayout layout;
     bool vs_uses_vid;
     _Atomic int state;  // 0 building, 1 ready, 2 failed
+    uint32_t *spirv[2];
+    size_t nspirv[2];
 } Prog;
 
-static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, VkShaderStageFlags s1) {
-    p->set_layout[0] = vk_set_layout(p->binds, p->nbinds, 0, s0);
-    if (nsets > 1) p->set_layout[1] = vk_set_layout(p->binds, p->nbinds, 1, s1);
+static VkResult try_make_layout(Prog *p, int nsets, VkShaderStageFlags s0, VkShaderStageFlags s1) {
+    VkResult result = vk_try_set_layout(p->binds, p->nbinds, 0, s0, &p->set_layout[0]);
+    if (result != VK_SUCCESS) return result;
+    if (nsets > 1) {
+        result = vk_try_set_layout(p->binds, p->nbinds, 1, s1, &p->set_layout[1]);
+        if (result != VK_SUCCESS) return result;
+    }
     VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = (uint32_t)nsets,
                                      .pSetLayouts = p->set_layout};
-    VkPipelineLayout l;
-    VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &l));
-    return l;
+    return vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &p->layout);
+}
+static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, VkShaderStageFlags s1) {
+    VK_CHECK(try_make_layout(p, nsets, s0, s1));
+    return p->layout;
 }
 
 static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
@@ -1445,23 +1491,25 @@ static void compile_program(void *arg) {
     size_t nv = 0, nf = 0;
     uint32_t *sv = vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv);
     uint32_t *sf = sv ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : NULL;
-    if (!sv || !sf) { free(sv); free(sf); atomic_store(&p->state, 2); return; }
+    if (!sv || !sf) { free(sv); free(sf); build_finished(&p->state, 2); return; }
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
-    p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
+    int fragment_bindings = p->nbinds >= 0 ? vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds) : -1;
+    if (fragment_bindings < 0) { free(sv); free(sf); build_finished(&p->state, 2); return; }
+    p->nbinds += fragment_bindings;
     p->vs = vk_module(sv, nv);
     p->fs = vk_module(sf, nf);
-    free(sv);
-    free(sf);
+    p->spirv[0] = sv; p->nspirv[0] = nv;
+    p->spirv[1] = sf; p->nspirv[1] = nf;
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
     atomic_fetch_add(&stat_compiles, 1);
-    atomic_store(&p->state, p->vs && p->fs ? 1 : 2);
+    build_finished(&p->state, p->vs && p->fs ? 1 : 2);
 }
 
 static void translate_program(void *arg) {
     Prog *p = arg;
+    pthread_mutex_lock(&translate_lock);
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
-    pthread_mutex_lock(&translate_lock);
     p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
     if (p->vi->msl) {
         p->fkey.vs_out_mask = p->vi->out_mask;
@@ -1470,12 +1518,12 @@ static void translate_program(void *arg) {
     pthread_mutex_unlock(&translate_lock);
     if (!p->vi->msl) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
-        atomic_store(&p->state, 2);
+        build_finished(&p->state, 2);
         return;
     }
     if (!p->fi->msl) {
         LOG("[shader] FS translate failed: %s\n", p->fi->error);
-        atomic_store(&p->state, 2);
+        build_finished(&p->state, 2);
         return;
     }
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
@@ -1697,6 +1745,9 @@ typedef struct {
 } PipeKey;
 
 typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
+typedef struct { VkPipeline pipe; Prog *owned; } PreparedPipeline;
+static void *pipeline_recipe_build(const ReplayRecipe *recipe, void *context);
+static void pipeline_recipe_destroy(void *object);
 #define PIPE_TAB 8192
 static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
 
@@ -1719,8 +1770,7 @@ static VkPrimitiveTopology topo_class_base(uint8_t c) {
     return c == 0 ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : c == 1 ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
-static void build_pipeline(void *arg) {
-    Pipe *pp = arg;
+static VkResult build_pipeline_raw(Pipe *pp) {
     PipeKey *k = &pp->k;
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = k->prog->vs, .pName = "main"},
@@ -1777,12 +1827,24 @@ static void build_pipeline(void *arg) {
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = k->prog->layout};
     VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pp->pipe);
     if (r != VK_SUCCESS) {
-        static int n;
-        if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
+        static _Atomic int n;
+        if (atomic_fetch_add(&n, 1) < 10) LOG("[vk] pipeline creation failed: %d\n", r);
         vk_diag_event(VD_PIPELINE_ERROR, "graphics VkResult=%d color_targets=%u depth=%d stencil=%d", r, k->ncolor, k->depth, k->stencil);
     }
     atomic_fetch_add(&stat_compiles, 1);
-    atomic_store(&pp->state, r == VK_SUCCESS ? 1 : 2);
+    return r;
+}
+
+#define PIPE_STATE_SIZE (sizeof(PipeKey) - offsetof(PipeKey, color))
+_Static_assert(PIPE_STATE_SIZE <= REPLAY_STATE_MAX && PIPE_STATE_SIZE % 4 == 0, "persistent pipeline state ABI");
+static void build_pipeline(void *arg) {
+    Pipe *pp = arg;
+    Prog *p = pp->k.prog;
+    ReplayRecipe r = {.kind = REPLAY_GRAPHICS, .state_size = PIPE_STATE_SIZE, .state = pp->k.color,
+        .code = {p->spirv[0], p->spirv[1]}, .words = {(uint32_t)p->nspirv[0], (uint32_t)p->nspirv[1]}};
+    PreparedPipeline *prepared = replay_get(&r, pp);
+    if (prepared) pp->pipe = prepared->pipe;
+    build_finished(&pp->state, pp->pipe ? 1 : 2);
 }
 
 // ================================================================== feedback snapshots (renderer.m resolve_feedback)
@@ -3023,29 +3085,145 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
 // ================================================================== compute
 typedef struct { Prog p; ShaderInfo *si; VkPipeline pipe; uint32_t local[3]; } CsProg;
 
-static void build_compute(void *arg) {
-    CsProg *cp = arg;
-    size_t n = 0;
-    uint32_t *spv = vk_glsl_to_spirv(cp->si->msl, STAGE_COMPUTE, "cs", &n);
-    if (!spv) { atomic_store(&cp->p.state, 2); return; }
-    cp->p.nbinds = vk_reflect(spv, n, cp->p.binds, MAX_BIND);
-    VkShaderModule m = vk_module(spv, n);
-    free(spv);
-    cp->p.layout = make_layout(&cp->p, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0);
+static VkResult build_compute_raw(CsProg *cp) {
     VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
     VkSpecializationInfo spec = {3, me, 12, cp->local};
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main",
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = cp->p.vs, .pName = "main",
                                                 .pSpecializationInfo = &spec},
                                       .layout = cp->p.layout};
     VkResult r = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &cp->pipe);
     atomic_fetch_add(&stat_compiles, 1);
-    atomic_store(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
     if (r != VK_SUCCESS) {
         LOG("[compute] pipeline failed: %d\n", r);
         vk_diag_event(VD_PIPELINE_ERROR, "compute VkResult=%d local=%ux%ux%u", r, cp->local[0], cp->local[1], cp->local[2]);
     }
+    return r;
+}
+
+static void build_compute(void *arg) {
+    CsProg *cp = arg;
+    size_t n = 0;
+    uint32_t *spv = vk_glsl_to_spirv(cp->si->msl, STAGE_COMPUTE, "cs", &n);
+    if (!spv) { build_finished(&cp->p.state, 2); return; }
+    cp->p.spirv[0] = spv; cp->p.nspirv[0] = n;
+    cp->p.nbinds = vk_reflect(spv, n, cp->p.binds, MAX_BIND);
+    if (cp->p.nbinds < 0) { build_finished(&cp->p.state, 2); return; }
+    cp->p.vs = vk_module(spv, n);
+    if (!cp->p.vs) { build_finished(&cp->p.state, 2); return; }
+    cp->p.layout = make_layout(&cp->p, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0);
+    ReplayRecipe r = {.kind = REPLAY_COMPUTE, .state_size = sizeof cp->local, .state = cp->local,
+        .code = {spv, NULL}, .words = {(uint32_t)n, 0}};
+    PreparedPipeline *prepared = replay_get(&r, cp);
+    if (prepared) cp->pipe = prepared->pipe;
+    build_finished(&cp->p.state, cp->pipe ? 1 : 2);
+}
+
+// Validate persisted state before any driver call. Device/build identity also
+// gates loading, and demand lookup compares the entire state AND both modules.
+static bool pipeline_recipe_state(const ReplayRecipe *r) {
+    if (r->kind == REPLAY_COMPUTE) {
+        if (r->state_size != 12) return false;
+        uint32_t local[3]; memcpy(local, r->state, sizeof local);
+        uint64_t invocations = 1;
+        for (int i = 0; i < 3; ++i) {
+            if (!local[i] || local[i] > g_vk.props.limits.maxComputeWorkGroupSize[i]) return false;
+            invocations *= local[i];
+        }
+        return invocations <= g_vk.props.limits.maxComputeWorkGroupInvocations;
+    }
+    if (r->kind != REPLAY_GRAPHICS || r->state_size != PIPE_STATE_SIZE) return false;
+    PipeKey k = {0}; memcpy(k.color, r->state, PIPE_STATE_SIZE);
+    if (k.ncolor > 8 || k.ncolor > g_vk.props.limits.maxColorAttachments || k.topo_class > 2 ||
+        k.a2c > 1 || k.poly_fill > 1 || !k.samples || (k.samples & (k.samples - 1)) || k.samples > 64 ||
+        (k.used_streams >> 17)) return false;
+    for (unsigned i = 0; i < 32; ++i) if (k.attr_mask & (1u << i)) {
+        if (i >= g_vk.props.limits.maxVertexInputAttributes || k.attr_bind[i] >= 17 ||
+            k.attr_bind[i] >= g_vk.props.limits.maxVertexInputBindings || !(k.used_streams & (1u << k.attr_bind[i])) ||
+            k.attr_off[i] > g_vk.props.limits.maxVertexInputAttributeOffset) return false;
+        VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_vk.phys, k.attr_fmt[i], &fp);
+        if (!(fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) return false;
+    }
+    for (unsigned i = 0; i < 17; ++i) if (k.used_streams & (1u << i))
+        if (k.stride[i] > g_vk.props.limits.maxVertexInputBindingStride || (k.divisor[i] > 1 && !g_vk.divisor)) return false;
+    for (unsigned i = 0; i < k.ncolor; ++i) {
+        if (k.write_mask[i] & ~15u) return false;
+        if (k.color[i]) {
+            VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_vk.phys, k.color[i], &fp);
+            if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) return false;
+        }
+    }
+    VkFormat depths[] = {k.depth, k.stencil};
+    for (unsigned i = 0; i < 2; ++i) if (depths[i]) {
+        VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_vk.phys, depths[i], &fp);
+        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) return false;
+    }
+    return true;
+}
+
+static void pipeline_recipe_destroy(void *object) {
+    PreparedPipeline *p = object;
+    if (p->pipe) vkDestroyPipeline(g_vk.dev, p->pipe, NULL);
+    if (p->owned) {
+        Prog *o = p->owned;
+        vkDestroyPipelineLayout(g_vk.dev, o->layout, NULL);
+        for (unsigned i = 0; i < 2; ++i) {
+            vkDestroyDescriptorSetLayout(g_vk.dev, o->set_layout[i], NULL);
+            vkDestroyShaderModule(g_vk.dev, i ? o->fs : o->vs, NULL);
+        }
+        free(o);
+    }
+    free(p);
+}
+
+static void *pipeline_recipe_build(const ReplayRecipe *r, void *context) {
+    if (!pipeline_recipe_state(r)) return NULL;
+    PreparedPipeline *out = calloc(1, sizeof *out);
+    if (!out) return NULL;
+    Prog *p = NULL;
+    if (!context) {
+        p = out->owned = calloc(1, sizeof *p);
+        if (!p) { free(out); return NULL; }
+        p->nbinds = vk_reflect(r->code[0], r->words[0], p->binds, MAX_BIND);
+        if (p->nbinds < 0) { pipeline_recipe_destroy(out); return NULL; }
+        p->vs = vk_module(r->code[0], r->words[0]);
+        if (r->kind == REPLAY_GRAPHICS) {
+            int n = vk_reflect(r->code[1], r->words[1], p->binds + p->nbinds, MAX_BIND - p->nbinds);
+            if (n < 0) { pipeline_recipe_destroy(out); return NULL; }
+            p->nbinds += n;
+            p->fs = vk_module(r->code[1], r->words[1]);
+        }
+        if (!p->vs || (r->kind == REPLAY_GRAPHICS && !p->fs)) { pipeline_recipe_destroy(out); return NULL; }
+        if (try_make_layout(p, r->kind == REPLAY_GRAPHICS ? 2 : 1,
+            r->kind == REPLAY_GRAPHICS ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_COMPUTE_BIT,
+            VK_SHADER_STAGE_FRAGMENT_BIT) != VK_SUCCESS) { pipeline_recipe_destroy(out); return NULL; }
+    }
+    VkResult result;
+    if (r->kind == REPLAY_GRAPHICS) {
+        Pipe temp = {0};
+        if (context) temp.k = ((Pipe *)context)->k;
+        else { memcpy(temp.k.color, r->state, PIPE_STATE_SIZE); temp.k.prog = p; }
+        result = build_pipeline_raw(&temp); out->pipe = temp.pipe;
+    } else {
+        CsProg temp = {0};
+        Prog *source = context ? &((CsProg *)context)->p : p;
+        temp.p.vs = source->vs; temp.p.layout = source->layout;
+        memcpy(temp.local, r->state, sizeof temp.local);
+        result = build_compute_raw(&temp); out->pipe = temp.pipe;
+    }
+    if (result != VK_SUCCESS) { pipeline_recipe_destroy(out); return NULL; }
+    return out;
+}
+
+void vk_startup_replay_init(void) {
+    ReplayIdentity identity = {.vendor = g_vk.props.vendorID, .device = g_vk.props.deviceID,
+        .driver = g_vk.props.driverVersion, .api = g_vk.props.apiVersion,
+        .features = (g_vk.divisor ? 1u : 0) | (g_vk.host_import ? 2u : 0) | (getenv("LARECOMP_VK_OPT") ? 4u : 0),
+        .state_abi = PIPE_STATE_SIZE};
+    memcpy(identity.uuid, g_vk.props.pipelineCacheUUID, sizeof identity.uuid);
+    snprintf(identity.code, sizeof identity.code, "%s", LAS_VK_CACHE_BUILD_ID);
+    replay_start(&identity, pipeline_recipe_build, pipeline_recipe_destroy, vk_pipeline_cache_save);
 }
 
 static struct CsEnt { uint64_t addr; CsProg *cp; } g_cs_tab[256];  // compute programs by code address
@@ -3058,17 +3236,17 @@ static CsProg *compute_program(NvnProgram *np) {
     for (int i = 0; i < n; i++) if (tab[i].addr == ss->code_addr) return tab[i].cp;
     CsProg *cp = calloc(1, sizeof *cp);
     if (n < 256) { tab[n].addr = ss->code_addr; tab[n].cp = cp; g_cs_n = n + 1; }
-    maxwell_gmem_base = HEAP_BASE;
-    maxwell_gmem_size = HEAP_MAX;
     ShaderKey k = {0};
     k.glsl = 1;
     pthread_mutex_lock(&translate_lock);
+    maxwell_gmem_base = HEAP_BASE;
+    maxwell_gmem_size = HEAP_MAX;
     cp->si = maxwell_translate((const uint8_t *)(uintptr_t)ss->code_addr, ss->const_offset ? ss->const_offset : 0x10000, STAGE_COMPUTE, &k);
     pthread_mutex_unlock(&translate_lock);
     cp->p.vi = cp->si;
     if (!cp->si->msl) {
         LOG("[compute] translate failed: %s (code %llx)\n", cp->si->error, (unsigned long long)ss->code_addr);
-        atomic_store(&cp->p.state, 2);
+        build_finished(&cp->p.state, 2);
         return cp;
     }
     for (int i = 0; i < 3; i++) {
@@ -3084,7 +3262,8 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
-    if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
+    if (!cp) { stat_skipped++; return; }
+    build_ready(&cp->p.state, "compute pipeline");
     {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
         static uint64_t skip = ~0ull;
         if (skip == ~0ull) { const char *e = getenv("LARECOMP_SKIP_CS"); skip = e ? strtoull(e, NULL, 16) : 0; }
@@ -3182,7 +3361,8 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
     Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+    if (!pr) { stat_skipped++; return; }
+    build_ready(&pr->state, "graphics program");
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
@@ -3196,7 +3376,8 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
-            if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+            if (!pr) { stat_skipped++; return; }
+            build_ready(&pr->state, "graphics program");
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
@@ -3315,7 +3496,7 @@ static void draw_(CmdRec *r, bool indexed) {
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
     }
-    if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
+    build_ready(&pp->state, "graphics pipeline");
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;

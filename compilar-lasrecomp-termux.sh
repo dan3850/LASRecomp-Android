@@ -243,6 +243,7 @@ fi
 echo "Vulkan headers: $VULKAN_INCLUDE"
 step "Compilando Vulkan/ImGui"
 mkdir -p "$OBJ/inc"
+python3 tools/vulkan-cache-build-id.py --output "$OBJ/inc/vulkan_cache_build_id.h"
 LC_ALL=C tr -d '\r' < third_party/smaa/SMAA.hlsl \
  | LC_ALL=C tr '\200-\377' '?' \
  | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$/\\n"/' \

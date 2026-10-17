@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <errno.h>
+#include <pthread.h>
 #ifdef __ANDROID__
 #include <dlfcn.h>
 #include <android/log.h>
@@ -21,6 +22,7 @@
 #include "../../ui/menu.h"
 #include "vk.h"
 #include "diagnostics.h"
+#include "replay.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -373,35 +375,55 @@ static void create_device(void) {
     FILE *fp = fopen("cache/vk_pipelines.bin", "rb");
     if (fp) {
         fseek(fp, 0, SEEK_END);
-        sz = (size_t)ftell(fp);
+        long length = ftell(fp);
+        sz = length >= (long)sizeof(VkPipelineCacheHeaderVersionOne) && length <= (128 << 20) ? (size_t)length : 0;
         fseek(fp, 0, SEEK_SET);
-        data = malloc(sz);
-        if (fread(data, 1, sz, fp) != sz) sz = 0;
+        data = sz ? malloc(sz) : NULL;
+        if (!data || fread(data, 1, sz, fp) != sz) sz = 0;
         fclose(fp);
+        if (sz) {
+            VkPipelineCacheHeaderVersionOne h; memcpy(&h, data, sizeof h);
+            if (h.headerSize < sizeof h || h.headerSize > sz || h.headerVersion != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||
+                h.vendorID != g_vk.props.vendorID || h.deviceID != g_vk.props.deviceID ||
+                memcmp(h.pipelineCacheUUID, g_vk.props.pipelineCacheUUID, VK_UUID_SIZE)) sz = 0;
+        }
     }
     VkPipelineCacheCreateInfo pc = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = sz,
                                     .pInitialData = data};
     if (vkCreatePipelineCache(g_vk.dev, &pc, NULL, &g_vk.pcache) != VK_SUCCESS) {
         pc.initialDataSize = 0;
+        pc.pInitialData = NULL;
         VK_CHECK(vkCreatePipelineCache(g_vk.dev, &pc, NULL, &g_vk.pcache));
     }
     free(data);
 }
 
 void vk_pipeline_cache_save(void) {
-    size_t sz = 0;
-    if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) != VK_SUCCESS || !sz) return;
-    void *data = malloc(sz);
-    if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data) == VK_SUCCESS) {
-        mkdir("cache", 0755);
-        FILE *f = fopen("cache/vk_pipelines.bin.tmp", "wb");
-        if (f) {
-            bool ok = fwrite(data, 1, sz, f) == sz;
-            fclose(f);
-            if (ok) { remove("cache/vk_pipelines.bin"); rename("cache/vk_pipelines.bin.tmp", "cache/vk_pipelines.bin"); }
+    // The cache uses Vulkan's default internal synchronization. Serialize our
+    // snapshot writers, and retry VK_INCOMPLETE if other compiler workers grew
+    // the cache between the size and data queries.
+    static pthread_mutex_t save_lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&save_lock);
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        size_t sz = 0;
+        if (!g_vk.pcache || vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) != VK_SUCCESS || !sz || sz > (128u << 20)) break;
+        void *data = malloc(sz);
+        if (!data) break;
+        VkResult result = vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data);
+        if (result == VK_SUCCESS) {
+            mkdir("cache", 0755);
+            FILE *f = fopen("cache/vk_pipelines.bin.tmp", "wb");
+            if (f) {
+                bool ok = fwrite(data, 1, sz, f) == sz;
+                if (fflush(f) || fsync(fileno(f))) ok = false;
+                if (fclose(f)) ok = false;
+                if (ok) rename("cache/vk_pipelines.bin.tmp", "cache/vk_pipelines.bin");
+            }
         }
+        free(data);
+        if (result != VK_INCOMPLETE) break;
     }
-    free(data);
+    pthread_mutex_unlock(&save_lock);
 }
 
 // ================================================================== swapchain
@@ -961,6 +983,7 @@ static void quick_exit_handler(void) {
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
     if (trace) LOG("[vk] exit: waiting for the GPU\n");
     if (g_vk.dev) {
+        replay_stop();
         vkDeviceWaitIdle(g_vk.dev);
         if (trace) LOG("[vk] exit: saving the pipeline cache\n");
         vk_pipeline_cache_save();
@@ -1007,6 +1030,7 @@ void ui_window_init(void) {
     create_swapchain();
     vk_exec_init();
     vk_shaders_init();
+    vk_startup_replay_init();
 }
 
 SDL_Window *ui_window(void) { return window; }

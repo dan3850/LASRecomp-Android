@@ -3,14 +3,25 @@
 // are removed by --gc-sections. --emit DIR writes synthetic GLSL to compile.
 #include <assert.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #include "../runtime/nvn/vulkan/exec.c"
 
 VkG g_vk;
+static VkDebugUtilsMessengerEXT validation_messenger;
+static _Atomic unsigned validation_errors;
+static VKAPI_ATTR VkBool32 VKAPI_CALL validation_message(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *data, void *user) {
+    (void)type; (void)user;
+    fprintf(stderr, "[validation] %s\n", data->pMessage);
+    if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) atomic_fetch_add(&validation_errors, 1);
+    return VK_FALSE;
+}
 void rt_fatal_trace(void) { abort(); }
 void vk_device_fault_report(void) { abort(); }
 void vk_diag_info(const char *fmt, ...) { (void)fmt; }
 void vk_diag_event(unsigned kind, const char *fmt, ...) { (void)kind; (void)fmt; }
 uint64_t SDL_GetTicksNS(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000 + t.tv_nsec; }
+int SDL_GetNumLogicalCPUCores(void) { return 4; }
 uint64_t plat_now_ns(void) { return SDL_GetTicksNS(); }
 int plat_written_pages(uint64_t a, uint64_t s, uint64_t *p, int n, uint64_t *pg) {
     (void)a; (void)s; (void)p; (void)n; *pg = 4096; return -1;
@@ -18,7 +29,10 @@ int plat_written_pages(uint64_t a, uint64_t s, uint64_t *p, int n, uint64_t *pg)
 uint64_t vk_frame_counter(void) { return 1; } // deliberately never advance the atlas test's frame
 uint64_t renderer_present_count(void) { return 1; }
 uint32_t nvn_window_origin(void) { return 0; }
+#ifndef LAS_TEST_REAL_SHADERS
 VkShaderModule vk_builtin_shader(const char *name) { (void)name; abort(); } // no presentation in this test
+#endif
+void vk_pipeline_cache_save(void) {} // window/device persistence is tested separately by compilation/review
 const float *vk_shot_crop(void) { abort(); }
 void vk_save_png(const char *p, const uint8_t *d, uint32_t w, uint32_t h) {
     (void)p; (void)d; (void)w; (void)h; abort();
@@ -78,13 +92,23 @@ static char *shader(unsigned test) {
 static void init(void) {
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
+    const char *debug_extension = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    VkDebugUtilsMessengerCreateInfoEXT debug = {.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
+        .pfnUserCallback = validation_message};
+    if (getenv("VK_INSTANCE_LAYERS")) { ii.enabledExtensionCount = 1; ii.ppEnabledExtensionNames = &debug_extension; ii.pNext = &debug; }
     VK_CHECK(vkCreateInstance(&ii, NULL, &g_vk.inst));
+    if (getenv("VK_INSTANCE_LAYERS")) {
+        PFN_vkCreateDebugUtilsMessengerEXT create = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vk.inst, "vkCreateDebugUtilsMessengerEXT");
+        assert(create); VK_CHECK(create(g_vk.inst, &debug, NULL, &validation_messenger));
+    }
     uint32_t count = 1;
     VK_CHECK(vkEnumeratePhysicalDevices(g_vk.inst, &count, &g_vk.phys));
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     printf("Vulkan device: %s; host import disabled\n", g_vk.props.deviceName);
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-        .synchronization2 = true, .dynamicRendering = true};
+        .synchronization2 = true, .dynamicRendering = true, .maintenance4 = true};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .pNext = &f13, .timelineSemaphore = true};
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12,
@@ -653,6 +677,9 @@ static void atlas(const char *dir) {
     vkDestroySampler(g_vk.dev,(VkSampler)sampler.backend,NULL);
 }
 
+#ifdef LAS_TEST_REAL_SHADERS
+#include "vulkan_replay_cases.h"
+#endif
 int main(int argc, char **argv) {
     setvbuf(stdout,NULL,_IONBF,0);
     assert(argc == 2 || argc == 3);
@@ -678,6 +705,13 @@ int main(int argc, char **argv) {
         return 0;
     }
     init();
+#ifdef LAS_TEST_REAL_SHADERS
+    if (argc == 3 && (!strcmp(argv[1], "--replay-seed") || !strcmp(argv[1], "--replay-load"))) {
+        assert(!chdir(argv[2]));
+        pipeline_replay_cases(!strcmp(argv[1], "--replay-load"));
+        goto cleanup;
+    }
+#endif
     for (unsigned i = 0; i < 13; ++i) run(argv[1],i);
     snapshots();
     split_counter_pairs();
@@ -687,6 +721,7 @@ int main(int argc, char **argv) {
     vertex_collisions_and_budget();
     write_pool_limits();
     atlas(argv[1]);
+cleanup:
     vkDeviceWaitIdle(g_vk.dev);
     for (int i = 0; i < nchunks; ++i) vmaDestroyBuffer(g_vk.vma,chunks[i].buf,chunks[i].mem);
     free(chunks);
@@ -696,5 +731,11 @@ int main(int argc, char **argv) {
         if (cq[i].pool) vkDestroyQueryPool(g_vk.dev,cq[i].pool,NULL);
     }
     vkDestroyCommandPool(g_vk.dev,g_vk.pool,NULL); vkDestroySemaphore(g_vk.dev,g_vk.timeline,NULL);
-    vmaDestroyAllocator(g_vk.vma); vkDestroyDevice(g_vk.dev,NULL); vkDestroyInstance(g_vk.inst,NULL);
+    vmaDestroyAllocator(g_vk.vma); vkDestroyDevice(g_vk.dev,NULL);
+    if (validation_messenger) {
+        PFN_vkDestroyDebugUtilsMessengerEXT destroy = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vk.inst, "vkDestroyDebugUtilsMessengerEXT");
+        assert(destroy); destroy(g_vk.inst, validation_messenger, NULL);
+    }
+    vkDestroyInstance(g_vk.inst,NULL);
+    assert(!atomic_load(&validation_errors));
 }

@@ -1,12 +1,15 @@
 // GLSL -> SPIR-V (shaderc), descriptor layouts from the SPIR-V itself, translated NVN programs, built-in shaders.
 #include <pthread.h>
+#include <stdatomic.h>
 #include <shaderc/shaderc.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "shaders.h"
 #include "diagnostics.h"
+#include "cache_identity.h"
 
 void vk_shaders_init(void) {  // (compilers are per thread: check shaderc works at all)
     shaderc_compiler_t c = shaderc_compiler_initialize();
@@ -21,37 +24,65 @@ static shaderc_shader_kind kind_of(int stage) {
 // SPIR-V disk cache: cache/spirv/<hash of stage + source>.spv, so a known shader costs a file read instead of a
 // GLSL compile (the driver's pipeline cache only covers the step after this one).
 static uint64_t src_hash(const char *src, int stage) {
-    uint64_t h = (0xcbf29ce484222325ull ^ (uint64_t)stage) + 3;  // + version of the post-processing (no_contraction)
+    uint64_t h = (0xcbf29ce484222325ull ^ (uint64_t)stage) + 4;
     for (const char *p = src; *p; p++) { h ^= (uint8_t)*p; h *= 0x100000001B3ull; }
+    for (const char *p = vk_shader_cache_identity(); *p; p++) { h ^= (uint8_t)*p; h *= 0x100000001B3ull; }
+    h ^= getenv("LARECOMP_VK_OPT") ? 1u : 0;
     return h;
 }
+const char *vk_shader_cache_identity(void) { return LAS_VK_CACHE_BUILD_ID "|" __VERSION__; }
 
+static _Atomic uint64_t spirv_hits, spirv_compiled;
+typedef struct {
+    uint32_t magic, version;
+    uint64_t source, checksum;
+    uint32_t words, reserved;
+} SpirvHeader;
+static uint64_t spirv_checksum(const uint32_t *data, size_t words) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    const uint8_t *bytes = (const uint8_t *)data;
+    for (size_t i = 0; i < words * 4; ++i) h = (h ^ bytes[i]) * 0x100000001b3ull;
+    return h;
+}
+void vk_spirv_cache_stats(char *text, size_t capacity) {
+    snprintf(text, capacity, "spirv hits=%llu compiled=%llu", (unsigned long long)atomic_load(&spirv_hits),
+        (unsigned long long)atomic_load(&spirv_compiled));
+}
 static uint32_t *cache_load(uint64_t h, size_t *nwords) {
     char path[64];
     snprintf(path, sizeof path, "cache/spirv/%016llx.spv", (unsigned long long)h);
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint32_t *d = n > 20 && n % 4 == 0 ? malloc((size_t)n) : NULL;
-    if (d && fread(d, 1, (size_t)n, f) != (size_t)n) { free(d); d = NULL; }
+    SpirvHeader header = {0};
+    bool valid = fread(&header, 1, sizeof header, f) == sizeof header && header.magic == 0x5352504c &&
+        header.version == 1 && header.source == h && header.words >= 5 && header.words <= (1u << 20);
+    size_t n = valid ? (size_t)header.words * 4 : 0;
+    uint32_t *d = n ? malloc(n) : NULL;
+    if (d && (fread(d, 1, n, f) != n || fgetc(f) != EOF || ferror(f))) { free(d); d = NULL; }
     fclose(f);
-    if (d && d[0] != 0x07230203) { free(d); d = NULL; }
-    if (d) *nwords = (size_t)n / 4;
+    if (d && (spirv_checksum(d, header.words) != header.checksum || d[0] != 0x07230203 || !d[3] || d[3] > (1u << 20))) { free(d); d = NULL; }
+    if (d) for (size_t i = 5; i < n / 4;) {
+        uint32_t wc = d[i] >> 16;
+        if (!wc || wc > n / 4 - i) { free(d); d = NULL; break; }
+        i += wc;
+    }
+    if (d) { *nwords = n / 4; atomic_fetch_add(&spirv_hits, 1); }
     return d;
 }
 
+static pthread_once_t cache_dirs_once = PTHREAD_ONCE_INIT;
+static void cache_dirs(void) { mkdir("cache", 0755); mkdir("cache/spirv", 0755); }
 static void cache_store(uint64_t h, const uint32_t *spv, size_t nwords) {
-    static int made;
-    if (!made) { made = 1; mkdir("cache", 0755); mkdir("cache/spirv", 0755); }
+    pthread_once(&cache_dirs_once, cache_dirs);
     char path[64], tmp[80];
     snprintf(path, sizeof path, "cache/spirv/%016llx.spv", (unsigned long long)h);
-    snprintf(tmp, sizeof tmp, "%s.%llx", path, (unsigned long long)(uintptr_t)&made ^ (unsigned long long)(uintptr_t)spv);
+    snprintf(tmp, sizeof tmp, "%s.%ld.%llx", path, (long)getpid(), (unsigned long long)(uintptr_t)spv);
     FILE *f = fopen(tmp, "wb");
     if (!f) return;
-    bool ok = fwrite(spv, 4, nwords, f) == nwords;
-    fclose(f);
+    SpirvHeader header = {.magic = 0x5352504c, .version = 1, .source = h,
+        .checksum = spirv_checksum(spv, nwords), .words = (uint32_t)nwords};
+    bool ok = fwrite(&header, 1, sizeof header, f) == sizeof header && fwrite(spv, 4, nwords, f) == nwords;
+    if (fclose(f)) ok = false;
     if (!ok || rename(tmp, path) != 0) remove(tmp);  // (another thread may have stored it first)
 }
 
@@ -116,8 +147,7 @@ static uint32_t *no_contraction(uint32_t *spv, size_t *nwords) {
 // driver optimises anyway. LARECOMP_VK_OPT=1 turns it back on (experiments).
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
     uint64_t h = src_hash(src, stage);
-    static int nocache = -1;
-    if (nocache < 0) nocache = getenv("LARECOMP_VK_NO_SPIRV_CACHE") != NULL;
+    bool nocache = !LAS_VK_CACHE_PERSISTENT || getenv("LARECOMP_VK_NO_SPIRV_CACHE") != NULL;
     uint32_t *out = nocache ? NULL : cache_load(h, nwords);
     if (out) return out;
     static __thread shaderc_compiler_t comp;
@@ -131,14 +161,15 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
     if (shaderc_result_get_compilation_status(r) != shaderc_compilation_status_success) {
         vk_diag_event(VD_SHADER_ERROR, "stage=%d name=%s hash=%llx: %.240s", stage, name,
             (unsigned long long)h, shaderc_result_get_error_message(r));
-        static int nlog;
-        if (nlog++ < 20) LOG("[shader] %s: GLSL compile failed:\n%s\n%s\n", name, shaderc_result_get_error_message(r), src);
+        static _Atomic int nlog;
+        if (atomic_fetch_add(&nlog, 1) < 20) LOG("[shader] %s: GLSL compile failed:\n%s\n%s\n", name, shaderc_result_get_error_message(r), src);
     } else {
         size_t n = shaderc_result_get_length(r);
         out = malloc(n);
         memcpy(out, shaderc_result_get_bytes(r), n);
         *nwords = n / 4;
         if (stage == STAGE_VERTEX) out = no_contraction(out, nwords);
+        atomic_fetch_add(&spirv_compiled, 1);
         if (!nocache) cache_store(h, out, *nwords);
     }
     shaderc_result_release(r);
@@ -173,6 +204,9 @@ int vk_reflect(const uint32_t *spv, size_t n, VkBindingInfo *out, int max) {
     int32_t *binding = malloc(bound * sizeof *binding), *set = malloc(bound * sizeof *set);
     uint8_t *flags = calloc(bound, 1);    // 1 Block, 2 BufferBlock
     uint32_t *op = calloc(bound, sizeof *op), *ref = calloc(bound, sizeof *ref), *sc = calloc(bound, sizeof *sc);
+    if (!binding || !set || !flags || !op || !ref || !sc) {
+        free(binding); free(set); free(flags); free(op); free(ref); free(sc); return -1;
+    }
     for (uint32_t i = 0; i < bound; i++) binding[i] = set[i] = -1;
     for (size_t i = 5; i < n;) {
         uint32_t wc = spv[i] >> 16, o = spv[i] & 0xFFFF;
@@ -202,8 +236,11 @@ int vk_reflect(const uint32_t *spv, size_t n, VkBindingInfo *out, int max) {
     int cnt = 0;
     for (uint32_t id = 0; id < bound && cnt < max; id++) {
         if (op[id] != OP_VARIABLE || binding[id] < 0) continue;
+        if (ref[id] >= bound) continue;
         uint32_t t = ref[ref[id]];  // pointee
-        while (t < bound && (op[t] == OP_TYPE_ARRAY || op[t] == OP_TYPE_RUNTIME_ARRAY)) t = ref[t];
+        uint32_t hops = 0;
+        while (t < bound && (op[t] == OP_TYPE_ARRAY || op[t] == OP_TYPE_RUNTIME_ARRAY) && hops++ < bound) t = ref[t];
+        if (hops >= bound) continue;
         VkDescriptorType dt;
         if (t >= bound) continue;
         if (op[t] == OP_TYPE_SAMPLED_IMAGE) dt = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -218,14 +255,17 @@ int vk_reflect(const uint32_t *spv, size_t n, VkBindingInfo *out, int max) {
     return cnt;
 }
 
-VkDescriptorSetLayout vk_set_layout(const VkBindingInfo *b, int n, uint32_t set, VkShaderStageFlags stages) {
+VkResult vk_try_set_layout(const VkBindingInfo *b, int n, uint32_t set, VkShaderStageFlags stages, VkDescriptorSetLayout *out) {
     VkDescriptorSetLayoutBinding lb[96];
     uint32_t k = 0;
     for (int i = 0; i < n && k < 96; i++)
         if (b[i].set == set) lb[k++] = (VkDescriptorSetLayoutBinding){b[i].binding, b[i].type, 1, stages, NULL};
     VkDescriptorSetLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = k, .pBindings = lb};
+    return vkCreateDescriptorSetLayout(g_vk.dev, &ci, NULL, out);
+}
+VkDescriptorSetLayout vk_set_layout(const VkBindingInfo *b, int n, uint32_t set, VkShaderStageFlags stages) {
     VkDescriptorSetLayout l;
-    VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &ci, NULL, &l));
+    VK_CHECK(vk_try_set_layout(b, n, set, stages, &l));
     return l;
 }
 
