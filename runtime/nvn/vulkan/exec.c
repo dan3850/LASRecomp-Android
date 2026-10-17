@@ -158,6 +158,7 @@ typedef struct {
     uint64_t seq;
     uint64_t *out[CQ_MAX];
     uint64_t provisional[CQ_MAX]; // exact value written before GPU completion
+    bool recovery[CQ_MAX];       // a *bounded*, headroom-checked native retry
 } CounterQ;
 static CounterQ cq[SUBS];
 static pthread_mutex_t cq_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -181,6 +182,8 @@ static _Atomic uint64_t recovery60_last_gpu_ns;
 static _Atomic bool recovery60_probe;
 static int recovery60_enabled=-1;
 static uint64_t recovery60_probes, recovery60_short_reports;
+static _Atomic uint64_t recovery60_last_spike_ns;
+static int vk_counter_mode(void); // declared below; also used by recovery gate
 static bool recovery60_on(void) {
     if (recovery60_enabled<0) {
         const char *v=getenv("LARECOMP_VK_RECOVERY60");
@@ -189,7 +192,7 @@ static bool recovery60_on(void) {
 #else
         recovery60_enabled=v && atoi(v)!=0;
 #endif
-        LOG("[recover60] guarded native-mode recovery %s (LARECOMP_VK_RECOVERY60=%s)\\n",
+        LOG("[recover60] guarded native-mode recovery %s (LARECOMP_VK_RECOVERY60=%s)\n",
             recovery60_enabled?"enabled":"disabled",v?v:"unset");
     }
     return recovery60_enabled!=0 && vk_counter_mode()==2;
@@ -279,8 +282,8 @@ static void counter_pace_diag_flush(void) {
             (unsigned long long)counter_pace_diag.eager_polls,
             (unsigned long long)counter_pace_diag.eager_queries);
         if (recovery60_enabled>0)
-            LOG("[recover60] state=%u gpu-avg=%.2fms attempts=%llu provisional-pulses=%llu\\n",
-                (unsigned)recovery60.state,
+            LOG("[recover60] state=%u gpu-avg=%.2fms attempts=%llu provisional-pulses=%llu\n",
+                atomic_load_explicit(&recovery60_probe,memory_order_relaxed) ? 1u : 0u,
                 atomic_load_explicit(&recovery60_gpu_us,memory_order_relaxed)/1000.0,
                 (unsigned long long)recovery60_probes,
                 (unsigned long long)recovery60_short_reports);
@@ -303,6 +306,10 @@ static void counter_pace_record(
         if (ms > counter_pace_diag.peak_ms) counter_pace_diag.peak_ms = ms;
         if (ms >= 16.67) counter_pace_diag.over_16ms++;
         if (ms >= 30.0) counter_pace_diag.over_30ms++;
+        // Never allow a recovery probe immediately after a genuine GPU stall.
+        if (ms >= 16.67)
+            atomic_store_explicit(&recovery60_last_spike_ns,
+                                  plat_now_ns(),memory_order_relaxed);
         // With no recent completed GPU pair, recovery stays disabled.
         uint32_t sample = ms > 1000.0 ? 1000000u : (uint32_t)(ms*1000.0);
         uint32_t previous = atomic_load_explicit(&recovery60_gpu_us,memory_order_relaxed);
@@ -353,11 +360,13 @@ void vk_pace_frame(void) {
         uint64_t recent=atomic_load_explicit(&recovery60_last_gpu_ns,memory_order_relaxed);
         uint32_t gpu_us=(recent && now>=recent && now-recent<=1000000000ull)
            ? atomic_load_explicit(&recovery60_gpu_us,memory_order_relaxed) : 0;
+        uint64_t spike=atomic_load_explicit(&recovery60_last_spike_ns,memory_order_relaxed);
+        if (spike && now>=spike && now-spike < 1500000000ull) gpu_us=0;
         int transition=las_recovery_frame(&recovery60,p,gpu_us);
         if (transition) {
             atomic_store_explicit(&recovery60_probe,transition>0,memory_order_relaxed);
             if (transition>0) recovery60_probes++;
-            LOG("[recover60] %s real-period %.2f ms GPU-avg %.2f ms attempts %llu\\n",
+            LOG("[recover60] %s real-period %.2f ms GPU-avg %.2f ms attempts %llu\n",
                 transition>0?"probe begin":"probe ended; restoring real counters",
                 p/1e6,gpu_us/1000.0,(unsigned long long)recovery60_probes);
         }
@@ -410,6 +419,16 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
                          (unsigned long long)(uintptr_t)q->out[k], q->out[k][1] * 625.0 / 384 / 1e6, gpu * 625.0 / 384 / 1e6);
             uint64_t delivered = pace_end_counter(k ? q->out[k - 1] : NULL, q->out[k], gpu);
             counter_pace_record(q->out[k], t[k], q->provisional[k], per);
+            // The guest normally waits for its GPU fence before reading.
+            // Without this branch, the *temporary* provisional recovery pulse
+            // could already have been replaced by a real query result before
+            // the game's native 30/60 decision. Respect measured headroom:
+            // never shorten an actually slow GPU report.
+            if (q->recovery[k] && k && q->out[k] == q->out[k-1]+2 &&
+                t[k]>=t[k-1] &&
+                (double)(t[k]-t[k-1])*per <= 12000000.0) {
+                delivered = q->out[k-1][1] + ns_to_gpu_ticks(2000000ull);
+            }
             q->out[k][1] = delivered;
         }
         stat_counters_gpu += q->n;
@@ -3417,6 +3436,7 @@ void vk_exec_reset(void) {
     atomic_store_explicit(&recovery60_probe,false,memory_order_relaxed);
     atomic_store_explicit(&recovery60_gpu_us,0,memory_order_relaxed);
     atomic_store_explicit(&recovery60_last_gpu_ns,0,memory_order_relaxed);
+    atomic_store_explicit(&recovery60_last_spike_ns,0,memory_order_relaxed);
     vk_resident_reset();  // called with GPU idle during backend reset
     vk_gmem_atlas_reset(); // release dedicated guest-memory atlas slabs
     memset(ds_reuse,0,sizeof ds_reuse);
@@ -5238,6 +5258,7 @@ static void exec_list(uint64_t handle, int depth) {
                 if (q->pool && q->n < CQ_MAX) {
                     vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, q->pool, q->n);
                     q->provisional[q->n] = out[1];
+                    q->recovery[q->n] = recovery_end;
                     q->out[q->n++] = out;
                 }
                 pthread_mutex_unlock(&cq_lock);
