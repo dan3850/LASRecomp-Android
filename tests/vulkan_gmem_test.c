@@ -364,6 +364,7 @@ static void buffer_reuse(void) {
     assert(((uint8_t *)changed.ptr)[0] == 0x71);
 
     setenv("LARECOMP_VK_STATIC_VTX_CACHE", "1", 1);
+    setenv("LARECOMP_VK_VTX_PARTIAL", "1", 1);
     VkSpan first = guest_vertex_copy((uintptr_t)src, 8192);
     assert(first.buf);
     src[0] = 0x19;
@@ -371,8 +372,14 @@ static void buffer_reuse(void) {
     VkSpan inflight = guest_vertex_copy((uintptr_t)src, 8192);
     assert(inflight.buf != first.buf);
     vk_cmd(); renderer_flush();
+    uint64_t written0 = vtx_partial_written_bytes;
+    uint64_t saved0 = vtx_partial_saved_bytes;
     VkSpan refreshed = guest_vertex_copy((uintptr_t)src, 8192);
     assert(refreshed.buf == first.buf);
+    // Only the first 4 KiB block changed; the remaining half was not
+    // rewritten. This checks the production copy and flush accounting.
+    assert(vtx_partial_written_bytes - written0 == 4096);
+    assert(vtx_partial_saved_bytes - saved0 == 4096);
     unsigned found = 0;
     for (int i = 0; i < VTX_SNAPSHOT_SLOTS; i++) {
         VtxSnapshot *e = &vtx_snapshots[i];
@@ -385,8 +392,23 @@ static void buffer_reuse(void) {
     VkSpan prefix = guest_vertex_copy((uintptr_t)src, 4096);
     assert(prefix.buf == refreshed.buf);
     vk_cmd(); renderer_flush();
+    // A later change in the second half refreshes just that region too.
+    src[4096] = 0x87;
+    written0 = vtx_partial_written_bytes;
+    saved0 = vtx_partial_saved_bytes;
+    VkSpan second = guest_vertex_copy((uintptr_t)src, 8192);
+    assert(second.buf == first.buf);
+    assert(vtx_partial_written_bytes - written0 == 4096);
+    assert(vtx_partial_saved_bytes - saved0 == 4096);
+    for (int i = 0; i < VTX_SNAPSHOT_SLOTS; ++i) {
+        VtxSnapshot *e = &vtx_snapshots[i];
+        if (e->buf != second.buf) continue;
+        assert(!memcmp(e->shadow, src, 8192));
+        assert(!memcmp(e->mapped, src, 8192));
+    }
+    vk_cmd(); renderer_flush();
     vtx_snapshots_clear();
-    puts("Buffer reuse: 101 prefix requests copy 8192 bytes; invalidation, in-flight fallback and completed allocation reuse PASS");
+    puts("Buffer reuse: 101 prefix requests copy 8192 bytes; invalidation, in-flight isolation and 4 KiB-only refresh PASS");
 }
 
 static void write_pool_limits(void) {
