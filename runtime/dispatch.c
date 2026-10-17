@@ -1,4 +1,5 @@
 // Guest address -> recompiled function lookup, and host (HLE) function registry.
+#include <dlfcn.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -288,6 +289,24 @@ void rt_fault_report(const char *what, uint64_t fa, uint64_t pc, uint64_t lr) {
     fprintf(stderr, "\n*** %s accessing %#llx\n    host pc %llx (%s+%llx)\n    host lr %llx (%s+%llx)\n", what,
             (unsigned long long)fa, (unsigned long long)pc, pname, (unsigned long long)po,
             (unsigned long long)lr, ls ? ls : "?", (unsigned long long)lo);
+#ifdef __ANDROID__
+    // Hidden/private game-code symbols yield '?+0' above, making different
+    // ASLR-addressed crashes impossible to compare. Android's dladdr still
+    // reports the loaded .so base: preserve module-relative PC/LR offsets
+    // for postmortem llvm-symbolizer/nm against the *local* APK's ELF files.
+    // No guest code, private game bytes, or absolute application paths saved.
+    for (int i = 0; i < 2; ++i) {
+        uint64_t addr = i ? lr : pc;
+        Dl_info info = {0};
+        if (dladdr((void *)(uintptr_t)addr, &info) && info.dli_fbase && info.dli_fname) {
+            const char *filename = strrchr(info.dli_fname, '/');
+            filename = filename ? filename + 1 : info.dli_fname;
+            fprintf(stderr, "    host %s module=%s+0x%llx\n",
+                    i ? "lr" : "pc", filename,
+                    (unsigned long long)(addr - (uint64_t)(uintptr_t)info.dli_fbase));
+        }
+    }
+#endif
     rt_fatal_trace();
 }
 

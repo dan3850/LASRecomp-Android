@@ -2025,7 +2025,10 @@ static int color_alias_on(void) {
     if (enabled < 0) {
         const char *v = getenv("LARECOMP_VK_COLOR_ALIAS");
 #ifdef __ANDROID__
-        enabled = !v || atoi(v) != 0;
+        // Crash isolation after 2026-10-17 menu-transition SIGSEGV: the
+        // color-alias experiment did not avoid physical copies (86/87
+        // materialized). Keep it available for opt-in A/B comparisons.
+        enabled = v && atoi(v) != 0;
 #else
         enabled = v && atoi(v) != 0;
 #endif

@@ -11,7 +11,9 @@ void vk_rt_prepare_copy(VkCommandBuffer cb, VkImage src, VkImage dst,
     if (on < 0) {
         const char *v = getenv("LARECOMP_VK_RT_SCOPE");
 #ifdef __ANDROID__
-        on = !v || atoi(v) != 0;
+        // For the crash-isolation run keep legacy full-copy dependencies
+        // by default, separate from geometry/texture residency experiments.
+        on = v && atoi(v) != 0;
 #else
         on = v && atoi(v) != 0;
 #endif
