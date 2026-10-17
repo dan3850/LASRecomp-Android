@@ -718,7 +718,7 @@ static VkSpan guest_uniform_copy(uint64_t addr, uint64_t size) {
 #else
         enabled = opt && atoi(opt) != 0;
 #endif
-        LOG("[vk] byte-verified persistent uniform staging %s (8 MiB cap)\\n",
+        LOG("[vk] byte-verified persistent uniform staging %s (8 MiB cap)\n",
             enabled ? "enabled" : "disabled");
     }
     if (!enabled || !addr || size < CBUF_SNAP_MIN || size > CBUF_SNAP_MAX)
