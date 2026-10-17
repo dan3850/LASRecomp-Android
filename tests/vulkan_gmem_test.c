@@ -384,6 +384,52 @@ static void persistent_snapshots(void) {
 
 // Exercise eviction against real mapped Vulkan allocations: the cache must
 // borrow capacity from completed entries in other sets, never pending ones.
+// Hash collisions must no longer force a transient upload when other
+// snapshot slots are free. Keep six colliding 1 MiB buffers in one in-flight
+// submission, then prove each immutable buffer can be found and reused.
+static void snapshot_collision_spill(void) {
+    assert(!gmem_snap_bytes);
+    gmem_snap_enabled = 1;
+    unsigned counts[GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS] = {0};
+    const uint64_t heap = kernel_heap_size();
+    const uint64_t limit = g_vk.props.limits.maxStorageBufferRange;
+    for (unsigned off = 0; off <= (1 << 20); off += 4096) {
+        GmemRange ranges[GMAP_MAX] = {{HEAP_BASE + off, 1 << 20}};
+        GmemPlan p;
+        assert(gmem_plan(&p, ranges, GMAP_MAX, HEAP_BASE, heap, limit));
+        counts[hash_words(0, &p, sizeof p) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS)]++;
+    }
+    unsigned group = 0;
+    for (unsigned i = 0; i < GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS; ++i)
+        if (counts[i] >= 6) { group = i; break; }
+    assert(counts[group] >= 6);  // 257 candidates in only 32 groups
+    VkBuffer retained[6] = {0};
+    GmemPlan plans[6] = {0};
+    unsigned found = 0;
+    uint64_t uploaded = stat_upload_bytes;
+    uint64_t bypassed = stat_gmem_busy_bypass;
+    for (unsigned off = 0; off <= (1 << 20) && found < 6; off += 4096) {
+        GmemRange ranges[GMAP_MAX] = {{HEAP_BASE + off, 1 << 20}};
+        GmemPlan p;
+        assert(gmem_plan(&p, ranges, GMAP_MAX, HEAP_BASE, heap, limit));
+        if (hash_words(0, &p, sizeof p) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS) != group) continue;
+        VkSpan snap = gmem_read_snapshot(&p);
+        assert(snap.buf);
+        for (unsigned i = 0; i < found; ++i) assert(snap.buf != retained[i]);
+        retained[found] = snap.buf;
+        plans[found++] = p;
+    }
+    assert(found == 6 && gmem_snap_bytes == 6ull << 20);
+    assert(stat_upload_bytes - uploaded == 6ull << 20);
+    assert(stat_gmem_busy_bypass == bypassed);
+    for (unsigned i = 0; i < found; ++i)
+        assert(gmem_read_snapshot(&plans[i]).buf == retained[i]);
+    vk_cmd(); renderer_flush();
+    gmem_snap_clear();
+    assert(!gmem_snap_bytes);
+    puts("GMEM cache collisions: six pending snapshots share one old hash set without bypass or extra VRAM PASS");
+}
+
 static void snapshot_capacity_eviction(void) {
     assert(!gmem_snap_bytes);
     gmem_snap_enabled = 1;
@@ -602,6 +648,7 @@ int main(int argc, char **argv) {
     snapshots();
     split_counter_pairs();
     persistent_snapshots();
+    snapshot_collision_spill();
     snapshot_capacity_eviction();
     buffer_reuse();
     write_pool_limits();
