@@ -6,6 +6,7 @@
 // This is intentionally separate from GPU-written render targets: those
 // require an image/resource ownership graph, not a CPU shadow shortcut.
 // CPU-written glyph/video/patched textures may still update within a frame.
+#include "../../kernel.h"
 #include "texture_native.h"
 #include "texture_regions.h"
 #include <stdlib.h>

@@ -114,6 +114,8 @@ VkImageView vk_dummy_view(int textype);
 VkSampler vk_sampler(NvnSamplerDesc *d);
 VkSampler vk_default_sampler(bool linear);
 uint64_t vk_cpu_write_generation(void);
+bool vk_texture_host_upload_seen(TexBackend *b);
+bool vk_texture_host_upload_pending(TexBackend *b);
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);
 // Destruction once every submission that may use the object has completed.
 void vk_defer_image(VkImage img, VmaAllocation mem);
