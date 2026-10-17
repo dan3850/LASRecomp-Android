@@ -815,7 +815,15 @@ static void *worker(void *a) {
 
 static bool sync_shaders(void) {
     static int v = -1;
-    if (v < 0) v = getenv("LARECOMP_SYNC_SHADERS") != NULL;
+    if (v < 0) {
+        const char *env = getenv("LARECOMP_SYNC_SHADERS");
+        // Only an explicit 1 enables the blocking diagnostic path.
+        // In particular LARECOMP_SYNC_SHADERS=0 must keep gameplay asynchronous.
+        v = env && strcmp(env, "1") == 0;
+        LOG("[vk] shader compilation: %s (LARECOMP_SYNC_SHADERS=%s)\n",
+            v ? "synchronous, blocking" : "asynchronous, nonblocking",
+            env ? env : "unset");
+    }
     return v;
 }
 
