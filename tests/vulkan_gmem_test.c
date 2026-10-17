@@ -502,6 +502,50 @@ static void snapshot_capacity_eviction(void) {
     puts("GMEM cache capacity: pending buffers protected, completed cross-set LRU reclaimed within 32 MiB PASS");
 }
 
+// Persistent uniform staging: immutable repeated bindings, busy GPU fallback,
+// and safe in-place refresh after timeline completion.
+static void uniform_staging(void) {
+    uint8_t *src = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x90000);
+    memset(src, 0x33, 8192);
+    uint64_t before = stat_upload_bytes, saved = cbuf_saved_bytes;
+    VkSpan first = guest_uniform_copy((uintptr_t)src, 8192);
+    assert(first.buf && !first.ptr);
+    assert(stat_upload_bytes - before == 8192);
+    for (unsigned i = 0; i < 60; ++i) {
+        VkSpan reused = guest_uniform_copy((uintptr_t)src, 4096);
+        assert(reused.buf == first.buf);
+    }
+    assert(cbuf_saved_bytes - saved == 60ull * 4096);
+    src[0] = 0x55;
+    guest_copy_flush();
+    VkSpan still_busy = guest_uniform_copy((uintptr_t)src, 8192);
+    assert(still_busy.buf && still_busy.buf != first.buf);
+    assert(still_busy.ptr && ((uint8_t *)still_busy.ptr)[0] == 0x55);
+    for (unsigned i = 0; i < CBUF_SNAP_SLOTS; ++i) {
+        CbufSnapshot *e = &cbuf_snap[i];
+        if (e->buf == first.buf) {
+            assert(e->shadow[0] == 0x33 && e->mapped[0] == 0x33);
+        }
+    }
+    vk_cmd(); renderer_flush();
+    uint64_t written = cbuf_written_bytes;
+    VkSpan updated = guest_uniform_copy((uintptr_t)src, 8192);
+    assert(updated.buf == first.buf);
+    assert(cbuf_written_bytes - written == 256);
+    unsigned found = 0;
+    for (unsigned i = 0; i < CBUF_SNAP_SLOTS; ++i) {
+        CbufSnapshot *e = &cbuf_snap[i];
+        if (e->buf != first.buf) continue;
+        assert(e->shadow[0] == 0x55 && e->mapped[0] == 0x55);
+        found++;
+    }
+    assert(found == 1);
+    vk_cmd(); renderer_flush();
+    cbuf_snapshots_clear();
+    assert(!cbuf_snap_bytes);
+    puts("Uniform staging: 60 repeated bindings reused, pending GPU data immutable, completed copy refreshed 256 bytes PASS");
+}
+
 static void buffer_reuse(void) {
     uint8_t *src = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x80000);
     memset(src, 0x35, 8192);
@@ -643,6 +687,8 @@ int main(int argc, char **argv) {
         fclose(f);
         return 0;
     }
+    // This portable test opts in; production desktop keeps the original default.
+    setenv("LARECOMP_VK_CBUF_CACHE", "1", 1);
     init();
     for (unsigned i = 0; i < 13; ++i) run(argv[1],i);
     snapshots();
@@ -651,6 +697,7 @@ int main(int argc, char **argv) {
     snapshot_collision_spill();
     snapshot_capacity_eviction();
     buffer_reuse();
+    uniform_staging();
     write_pool_limits();
     atlas(argv[1]);
     vkDeviceWaitIdle(g_vk.dev);
