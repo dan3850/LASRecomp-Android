@@ -514,6 +514,23 @@ static uint64_t fnv_sample(const uint8_t *p, uint64_t n) {
 
 static pthread_mutex_t pending_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// Safe queries for the render-target alias scheduler. Media uploads may be
+// queued by a separate decode thread while Vulkan executes on render thread.
+bool vk_texture_host_upload_seen(TexBackend *b) {
+    if (!b) return false;
+    pthread_mutex_lock(&pending_lock);
+    bool result = b->host_uploaded;
+    pthread_mutex_unlock(&pending_lock);
+    return result;
+}
+bool vk_texture_host_upload_pending(TexBackend *b) {
+    if (!b) return false;
+    pthread_mutex_lock(&pending_lock);
+    bool result = b->pending_rgba != NULL;
+    pthread_mutex_unlock(&pending_lock);
+    return result;
+}
+
 static void upload_pending(TexBackend *b) {
     pthread_mutex_lock(&pending_lock);
     void *px = b->pending_rgba;
@@ -752,8 +769,11 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
     if (b->pending_rgba) {
         extern void vk_alias_before_host_upload(NvnTexture *);
-        vk_alias_before_host_upload(t);
-        upload_pending(b);
+        extern bool vk_alias_host_upload_ready(NvnTexture *);
+        if (vk_alias_host_upload_ready(t)) {
+            vk_alias_before_host_upload(t);
+            upload_pending(b);
+        }
     }
     if (for_render) {
         if (!b->gpu_owned) vk_native_texture_discard(b);

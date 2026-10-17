@@ -2124,8 +2124,10 @@ static bool alias_make(NvnTexture *src, NvnTexture *dst, TexBackend *s, TexBacke
     bool depth = (s->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;
     bool color = s->aspect == VK_IMAGE_ASPECT_COLOR_BIT &&
                  d->aspect == VK_IMAGE_ASPECT_COLOR_BIT &&
-                 color_alias_on() && s->color_target_seen && !s->host_uploaded &&
-                 !d->host_uploaded && !s->pending_rgba && !d->pending_rgba &&
+                 color_alias_on() && s->color_target_seen &&
+                 !vk_texture_host_upload_seen(s) && !vk_texture_host_upload_seen(d) &&
+                 !vk_texture_host_upload_pending(s) && !vk_texture_host_upload_pending(d) &&
+                 rt_alias_swizzle_equal(src->swizzle, dst->swizzle) &&
                  !s->astc_bw && !s->bcn_format && !d->astc_bw && !d->bcn_format;
     if (!depth && !color) return false;
     RtAliasDesc as = {.format = s->format, .width = s->width, .height = s->height, .aspect = s->aspect,
@@ -2157,6 +2159,15 @@ void vk_alias_texture_destroyed(NvnTexture *t) {
 }
 void vk_alias_before_host_upload(NvnTexture *t) {
     if (naliases) alias_before_write(t, 0, "host upload");
+}
+// Resolving a deferred copy ends the current render pass. A pending video
+// upload must wait rather than invalidate a pass after descriptors were bound.
+// Draw preflight resolves its pending video aliases before begin_pass().
+bool vk_alias_host_upload_ready(NvnTexture *t) {
+    if (!in_pass || !naliases || !t) return true;
+    for (int i = 0; i < naliases; ++i)
+        if (aliases[i].src == t || aliases[i].dst == t) return false;
+    return true;
 }
 void vk_alias_reset(void) { naliases = 0; }  // (reboot: every texture goes)
 
@@ -3538,7 +3549,7 @@ static void draw_(CmdRec *r, bool indexed) {
             ShaderInfo *info = stage == 0 ? pr->vi : pr->fi;
             for (int i = 0; i < info->ntex; ++i) {
                 NvnTexture *tex = shader_texture_object(stage, &info->tex[i]);
-                if (tex && tex->backend && ((TexBackend *)tex->backend)->pending_rgba)
+                if (tex && tex->backend && vk_texture_host_upload_pending(tex->backend))
                     vk_alias_before_host_upload(tex);
             }
         }

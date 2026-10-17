@@ -3,6 +3,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 typedef struct {
     uint32_t format, width, height, aspect, base_type;
     uint32_t levels, layers, depth, samples;
@@ -16,6 +17,11 @@ static inline bool rt_alias_compatible(RtAliasDesc a, RtAliasDesc b) {
            a.base_type == b.base_type &&
            a.levels == 1 && b.levels == 1 && a.layers == 1 && b.layers == 1 &&
            a.depth == 1 && b.depth == 1 && a.samples == 1 && b.samples == 1;
+}
+// Sampling an aliased color image uses the source texture's default component
+// swizzle. Its physical contents are equivalent only if swizzles also match.
+static inline bool rt_alias_swizzle_equal(const uint8_t a[4], const uint8_t b[4]) {
+    return !memcmp(a, b, 4);
 }
 static inline uint32_t rt_alias_needed_aspects(uint32_t aspects, uint32_t overwritten) {
     return aspects & ~overwritten;

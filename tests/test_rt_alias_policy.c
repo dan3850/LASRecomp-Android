@@ -9,6 +9,9 @@ int main(void) {
         .levels=1,.layers=1,.depth=1,.samples=1,.gpu_owned=true,.has_image=true};
     RtAliasDesc b = a;
     assert(rt_alias_compatible(a,b));
+    const uint8_t rgba[4] = {2,3,4,5}, bgra[4] = {4,3,2,5};
+    assert(rt_alias_swizzle_equal(rgba, rgba));
+    assert(!rt_alias_swizzle_equal(rgba, bgra));
     assert(rt_alias_needed_aspects(COLOR, 0) == COLOR);
     assert(rt_alias_needed_aspects(COLOR, COLOR) == 0);
     b.width++; assert(!rt_alias_compatible(a,b)); b = a;
