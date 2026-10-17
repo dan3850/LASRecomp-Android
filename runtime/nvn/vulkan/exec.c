@@ -334,8 +334,13 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
     }
 }
 
-static void cq_resolve_done(uint64_t done) {  // every slot whose submission is done
+static void cq_resolve_done_mode(uint64_t done, bool eager) {  // completed submissions
     pthread_mutex_lock(&cq_lock);
+    // Keep eager telemetry under the same mutex as counter query results.
+    // vk_wait_seq() can run on a different guest thread while the render
+    // thread polls completion. Reading these counters outside the lock was
+    // a data race and could also double-count eagerly resolved queries.
+    uint64_t before = stat_counters_gpu;
     // Resolve in queue order, not physical ring order. Otherwise cross-submit
     // pairs are reversed when cur_sub wraps from SUBS-1 to zero.
     for (;;) {
@@ -349,8 +354,13 @@ static void cq_resolve_done(uint64_t done) {  // every slot whose submission is 
         cq_resolve(oldest);
         if (cq[oldest].n == before) break;
     }
+    if (eager) {
+        counter_pace_diag.eager_polls++;
+        counter_pace_diag.eager_queries += stat_counters_gpu - before;
+    }
     pthread_mutex_unlock(&cq_lock);
 }
+static void cq_resolve_done(uint64_t done) { cq_resolve_done_mode(done, false); }
 
 // Opportunistically resolve only submissions whose Vulkan timeline already
 // completed. No vkWaitSemaphores, no QueueIdle, no extra GPU submission.
@@ -383,10 +393,7 @@ static void cq_resolve_ready(void) {
     if (completed <= previous) return;
     // A completed timeline value guarantees that writes to timestamp queries
     // and guest-visible compute outputs have finished. Resolve in seq order.
-    uint64_t before = stat_counters_gpu;
-    cq_resolve_done(completed);
-    counter_pace_diag.eager_polls++;
-    counter_pace_diag.eager_queries += stat_counters_gpu - before;
+    cq_resolve_done_mode(completed, true);
 }
 
 static Sub *sub(void) {
