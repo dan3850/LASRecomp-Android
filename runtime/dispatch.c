@@ -3,7 +3,6 @@
 #include <dlfcn.h>
 #endif
 #include <pthread.h>
-#include <stdatomic.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +10,6 @@
 
 #include "gamelib.h"
 #include "hle.h"
-#include "guest_forward_guard.h"
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
 static FnTable tables[2];
@@ -132,57 +130,6 @@ GuestFn dispatch_lookup(uint64_t addr) {
     return NULL;
 }
 
-// Targeted guest virtual-forwarding fix for Link's Awakening main v1.0.0.
-// The sibling generated functions 0x70010cce30 and 0x70010cce50
-// forward via *(this+0x10)->vtable[0xA8/0xA0], respectively.
-// Its neighbouring function 0x70010cce00 sets this+0x10 to NULL, and the
-// nullable thunk 0x70010cce80 already tests a nullable child before calling.
-// Several runs crashed in f_70010cce50+0x34 when that child was NULL.
-// The sibling thunk f_70010cce30 performs the same unchecked dereference.
-//
-// This intercepts only INDIRECT dispatch to that exact game function.
-// All non-null calls enter the unmodified private recompiled function; only
-// an absent child returns without issuing the impossible virtual call.
-// No copyrighted game code, game state, or private recompilation library is
-// bundled. This is a mitigation for the known NULL dispatch, NOT a claim that
-// the object lifecycle has been repaired.
-//
-// Disable for A/B: LARECOMP_GUEST_NULL_FORWARD=0.
-#define LA_NULLABLE_FORWARD_A 0x70010cce30ull
-#define LA_NULLABLE_FORWARD_B 0x70010cce50ull
-static int nullable_forward_on(void) {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *env = getenv("LARECOMP_GUEST_NULL_FORWARD");
-        enabled = !env || atoi(env) != 0;
-        LOG("[guest-null-forward] %s (LARECOMP_GUEST_NULL_FORWARD=%s)\n",
-            enabled ? "enabled" : "disabled", env ? env : "unset");
-    }
-    return enabled;
-}
-static void nullable_child_virtual_forward(Cpu *c) {
-    uint64_t object = c->x[0], caller = c->x[30], target = c->pc;
-    if (rt_guest_nullable_child_return(c)) {
-        static _Atomic unsigned count;
-        unsigned k = atomic_fetch_add_explicit(&count, 1, memory_order_relaxed) + 1;
-        if (k <= 16 || k % 256 == 0) {
-            // When object is NULL, we deliberately do not dereference it.
-            // With a non-null object, original code already dereferences its
-            // +0x10 member; the vtable read is solely crash diagnostics.
-            uint64_t vt = object ? LD64(object) : 0;
-            LOG("[guest-null-forward] skipped null child target=%#llx "
-                "object=%#llx vtable=%#llx caller=%#llx count=%u\n",
-                (unsigned long long)target,
-                (unsigned long long)object, (unsigned long long)vt,
-                (unsigned long long)caller, k);
-        }
-        return; // return to host caller; do not re-dispatch into this thunk
-    }
-    GuestFn normal = dispatch_lookup(target);
-    if (!normal) FATAL("missing original optional-child forward thunk\n");
-    normal(c); // preserve ALL normal guest behaviour, including tail dispatch
-}
-
 // Small direct-mapped cache in front of the binary search
 #define DCACHE 4096
 static __thread struct { uint64_t addr; GuestFn fn; } dcache[DCACHE];
@@ -201,11 +148,33 @@ static GuestFn dispatch_slow(Cpu *c) {
     for (int i = 0; i < override_count; i++)
         if (overrides[i].addr == pc) return overrides[i].fn;
 #ifdef __ANDROID__
-    // Installed through the existing indirect-dispatch cache. A direct call
-    // into the generated code is unaffected; the observed vtable dispatch
-    // always passes through this route.
-    if ((pc == LA_NULLABLE_FORWARD_A || pc == LA_NULLABLE_FORWARD_B) && nullable_forward_on())
-        return nullable_child_virtual_forward;
+    // Do not fabricate a return for these Zelda guest virtual thunks.
+    // An earlier mitigation skipped a NULL child; it stopped the crash but
+    // hung the guest coroutine at the exact same point. Keep the original
+    // dispatch control flow and only observe the invalid object state.
+    if (pc == 0x70010cce30ull || pc == 0x70010cce50ull) {
+        uint64_t object = c->x[0];
+        // Original thunk dereferences this+0x10. Its 'this' is already known
+        // to be mapped in the reproducible crash; avoid inspecting arbitrary
+        // host pointers outside the guest heap.
+        uint64_t size = kernel_heap_size();
+        if (object >= HEAP_BASE && size >= 24 &&
+            object - HEAP_BASE <= size - 24) {
+            uint64_t child = LD64(object + 0x10);
+            if (!child) {
+                fprintf(stderr,
+                    "[guest-null-before-dispatch] target=%#llx caller=%#llx "
+                    "object=%#llx vt=%#llx child+0x10=0 "
+                    "sibling+0x08=%#llx sibling+0x18=%#llx\n",
+                    (unsigned long long)pc,
+                    (unsigned long long)c->x[30],
+                    (unsigned long long)object,
+                    (unsigned long long)LD64(object),
+                    (unsigned long long)LD64(object + 8),
+                    (unsigned long long)LD64(object + 0x18));
+            }
+        }
+    }
 #endif
     GuestFn f = dispatch_lookup(pc);
     if (!f) {
@@ -385,8 +354,25 @@ void rt_fault_report(const char *what, uint64_t fa, uint64_t pc, uint64_t lr) {
                     (unsigned long long)c->x[30],
                     (unsigned long long)object,
                     (unsigned long long)c->pc);
-            // No dereference from a fatal signal handler: the mapped page
-            // might itself be invalid and trigger a nested SIGSEGV.
+            // This exact crash already read the object field successfully
+            // inside the generated ARM64 thunk. Only read the neighbouring
+            // guest heap data if the complete range is in the committed heap;
+            // do not invent a child pointer or change the guest CPU state.
+            uint64_t heap_size = kernel_heap_size();
+            if (object >= HEAP_BASE && heap_size >= 32 &&
+                object - HEAP_BASE <= heap_size - 32) {
+                fprintf(stderr,
+                    "[guest-null-object] this=%#llx vt=%#llx "
+                    "field+0x08=%#llx field+0x10=%#llx "
+                    "field+0x18=%#llx guest_x2=%#llx guest_sp=%#llx\n",
+                    (unsigned long long)object,
+                    (unsigned long long)LD64(object),
+                    (unsigned long long)LD64(object + 8),
+                    (unsigned long long)LD64(object + 0x10),
+                    (unsigned long long)LD64(object + 0x18),
+                    (unsigned long long)c->x[2],
+                    (unsigned long long)c->sp);
+            }
         }
     }
     rt_fatal_trace();
