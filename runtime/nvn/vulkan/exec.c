@@ -17,6 +17,7 @@
 #include "gmem.h"
 #include "gmem_delta.h"
 #include "gmem_retarget.h"
+#include "gmem_atlas.h"
 #include "resident_gpu.h"
 #include "texture_native.h"
 #include "rt_graph.h"
@@ -589,6 +590,9 @@ static int new_chunk(uint64_t size) {
 
 static void ring_retire(void) {}  // chunks are recycled lazily in vk_transient
 static void ring_flush(void) {
+    // Atlas allocations are persistent mapped VkBuffers, not part of the
+    // transient chunk ring. Flush their actual dirty bytes before submit.
+    vk_gmem_atlas_flush();
     for (int i = 0; i < nchunks; i++) {
         Chunk *c = &chunks[i];
         if (c->dirty_lo == UINT64_MAX) continue;
@@ -1036,6 +1040,10 @@ const char *renderer_stats(void) {
             stat_gmem_covered_bytes / 1048576.0);
         stat_gmem_stream_bytes = stat_gmem_stream_maps = 0;
         stat_gmem_covered = stat_gmem_covered_bytes = 0;
+    }
+    {
+        size_t n = strlen(stats_text);
+        vk_gmem_atlas_stats_append(stats_text + n, sizeof stats_text - n);
     }
     {
         size_t n = strlen(stats_text);
@@ -2830,6 +2838,16 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
         cache[slot].cpu_writes == cpu_writes && !memcmp(&cache[slot].plan, &plan, sizeof plan))
         return cache[slot].data;
 
+    // The atlas owns immutable copies of individual guest ranges in a single
+    // GPU-visible buffer per submission slot. It may replace plan.tab offsets
+    // with actual atlas offsets only on success. Never publish its descriptor
+    // via the old exact-plan cache: that cache does not retain the rewritten
+    // address table, so an exact hit would otherwise use stale packed offsets.
+    if (!store && gmem_stream_enabled()) {
+        VkDescriptorBufferInfo atlas = vk_gmem_atlas_get(&plan, tab);
+        if (atlas.buffer) return atlas;
+    }
+
     // Most outdoor draws repack several overlapping guest memory layouts.
     // A larger, already-published read-only map can serve a narrower one
     // without uploading any bytes: each guest interval is redirected to
@@ -3152,6 +3170,7 @@ void vk_exec_reset(void) {
     counter_prev_out = 0;
     counter_prev_tick = 0;
     vk_resident_reset();  // called with GPU idle during backend reset
+    vk_gmem_atlas_reset(); // release dedicated guest-memory atlas slabs
     gmem_snap_clear();
     vtx_snapshots_clear();  // backend reset occurs after GPU idle
     gmem_resolve_done(vk_completed_seq());
