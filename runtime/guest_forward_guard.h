@@ -1,4 +1,4 @@
-// Nullable virtual forwarding for the known Zelda v1.0.0 guest thunk.
+// Nullable virtual forwarding for Zelda v1.0.0 guest thunks\n// f_70010cce30 and f_70010cce50.
 // Normal dispatch is unchanged. Only a NULL child at this+0x10 causes
 // a no-op return instead of dereferencing the NULL child as a vtable.
 // This is a guest lifecycle mitigation; it does not manufacture an object.

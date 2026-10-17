@@ -27,6 +27,11 @@ int main(void) {
     assert(c.x[0] == (uint64_t)(uintptr_t)object);
     assert(c.pc == 0x70010cce50ull); // original compiled thunk remains active
     assert(c.x[30] == 0x70013c229cull);
+    c.pc = 0x70010cce30ull; // sibling forwarding target (vtable+0xA8)
+    assert(!rt_guest_nullable_child_return(&c));
+    object[2] = 0;
+    assert(rt_guest_nullable_child_return(&c));
+    assert(c.x[0] == 0 && c.pc == c.x[30]);
 
     memset(&c, 0, sizeof c);
     c.x[30] = 0x70013c229cull;

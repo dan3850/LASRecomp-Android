@@ -133,10 +133,12 @@ GuestFn dispatch_lookup(uint64_t addr) {
 }
 
 // Targeted guest virtual-forwarding fix for Link's Awakening main v1.0.0.
-// The generated function 0x70010cce50 forwards via *(this+0x10)->vtable[0xA0].
+// The sibling generated functions 0x70010cce30 and 0x70010cce50
+// forward via *(this+0x10)->vtable[0xA8/0xA0], respectively.
 // Its neighbouring function 0x70010cce00 sets this+0x10 to NULL, and the
 // nullable thunk 0x70010cce80 already tests a nullable child before calling.
 // Several runs crashed in f_70010cce50+0x34 when that child was NULL.
+// The sibling thunk f_70010cce30 performs the same unchecked dereference.
 //
 // This intercepts only INDIRECT dispatch to that exact game function.
 // All non-null calls enter the unmodified private recompiled function; only
@@ -146,7 +148,8 @@ GuestFn dispatch_lookup(uint64_t addr) {
 // the object lifecycle has been repaired.
 //
 // Disable for A/B: LARECOMP_GUEST_NULL_FORWARD=0.
-#define LA_NULLABLE_FORWARD 0x70010cce50ull
+#define LA_NULLABLE_FORWARD_A 0x70010cce30ull
+#define LA_NULLABLE_FORWARD_B 0x70010cce50ull
 static int nullable_forward_on(void) {
     static int enabled = -1;
     if (enabled < 0) {
@@ -158,7 +161,7 @@ static int nullable_forward_on(void) {
     return enabled;
 }
 static void nullable_child_virtual_forward(Cpu *c) {
-    uint64_t object = c->x[0], caller = c->x[30];
+    uint64_t object = c->x[0], caller = c->x[30], target = c->pc;
     if (rt_guest_nullable_child_return(c)) {
         static _Atomic unsigned count;
         unsigned k = atomic_fetch_add_explicit(&count, 1, memory_order_relaxed) + 1;
@@ -167,14 +170,15 @@ static void nullable_child_virtual_forward(Cpu *c) {
             // With a non-null object, original code already dereferences its
             // +0x10 member; the vtable read is solely crash diagnostics.
             uint64_t vt = object ? LD64(object) : 0;
-            LOG("[guest-null-forward] skipped null child at f_70010cce50 "
+            LOG("[guest-null-forward] skipped null child target=%#llx "
                 "object=%#llx vtable=%#llx caller=%#llx count=%u\n",
+                (unsigned long long)target,
                 (unsigned long long)object, (unsigned long long)vt,
                 (unsigned long long)caller, k);
         }
         return; // return to host caller; do not re-dispatch into this thunk
     }
-    GuestFn normal = dispatch_lookup(LA_NULLABLE_FORWARD);
+    GuestFn normal = dispatch_lookup(target);
     if (!normal) FATAL("missing original optional-child forward thunk\n");
     normal(c); // preserve ALL normal guest behaviour, including tail dispatch
 }
@@ -200,7 +204,7 @@ static GuestFn dispatch_slow(Cpu *c) {
     // Installed through the existing indirect-dispatch cache. A direct call
     // into the generated code is unaffected; the observed vtable dispatch
     // always passes through this route.
-    if (pc == LA_NULLABLE_FORWARD && nullable_forward_on())
+    if ((pc == LA_NULLABLE_FORWARD_A || pc == LA_NULLABLE_FORWARD_B) && nullable_forward_on())
         return nullable_child_virtual_forward;
 #endif
     GuestFn f = dispatch_lookup(pc);
