@@ -681,6 +681,124 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     return s;
 }
 
+// Eden-inspired persistent staging for read-only guest uniform buffers.
+// This is separate from the per-submission guest_copy cache: every reuse
+// byte-compares CPU memory, because Android cannot reliably track guest
+// writes at page granularity. A GPU-in-flight allocation is NEVER modified.
+// LARECOMP_VK_CBUF_CACHE=0 disables on Android for an exact A/B comparison.
+#define CBUF_SNAP_SLOTS 256
+#define CBUF_SNAP_MIN 512ull
+#define CBUF_SNAP_MAX (64ull << 10)
+#define CBUF_SNAP_BUDGET (8ull << 20)
+typedef struct {
+    uint64_t addr, size, seq;
+    VkBuffer buf;
+    VmaAllocation alloc;
+    uint8_t *mapped, *shadow;
+} CbufSnapshot;
+static CbufSnapshot cbuf_snap[CBUF_SNAP_SLOTS];
+static uint64_t cbuf_snap_bytes, cbuf_saved_bytes, cbuf_written_bytes, cbuf_busy_bytes;
+
+static void cbuf_snapshots_clear(void) {
+    for (unsigned i = 0; i < CBUF_SNAP_SLOTS; ++i) {
+        CbufSnapshot *e = &cbuf_snap[i];
+        if (e->buf) vmaDestroyBuffer(g_vk.vma, e->buf, e->alloc);
+        free(e->shadow);
+    }
+    memset(cbuf_snap, 0, sizeof cbuf_snap);
+    cbuf_snap_bytes = cbuf_saved_bytes = cbuf_written_bytes = cbuf_busy_bytes = 0;
+}
+
+static VkSpan guest_uniform_copy(uint64_t addr, uint64_t size) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *opt = getenv("LARECOMP_VK_CBUF_CACHE");
+#ifdef __ANDROID__
+        enabled = !opt || atoi(opt) != 0;
+#else
+        enabled = opt && atoi(opt) != 0;
+#endif
+        LOG("[vk] byte-verified persistent uniform staging %s (8 MiB cap)\\n",
+            enabled ? "enabled" : "disabled");
+    }
+    if (!enabled || !addr || size < CBUF_SNAP_MIN || size > CBUF_SNAP_MAX)
+        return guest_copy(addr, size);
+    // Do not change the existing single-submission memoization semantics.
+    // An explicit guest_copy_flush invalidates that memo immediately; this
+    // cache remains correct because it always checks the source bytes.
+    uint64_t h = (addr >> 4) * 0x9e3779b97f4a7c15ull;
+    unsigned slot = (unsigned)(h ^ (h >> 32)) & (CBUF_SNAP_SLOTS - 1);
+    CbufSnapshot *e = &cbuf_snap[slot];
+    const uint8_t *src = (const uint8_t *)(uintptr_t)addr;
+    uint64_t pending = vk_pending_seq();
+    if (e->buf && e->addr == addr && e->size >= size &&
+        !memcmp(e->shadow, src, (size_t)size)) {
+        e->seq = pending;
+        cbuf_saved_bytes += size;
+        return (VkSpan){e->buf, 0, NULL};
+    }
+    if (e->buf && e->seq > vk_completed_seq()) {
+        // The previous draw may still read this allocation. Use the
+        // transient ring, just like Eden's busy-staging fallback.
+        cbuf_busy_bytes += size;
+        return guest_copy(addr, size);
+    }
+    if (e->buf && e->addr == addr && e->size == size) {
+        // The GPU is done: update only different 256-byte regions.
+        // Never read a write-combined Vulkan mapping; compare the shadow.
+        uint64_t dirty_lo = UINT64_MAX, dirty_hi = 0, written = 0;
+        for (uint64_t off = 0; off < size; off += 256) {
+            uint64_t n = size - off < 256 ? size - off : 256;
+            if (!memcmp(e->shadow + off, src + off, (size_t)n)) continue;
+            memcpy(e->shadow + off, src + off, (size_t)n);
+            memcpy(e->mapped + off, src + off, (size_t)n);
+            if (off < dirty_lo) dirty_lo = off;
+            dirty_hi = off + n;
+            written += n;
+        }
+        if (written) {
+            VK_CHECK(vmaFlushAllocation(g_vk.vma, e->alloc, dirty_lo, dirty_hi - dirty_lo));
+            cbuf_written_bytes += written;
+            stat_upload_bytes += written;
+        }
+        e->seq = pending;
+        return (VkSpan){e->buf, 0, NULL};
+    }
+    if (e->buf) {
+        vmaDestroyBuffer(g_vk.vma, e->buf, e->alloc);
+        free(e->shadow);
+        cbuf_snap_bytes -= e->size;
+        memset(e, 0, sizeof *e);
+    }
+    if (cbuf_snap_bytes + size > CBUF_SNAP_BUDGET) return guest_copy(addr, size);
+    uint8_t *shadow = malloc((size_t)size);
+    if (!shadow) return guest_copy(addr, size);
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size, .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                 VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VkBuffer buf = VK_NULL_HANDLE;
+    VmaAllocation alloc = NULL;
+    VmaAllocationInfo info = {0};
+    if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &buf, &alloc, &info) != VK_SUCCESS ||
+        !info.pMappedData) {
+        if (buf) vmaDestroyBuffer(g_vk.vma, buf, alloc);
+        free(shadow);
+        return guest_copy(addr, size);
+    }
+    memcpy(shadow, src, (size_t)size);
+    memcpy(info.pMappedData, shadow, (size_t)size);
+    VK_CHECK(vmaFlushAllocation(g_vk.vma, alloc, 0, size));
+    *e = (CbufSnapshot){.addr = addr, .size = size, .seq = pending,
+                        .buf = buf, .alloc = alloc,
+                        .mapped = info.pMappedData, .shadow = shadow};
+    cbuf_snap_bytes += size;
+    cbuf_written_bytes += size;
+    stat_upload_bytes += size;
+    return (VkSpan){buf, 0, NULL};
+}
+
 // On Android the Adreno driver does not expose VK_EXT_external_memory_host, and
 // the guest heap's OS page write tracking is unavailable. The regular vertex
 // cache is therefore disabled and the same geometry gets copied to the
@@ -1002,6 +1120,14 @@ const char *renderer_stats(void) {
                  stat_gmem_capacity_bypass / 1048576.0, stat_gmem_busy_bypass / 1048576.0,
                  stat_gmem_budget_bypass / 1048576.0, stat_gmem_evicted_bytes / 1048576.0,
                  (unsigned long long)stat_gmem_evictions, gmem_snap_bytes / 1048576.0);
+    }
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 ", uniform saved %.1fMB refreshed %.1fMB busy %.1fMB cache %.1fMB",
+                 cbuf_saved_bytes / 1048576.0, cbuf_written_bytes / 1048576.0,
+                 cbuf_busy_bytes / 1048576.0, cbuf_snap_bytes / 1048576.0);
+        cbuf_saved_bytes = cbuf_written_bytes = cbuf_busy_bytes = 0;
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     stat_gmem_size_bypass = stat_gmem_capacity_bypass = 0;
@@ -2184,7 +2310,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         NvnShaderStage *ss = &st.program->stages[stage];
         uint64_t size = ss->const_size ? ss->const_size : 16;
         if (size < si->cbuf_size[1]) size = si->cbuf_size[1];
-        return ubo_span(guest_copy(ss->code_addr + ss->const_offset, size), size);  // (constant: shared per submission)
+        return ubo_span(guest_uniform_copy(ss->code_addr + ss->const_offset, size), size);
     }
     int idx = k - 3;  // cbuf_base
     Range r = (idx >= 0 && idx < 18) ? st.ubuf[stage][idx] : (Range){0, 0};
@@ -2196,7 +2322,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
     // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
     // and drops the shared copies).
-    return ubo_span(guest_copy(r.addr, size), size);
+    return ubo_span(guest_uniform_copy(r.addr, size), size);
 }
 
 // Global memory (shader LDG/STG, maxwell_gmem_base = HEAP_BASE): the guest heap imported as a GPU buffer
@@ -2973,6 +3099,7 @@ void vk_exec_reset(void) {
     counter_prev_tick = 0;
     gmem_snap_clear();
     vtx_snapshots_clear();  // backend reset occurs after GPU idle
+    cbuf_snapshots_clear();   // uniform staging is also keyed by guest addresses
     gmem_resolve_done(vk_completed_seq());
     gmem_write_pool_clear();
     memset(prog_tab, 0, sizeof prog_tab);
