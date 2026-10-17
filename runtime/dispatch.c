@@ -309,6 +309,26 @@ void rt_fault_report(const char *what, uint64_t fa, uint64_t pc, uint64_t lr) {
         }
     }
 #endif
+    // The repeated opening-to-Field SIGSEGV at f_70010cce50+0x34 is
+    // a generated-game indirect dispatch: the object loaded into guest x1
+    // has a NULL child/callback at object+0x10. Diagnose that exact state
+    // without modifying the guest program, masking the error or adding
+    // branches on the renderer's hot path.
+    if (fa == 0 && !strcmp(pname, "f_70010cce50") && po == 0x34) {
+        Cpu *c = kernel_current_cpu();
+        if (c) {
+            uint64_t object = c->x[1];
+            fprintf(stderr,
+                    "[guest-null-dispatch] guest=f_70010cce50+0x34 "
+                    "caller_lr=%#llx object_from_x1=%#llx expected_field_offset=0x10 "
+                    "guest_pc=%#llx\n",
+                    (unsigned long long)c->x[30],
+                    (unsigned long long)object,
+                    (unsigned long long)c->pc);
+            // No dereference from a fatal signal handler: the mapped page
+            // might itself be invalid and trigger a nested SIGSEGV.
+        }
+    }
     rt_fatal_trace();
 }
 

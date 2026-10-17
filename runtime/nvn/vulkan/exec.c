@@ -2843,7 +2843,11 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
     if (cover_on < 0) {
         const char *e = getenv("LARECOMP_VK_GMEM_COVER");
 #ifdef __ANDROID__
-        cover_on = !e || atoi(e) != 0;
+        // The 2026-10-17 startup crash is a guest null dispatch also found
+        // in older builds; it is NOT proven to be caused by this experiment.
+        // It saved zero bytes in the failing run. Keep the proven streaming
+        // path and require explicit opt-in for the new covered-map aliasing.
+        cover_on = e && atoi(e) != 0;
 #else
         cover_on = e && atoi(e) != 0;
 #endif
