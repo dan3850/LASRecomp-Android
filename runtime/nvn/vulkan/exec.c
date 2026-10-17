@@ -21,6 +21,8 @@
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
+// Pending compilation skips, excluding intentional draw filters (render thread only).
+static uint64_t stat_prog_pending, stat_pipe_pending, stat_compute_pending;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -948,6 +950,14 @@ const char *renderer_stats(void) {
     {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
+    }
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 " | shader pending: program %llu pipeline %llu compute %llu",
+                 (unsigned long long)stat_prog_pending, (unsigned long long)stat_pipe_pending,
+                 (unsigned long long)stat_compute_pending);
+        stat_prog_pending = stat_pipe_pending = stat_compute_pending = 0;
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     {
@@ -3036,7 +3046,11 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
-    if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
+    if (!cp || atomic_load(&cp->p.state) != 1) {
+        if (cp && atomic_load(&cp->p.state) == 0) stat_compute_pending++;
+        stat_skipped++;
+        return;
+    }
     {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
         static uint64_t skip = ~0ull;
         if (skip == ~0ull) { const char *e = getenv("LARECOMP_SKIP_CS"); skip = e ? strtoull(e, NULL, 16) : 0; }
@@ -3134,7 +3148,11 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
     Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+    if (!pr || atomic_load(&pr->state) != 1) {
+        if (pr && atomic_load(&pr->state) == 0) stat_prog_pending++;
+        stat_skipped++;
+        return;
+    }
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
@@ -3148,7 +3166,11 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
-            if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
+            if (!pr || atomic_load(&pr->state) != 1) {
+        if (pr && atomic_load(&pr->state) == 0) stat_prog_pending++;
+        stat_skipped++;
+        return;
+    }
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
@@ -3267,7 +3289,11 @@ static void draw_(CmdRec *r, bool indexed) {
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
     }
-    if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
+    if (atomic_load(&pp->state) != 1) {
+        if (atomic_load(&pp->state) == 0) stat_pipe_pending++;
+        stat_skipped++;
+        return;
+    }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
@@ -3917,6 +3943,23 @@ static VkPipeline present_pipeline(VkFormat fmt) {
     VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
     for (int i = 0; i < 4; i++) if (!cache[i].p) { cache[i].f = fmt; cache[i].p = p; break; }
     return p;
+}
+
+// Android: compile the fixed presentation pipeline before allowing the guest
+// renderer to begin. Never wait for Zelda's shader compiler jobs during play.
+// A known render-target format is sufficient to create only this built-in pipeline.
+void vk_present_pipeline_warmup(void) {
+#ifdef __ANDROID__
+    const char *option = getenv("LARECOMP_VK_BOOT_PREWARM");
+    if (option && strcmp(option, "0") == 0) {
+        LOG("[vk] boot present pipeline prewarm disabled\n");
+        return;
+    }
+    if (!g_vk.dev || !g_vk.swapchain || g_vk.sc_format == VK_FORMAT_UNDEFINED) return;
+    uint64_t t0 = SDL_GetTicksNS();
+    (void)present_pipeline(g_vk.sc_format);
+    LOG("[vk] boot present pipeline prewarmed in %.1f ms\n", (double)(SDL_GetTicksNS() - t0) / 1e6);
+#endif
 }
 
 // Scanout shows the bytes the game wrote: sRGB images are read through a UNORM view (no decode), like metal.m.
