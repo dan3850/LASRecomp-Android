@@ -20,6 +20,7 @@
 #include "gmem_atlas.h"
 #include "scheduler.h"
 #include "counter_ready.h"
+#include "descriptor_reuse_policy.h"
 #include "resident_gpu.h"
 #include "texture_native.h"
 #include "rt_graph.h"
@@ -49,6 +50,16 @@ static _Atomic int stat_compiles;
 static uint64_t op_counts[CMD_COUNT];
 bool g_debug_frame;
 static char stats_text[2048];
+// The Vulkan descriptor pools are reset only after their submission finishes.
+// The cache MUST never retain a descriptor into a later submission or reset.
+typedef struct {
+ uint64_t seq,hash;
+ LasDsKey key;
+ VkDescriptorSet ds;
+} DsReuseEntry;
+static DsReuseEntry ds_reuse[LAS_DS_SLOTS];
+static uint64_t ds_hit,ds_miss,ds_large,ds_collide;
+static int ds_enabled = -1;
 void vk_collect_dead(void);
 
 // ================================================================== submissions
@@ -1135,6 +1146,14 @@ const char *renderer_stats(void) {
     {
         size_t n = strlen(stats_text);
         vk_sched_stats_append(stats_text + n, sizeof stats_text - n);
+    }
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+            " | ds reused %llu fresh %llu large %llu collisions %llu",
+            (unsigned long long)ds_hit,(unsigned long long)ds_miss,
+            (unsigned long long)ds_large,(unsigned long long)ds_collide);
+        ds_hit=ds_miss=ds_large=ds_collide=0;
     }
     {
         size_t n = strlen(stats_text);
@@ -3263,6 +3282,7 @@ void vk_exec_reset(void) {
     atomic_store_explicit(&last_eager_completed, 0, memory_order_relaxed);
     vk_resident_reset();  // called with GPU idle during backend reset
     vk_gmem_atlas_reset(); // release dedicated guest-memory atlas slabs
+    memset(ds_reuse,0,sizeof ds_reuse);
     gmem_snap_clear();
     vtx_snapshots_clear();  // backend reset occurs after GPU idle
     gmem_resolve_done(vk_completed_seq());
@@ -3341,6 +3361,61 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     *out = (VkDescriptorImageInfo){smp, view, VK_IMAGE_LAYOUT_GENERAL};
 }
 
+// Exact-set cache only. Buffer offsets, texture views, samplers and image
+// layouts are part of each key. The set is NEVER updated after first use.
+static bool ds_cache_on(void) {
+ if (ds_enabled<0) {
+  const char *v=getenv("LARECOMP_VK_DESCRIPTOR_REUSE");
+#ifdef __ANDROID__
+  ds_enabled= !v || atoi(v)!=0;
+#else
+  ds_enabled= v && atoi(v)!=0;
+#endif
+  LOG("[vk-ds] immutable in-submit descriptor cache %s "
+      "(LARECOMP_VK_DESCRIPTOR_REUSE=%s)\n",
+      ds_enabled?"enabled":"disabled",v?v:"unset");
+ }
+ return ds_enabled!=0;
+}
+static VkDescriptorSet ds_reuse_lookup(
+    VkDescriptorSetLayout layout, uint32_t n,
+    const VkWriteDescriptorSet *w, LasDsKey *key,
+    uint64_t *hash, DsReuseEntry **entry) {
+ *entry=NULL;
+ if (!ds_cache_on() || n>LAS_DS_LIMIT) {
+  if (n>LAS_DS_LIMIT) ds_large++;
+  return VK_NULL_HANDLE;
+ }
+ memset(key,0,sizeof *key);
+ key->layout=(uint64_t)(uintptr_t)layout;
+ key->count=n;
+ for (uint32_t i=0;i<n;++i) {
+  LasDsBind *b=&key->binds[i];
+  b->binding=w[i].dstBinding;
+  b->type=(uint32_t)w[i].descriptorType;
+  if(w[i].pBufferInfo) {
+   const VkDescriptorBufferInfo *info=w[i].pBufferInfo;
+   b->a=(uint64_t)(uintptr_t)info->buffer;
+   b->b=info->offset; b->c=info->range;
+  } else if(w[i].pImageInfo) {
+   const VkDescriptorImageInfo *info=w[i].pImageInfo;
+   b->a=(uint64_t)(uintptr_t)info->sampler;
+   b->b=(uint64_t)(uintptr_t)info->imageView;
+   b->c=(uint64_t)info->imageLayout;
+  } else return VK_NULL_HANDLE; // unknown descriptor class
+ }
+ *hash=las_ds_hash(key);
+ DsReuseEntry *e=&ds_reuse[*hash&(LAS_DS_SLOTS-1)];
+ *entry=e;
+ uint64_t seq=vk_pending_seq();
+ if (e->ds && las_ds_valid(e->seq,seq,e->hash,*hash,&e->key,key)) {
+  ds_hit++;
+  return e->ds;
+ }
+ if (e->ds && e->seq==seq) ds_collide++;
+ return VK_NULL_HANDLE;
+}
+
 // Writes the descriptor set of one stage. gx..gz: compute group counts (driver constants).
 // pre_ii: texture descriptors already resolved by the caller (draw: fragment textures, needed earlier for the
 // viewport decision), or NULL.
@@ -3348,7 +3423,6 @@ static float g_mirror_w;  // mirror mode's composite: its render target width (r
 
 static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
                                  const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii) {
-    VkDescriptorSet ds = vk_alloc_set(layout);
     VkWriteDescriptorSet w[MAX_BIND];
     VkDescriptorBufferInfo bi[MAX_BIND];
     VkDescriptorImageInfo ii[MAX_BIND];
@@ -3367,7 +3441,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     for (int i = 0; i < p->nbinds; i++) {
         VkBindingInfo *b = &p->binds[i];
         if (b->set != set) continue;
-        w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
+        w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
         if (b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) {
             int ti = (int)b->binding - 32;
@@ -3400,7 +3474,7 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         VkBindingInfo *b = &p->binds[i];
         if (b->set != set || b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
             (b->binding != 18 && b->binding != 19 && b->binding != GMAP_BUFFER_INDEX)) continue;
-        w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
+        w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
         if (b->binding == GMAP_BUFFER_INDEX) {  // (compute) this dispatch's fast-copy table: gfast_prepare
             // Graphics with an imported heap read it directly; the preceding
@@ -3417,7 +3491,21 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
         w[n].pBufferInfo = &bi[n];
         n++;
     }
-    if (n) vkUpdateDescriptorSets(g_vk.dev, (uint32_t)n, w, 0, NULL);
+    LasDsKey key;
+    uint64_t hash=0;
+    DsReuseEntry *cached=NULL;
+    VkDescriptorSet reuse=ds_reuse_lookup(layout,(uint32_t)n,w,&key,&hash,&cached);
+    if (reuse) return reuse;
+    VkDescriptorSet ds=vk_alloc_set(layout);
+    for(int i=0;i<n;++i) w[i].dstSet=ds;
+    if (n) vkUpdateDescriptorSets(g_vk.dev,(uint32_t)n,w,0,NULL);
+    ds_miss++;
+    if(cached) {
+        cached->seq=vk_pending_seq();
+        cached->hash=hash;
+        cached->key=key;
+        cached->ds=ds;
+    }
     return ds;
 }
 
