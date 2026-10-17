@@ -12,6 +12,7 @@
 #include "../astc.h"
 #include "../bcn_decode.h"
 #include "diagnostics.h"
+#include "texture_native.h"
 #include "../renderer.h"
 #include "../texpatch.h"
 
@@ -417,6 +418,8 @@ static uint32_t level_w(const TexBackend *b, uint32_t lv) { uint32_t v = b->widt
 static uint32_t level_h(const TexBackend *b, uint32_t lv) { uint32_t v = b->height >> lv; return v ? v : 1; }
 
 static void destroy_image(TexBackend *b) {
+    vk_native_texture_discard(b);
+    b->uploaded = false;  // a recreated image must receive a fresh initial upload
     views_forget(b);
     if (b->image || b->mem) defer((Dead){.img = b->image, .mem = b->mem});  // (never the same allocation twice)
     b->image = VK_NULL_HANDLE;
@@ -688,7 +691,10 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
     if (b->pending_rgba) upload_pending(b);
-    if (for_render) b->gpu_owned = true;
+    if (for_render) {
+        if (!b->gpu_owned) vk_native_texture_discard(b);
+        b->gpu_owned = true;
+    }
     else if (!b->gpu_owned) {
         extern uint64_t prof_up_ns;
         uint64_t t0 = prof_up_ns != ~0ull ? SDL_GetTicksNS() : 0;
@@ -698,7 +704,11 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     return b;
 }
 
-void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
+void renderer_mark_gpu_owned(NvnTexture *t) {
+    TexBackend *b = tex_backend(t);
+    if (!b->gpu_owned) vk_native_texture_discard(b);
+    b->gpu_owned = true;
+}
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
 // NVN explicitly flushes CPU-rasterized glyphs. The texture/view memo must not
 // suppress that update merely because another string used the atlas this frame.

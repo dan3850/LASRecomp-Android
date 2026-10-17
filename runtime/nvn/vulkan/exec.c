@@ -17,6 +17,7 @@
 #include "gmem.h"
 #include "gmem_delta.h"
 #include "resident_gpu.h"
+#include "texture_native.h"
 #include "replay.h"
 #include "cache_identity.h"
 #include "../bcn_decode.h"
@@ -1026,6 +1027,10 @@ const char *renderer_stats(void) {
     {
         size_t n = strlen(stats_text);
         vk_resident_stats_append(stats_text + n, sizeof stats_text - n);
+    }
+    {
+        size_t n = strlen(stats_text);
+        vk_native_texture_stats(stats_text + n, sizeof stats_text - n);
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     {

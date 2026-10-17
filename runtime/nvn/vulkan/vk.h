@@ -75,6 +75,7 @@ VkSpan vk_readback(uint64_t size);  // host-cached GPU -> CPU staging (read righ
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout);
 
 // ---- textures (textures.c)
+typedef struct NativeTexResident NativeTexResident;
 typedef struct TexBackend {
     VkImage image;
     VmaAllocation mem;
@@ -97,6 +98,7 @@ typedef struct TexBackend {
     uint8_t bcn_format;  // BCn without driver support: CPU decode, preserving channel type/colour space
     int tp;              // runtime/nvn/texpatch.c: 0 not checked yet, -1 none, else known UI texture + 1
     uint32_t tp_gen;     // texpatch_generation() it was last uploaded with
+    NativeTexResident *native_tex;  // per-level CPU shadow for GPU-resident image updates
     int reg;  // slot in textures.c's live list + 1 (a reboot destroys them all)
 } TexBackend;
 
