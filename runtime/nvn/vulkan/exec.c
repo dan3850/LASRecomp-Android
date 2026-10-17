@@ -19,6 +19,7 @@
 #include "gmem_retarget.h"
 #include "gmem_atlas.h"
 #include "scheduler.h"
+#include "counter_ready.h"
 #include "resident_gpu.h"
 #include "texture_native.h"
 #include "rt_graph.h"
@@ -126,7 +127,13 @@ uint64_t vk_pending_seq(void) { return submit_seq + 1; }
 // Virtual time is strictly a diagnostic bypass of a possible 30fps feedback loop; it can
 // produce slow-motion gameplay when the actual work cannot sustain 60fps.
 #define CQ_MAX 64
-typedef struct { VkQueryPool pool; uint32_t n; uint64_t seq; uint64_t *out[CQ_MAX]; } CounterQ;
+typedef struct {
+    VkQueryPool pool;
+    uint32_t n;
+    uint64_t seq;
+    uint64_t *out[CQ_MAX];
+    uint64_t provisional[CQ_MAX]; // exact value written before GPU completion
+} CounterQ;
 static CounterQ cq[SUBS];
 static pthread_mutex_t cq_lock = PTHREAD_MUTEX_INITIALIZER;
 static int64_t cq_offset;  // host ns - GPU ns (the smallest seen)
@@ -188,7 +195,9 @@ static uint64_t stat_pace_over;
 // This measures counter pairs, not display FPS; it never changes a timestamp or pacing.
 static struct {
     uint64_t since_ns, reports, pairs, over_16ms, over_30ms;
-    double sum_ms, peak_ms;
+    uint64_t provisional_pairs, provisional_false_slow;
+    uint64_t eager_polls, eager_queries;
+    double sum_ms, peak_ms, provisional_sum_ms;
 } counter_pace_diag;
 
 static void counter_pace_diag_flush(void) {
@@ -196,14 +205,23 @@ static void counter_pace_diag_flush(void) {
     if (!counter_pace_diag.since_ns) counter_pace_diag.since_ns = now;
     if (now - counter_pace_diag.since_ns < 2000000000ull) return;
     if (counter_pace_diag.reports) {
-        LOG("[counter-pace] reports=%llu paired=%llu gpu-interval-avg=%.2fms peak=%.2fms >=16.67ms=%llu >=30ms=%llu pace-injection=%s\n",
+        LOG("[counter-pace] reports=%llu paired=%llu gpu-interval-avg=%.2fms peak=%.2fms "
+            ">=16.67ms=%llu >=30ms=%llu pace-injection=%s "
+            "provisional-paired=%llu provisional-avg=%.2fms false-slow=%llu "
+            "eager-polls=%llu eager-queries=%llu\n",
             (unsigned long long)counter_pace_diag.reports,
             (unsigned long long)counter_pace_diag.pairs,
             counter_pace_diag.pairs ? counter_pace_diag.sum_ms / counter_pace_diag.pairs : 0.0,
             counter_pace_diag.peak_ms,
             (unsigned long long)counter_pace_diag.over_16ms,
             (unsigned long long)counter_pace_diag.over_30ms,
-            pace_slow ? "on" : "off");
+            pace_slow ? "on" : "off",
+            (unsigned long long)counter_pace_diag.provisional_pairs,
+            counter_pace_diag.provisional_pairs
+              ? counter_pace_diag.provisional_sum_ms / counter_pace_diag.provisional_pairs : 0.0,
+            (unsigned long long)counter_pace_diag.provisional_false_slow,
+            (unsigned long long)counter_pace_diag.eager_polls,
+            (unsigned long long)counter_pace_diag.eager_queries);
     }
     memset(&counter_pace_diag, 0, sizeof counter_pace_diag);
     counter_pace_diag.since_ns = now;
@@ -213,8 +231,9 @@ static void counter_pace_diag_flush(void) {
 // Keep raw GPU time for the diagnostic difference: per-resolve host calibration
 // can change, and must not become part of the measured GPU interval.
 static uintptr_t counter_prev_out;
-static uint64_t counter_prev_tick;
-static void counter_pace_record(const uint64_t *out, uint64_t tick, double period) {
+static uint64_t counter_prev_tick, counter_prev_provisional;
+static void counter_pace_record(
+    const uint64_t *out, uint64_t tick, uint64_t provisional, double period) {
     if (counter_prev_out && (uintptr_t)out == counter_prev_out + 16 && tick >= counter_prev_tick) {
         double ms = (tick - counter_prev_tick) * period / 1000000.0;
         counter_pace_diag.pairs++;
@@ -222,9 +241,19 @@ static void counter_pace_record(const uint64_t *out, uint64_t tick, double perio
         if (ms > counter_pace_diag.peak_ms) counter_pace_diag.peak_ms = ms;
         if (ms >= 16.67) counter_pace_diag.over_16ms++;
         if (ms >= 30.0) counter_pace_diag.over_30ms++;
+        if (provisional >= counter_prev_provisional) {
+            double provisional_ms = (provisional - counter_prev_provisional)
+                                  * (625.0 / 384.0) / 1e6;
+            counter_pace_diag.provisional_pairs++;
+            counter_pace_diag.provisional_sum_ms += provisional_ms;
+            counter_pace_diag.provisional_false_slow +=
+                vk_counter_host_overstates_gpu(counter_prev_provisional,
+                    provisional, ms, 625.0 / 384.0);
+        }
     }
     counter_prev_out = (uintptr_t)out;
     counter_prev_tick = tick;
+    counter_prev_provisional = provisional;
     counter_pace_diag.reports++;
 }
 
@@ -291,13 +320,18 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
             if (log) LOG("[counter] seq %llu #%u at %llx host %.3f gpu %.3f ms\n", (unsigned long long)q->seq, k,
                          (unsigned long long)(uintptr_t)q->out[k], q->out[k][1] * 625.0 / 384 / 1e6, gpu * 625.0 / 384 / 1e6);
             uint64_t delivered = pace_end_counter(k ? q->out[k - 1] : NULL, q->out[k], gpu);
-            counter_pace_record(q->out[k], t[k], per);
+            counter_pace_record(q->out[k], t[k], q->provisional[k], per);
             q->out[k][1] = delivered;
         }
         stat_counters_gpu += q->n;
         counter_pace_diag_flush();
+        q->n = 0;
+    } else {
+        // Preserve unresolved samples instead of discarding them. They still
+        // contain provisional CPU timestamps and can be retried after GPU
+        // timeline progress. In normal completed submissions this is rare.
+        return;
     }
-    q->n = 0;
 }
 
 static void cq_resolve_done(uint64_t done) {  // every slot whose submission is done
@@ -309,9 +343,50 @@ static void cq_resolve_done(uint64_t done) {  // every slot whose submission is 
         for (int i = 0; i < SUBS; ++i)
             if (cq[i].n && cq[i].seq <= done && (oldest < 0 || cq[i].seq < cq[oldest].seq)) oldest = i;
         if (oldest < 0) break;
+        // If query results are unexpectedly not ready, leave the oldest
+        // sample intact; otherwise this loop would spin forever.
+        uint32_t before = cq[oldest].n;
         cq_resolve(oldest);
+        if (cq[oldest].n == before) break;
     }
     pthread_mutex_unlock(&cq_lock);
+}
+
+// Opportunistically resolve only submissions whose Vulkan timeline already
+// completed. No vkWaitSemaphores, no QueueIdle, no extra GPU submission.
+// This shortens the window in which guest memory still holds a provisional
+// host timestamp that includes CPU-side NVN command translation.
+static int eager_counter_mode = -1;
+static _Atomic uint64_t last_eager_completed;
+
+static void cq_resolve_ready(void) {
+    if (vk_counter_mode() != 2) return;
+    if (eager_counter_mode < 0) {
+        const char *v = getenv("LARECOMP_VK_COUNTER_EAGER");
+#ifdef __ANDROID__
+        eager_counter_mode = !v || atoi(v) != 0;
+#else
+        eager_counter_mode = v && atoi(v) != 0;
+#endif
+        LOG("[counter-pace] nonblocking GPU counter resolve %s "
+            "(LARECOMP_VK_COUNTER_EAGER=%s)\n",
+            eager_counter_mode ? "enabled" : "disabled", v ? v : "unset");
+    }
+    if (!eager_counter_mode) return;
+    uint64_t completed = vk_completed_seq();
+    uint64_t previous = atomic_load_explicit(&last_eager_completed,
+                                            memory_order_relaxed);
+    while (completed > previous &&
+           !atomic_compare_exchange_weak_explicit(&last_eager_completed,
+               &previous, completed, memory_order_relaxed,
+               memory_order_relaxed)) {}
+    if (completed <= previous) return;
+    // A completed timeline value guarantees that writes to timestamp queries
+    // and guest-visible compute outputs have finished. Resolve in seq order.
+    uint64_t before = stat_counters_gpu;
+    cq_resolve_done(completed);
+    counter_pace_diag.eager_polls++;
+    counter_pace_diag.eager_queries += stat_counters_gpu - before;
 }
 
 static Sub *sub(void) {
@@ -495,6 +570,9 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
     pthread_mutex_unlock(&seq_lock);
+    // Collect actual GPU timestamps for older, already completed submissions
+    // even if the guest has not explicitly waited for their fences.
+    cq_resolve_ready();
     cur_sub = (cur_sub + 1) % SUBS;
     stat_flushes++;
     cum_submits++;
@@ -519,6 +597,7 @@ void renderer_sync(void) {
 }
 
 uint64_t renderer_fence_seq(void) {
+    cq_resolve_ready();
     pthread_mutex_lock(&seq_lock);
     uint64_t q = submit_seq + (subs[cur_sub].main_begun || subs[cur_sub].upload_begun ? 1 : 0);
     pthread_mutex_unlock(&seq_lock);
@@ -3173,7 +3252,8 @@ static int g_cs_n;  // (compute program table below)
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
     counter_prev_out = 0;
-    counter_prev_tick = 0;
+    counter_prev_tick = counter_prev_provisional = 0;
+    atomic_store_explicit(&last_eager_completed, 0, memory_order_relaxed);
     vk_resident_reset();  // called with GPU idle during backend reset
     vk_gmem_atlas_reset(); // release dedicated guest-memory atlas slabs
     gmem_snap_clear();
@@ -4908,6 +4988,7 @@ static void exec_list(uint64_t handle, int depth) {
                 pthread_mutex_lock(&cq_lock);
                 if (q->pool && q->n < CQ_MAX) {
                     vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, q->pool, q->n);
+                    q->provisional[q->n] = out[1];
                     q->out[q->n++] = out;
                 }
                 pthread_mutex_unlock(&cq_lock);
