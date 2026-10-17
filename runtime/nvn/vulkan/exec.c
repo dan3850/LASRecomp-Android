@@ -16,6 +16,7 @@
 #include "diagnostics.h"
 #include "gmem.h"
 #include "gmem_delta.h"
+#include "gmem_retarget.h"
 #include "resident_gpu.h"
 #include "texture_native.h"
 #include "rt_graph.h"
@@ -29,6 +30,7 @@
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
 static uint64_t stat_gmem_stream_bytes, stat_gmem_stream_maps;
+static uint64_t stat_gmem_covered, stat_gmem_covered_bytes;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -1026,11 +1028,14 @@ const char *renderer_stats(void) {
     {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n,
-            ", gmem saved %.1fMB, stream %llu maps %.1fMB",
+            ", gmem saved %.1fMB, stream %llu maps %.1fMB, covered %llu maps %.1fMB",
             stat_gmem_reused_bytes / 1048576.0,
             (unsigned long long)stat_gmem_stream_maps,
-            stat_gmem_stream_bytes / 1048576.0);
+            stat_gmem_stream_bytes / 1048576.0,
+            (unsigned long long)stat_gmem_covered,
+            stat_gmem_covered_bytes / 1048576.0);
         stat_gmem_stream_bytes = stat_gmem_stream_maps = 0;
+        stat_gmem_covered = stat_gmem_covered_bytes = 0;
     }
     {
         size_t n = strlen(stats_text);
@@ -2798,6 +2803,12 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
         GmemPlan plan;
         VkDescriptorBufferInfo data;
     } cache[128];
+    // Candidate indices rotate only when a genuinely new read-only map is
+    // packed. Retargeting a covered map does not evict its larger source.
+    // Entries may be overwritten by the hash table: exact seq/gen validation
+    // below prevents resurrecting a buffer from a previous submission.
+    enum { GMEM_RECENT = 24 };
+    static unsigned recent[GMEM_RECENT], recent_next;
     GmemRange ranges[GMAP_MAX] = {0};
     for (int i = 0; i < 16; ++i) ranges[i] = (GmemRange){st.sbuf[stage][i].addr, st.sbuf[stage][i].size};
     // NVN's compute driver constants also expose uniform-buffer GPU addresses.
@@ -2818,6 +2829,42 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
     if (!store && cache[slot].seq == seq && cache[slot].gen == gen &&
         cache[slot].cpu_writes == cpu_writes && !memcmp(&cache[slot].plan, &plan, sizeof plan))
         return cache[slot].data;
+
+    // Most outdoor draws repack several overlapping guest memory layouts.
+    // A larger, already-published read-only map can serve a narrower one
+    // without uploading any bytes: each guest interval is redirected to
+    // its existing packed offset. The storage descriptor references the
+    // larger immutable VkBuffer while the shader sees only its own map.
+    //
+    // Do NOT reuse across submission or generation changes, or reuse a
+    // writable compute dispatch's storage. All these conditions are the
+    // same as the existing exact-plan reuse rule.
+    static int cover_on = -1;
+    if (cover_on < 0) {
+        const char *e = getenv("LARECOMP_VK_GMEM_COVER");
+#ifdef __ANDROID__
+        cover_on = !e || atoi(e) != 0;
+#else
+        cover_on = e && atoi(e) != 0;
+#endif
+        LOG("[vk-gmem] covered-map reuse %s (LARECOMP_VK_GMEM_COVER=%s)\n",
+            cover_on ? "enabled" : "disabled", e ? e : "unset");
+    }
+    if (!store && cover_on && gmem_stream_enabled()) {
+        for (unsigned i = 0; i < GMEM_RECENT; ++i) {
+            unsigned hot = recent[(recent_next + GMEM_RECENT - 1 - i) % GMEM_RECENT];
+            if (hot >= sizeof cache / sizeof cache[0]) continue;
+            const typeof(cache[0]) *c = &cache[hot];
+            if (c->seq != seq || c->gen != gen || c->cpu_writes != cpu_writes ||
+                !c->data.buffer || c->data.range < plan.size || c->plan.size < plan.size)
+                continue;
+            if (gmem_retarget_covered(&c->plan, &plan, tab)) {
+                stat_gmem_covered++;
+                stat_gmem_covered_bytes += plan.size;
+                return c->data;
+            }
+        }
+    }
     VkSpan span;
     GmemWrite *w = NULL;
     if (store) {
@@ -2855,6 +2902,7 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
         cache[slot].cpu_writes = cpu_writes;
         cache[slot].plan = plan;
         cache[slot].data = data;
+        recent[recent_next++ % GMEM_RECENT] = slot;
     }
     return data;
 }
