@@ -21,9 +21,6 @@
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
-static uint64_t stat_first_use_wait_ns, stat_first_use_waits, stat_first_use_timeouts;
-// Pending compilation skips, excluding intentional draw filters (render thread only).
-static uint64_t stat_prog_pending, stat_pipe_pending, stat_compute_pending;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -815,93 +812,8 @@ static void *worker(void *a) {
 
 static bool sync_shaders(void) {
     static int v = -1;
-    if (v < 0) {
-        const char *env = getenv("LARECOMP_SYNC_SHADERS");
-        // Only an explicit 1 enables the blocking diagnostic path.
-        // In particular LARECOMP_SYNC_SHADERS=0 must keep gameplay asynchronous.
-        v = env && strcmp(env, "1") == 0;
-        LOG("[vk] shader compilation: %s (LARECOMP_SYNC_SHADERS=%s)\n",
-            v ? "synchronous, blocking" : "asynchronous, nonblocking",
-            env ? env : "unset");
-    }
+    if (v < 0) v = getenv("LARECOMP_SYNC_SHADERS") != NULL;
     return v;
-}
-
-// First-use shaders are compiled on workers. Previously the renderer skipped
-// draws while they were building, making a new room appear in pieces even as
-// gameplay progressed. Wait only on an actually pending first-use shader;
-// ready shaders and all GPU submissions still follow the original fast path.
-// Gameplay must stay asynchronous; LARECOMP_VK_WAIT_FIRST_USE_MS opts into the old wait experiment.
-static void wait_first_use(_Atomic int *state, const char *kind) {
-#ifdef __ANDROID__
-    if (atomic_load_explicit(state, memory_order_acquire) != 0) return;
-    static int timeout_ms = -1;
-    if (timeout_ms < 0) {
-        const char *v = getenv("LARECOMP_VK_WAIT_FIRST_USE_MS");
-        timeout_ms = v ? atoi(v) : 0;  // no gameplay stalls by default; legacy experiment is opt-in
-        if (timeout_ms < 0) timeout_ms = 0;
-        if (timeout_ms > 10000) timeout_ms = 10000;
-        LOG("[vk] first-use shader wait: %d ms (0=async skip)\n", timeout_ms);
-    }
-    if (!timeout_ms) return;
-    uint64_t start = SDL_GetTicksNS();
-    const uint64_t budget = (uint64_t)timeout_ms * 1000000ull;
-    while (atomic_load_explicit(state, memory_order_acquire) == 0 &&
-           SDL_GetTicksNS() - start < budget) SDL_Delay(1);
-    uint64_t elapsed = SDL_GetTicksNS() - start;
-    stat_first_use_wait_ns += elapsed;
-    stat_first_use_waits++;
-    if (atomic_load_explicit(state, memory_order_acquire) == 0) {
-        stat_first_use_timeouts++;
-        static int warned;
-        if (warned++ < 8)
-            LOG("[vk] %s shader/pipeline still compiling after %.0f ms; skipping this use\n",
-                kind, elapsed / 1e6);
-    }
-#else
-    (void)state;
-    (void)kind;
-#endif
-}
-
-// Small 1-6 vertex/index draws often generate an offscreen texture or
-// composite the final image. Skipping one can leave a whole room incomplete.
-// Eden keeps these pipelines instead of treating them as optional. On this
-// renderer, compilation stays on worker threads, and waits are bounded to
-// avoid the global synchronous-shader audio regression.
-static uint64_t critical_graphics_deadline(uint64_t count) {
-#ifdef __ANDROID__
-    if (!count || count > 6) return 0;
-    static int budget_ms = -1;
-    if (budget_ms < 0) {
-        const char *env = getenv("LARECOMP_VK_CRITICAL_WAIT_MS");
-        budget_ms = env ? atoi(env) : 750;
-        if (budget_ms < 0) budget_ms = 0;
-        if (budget_ms > 5000) budget_ms = 5000;
-        LOG("[vk] critical graphics protection: %d ms per small draw (0=off)\n", budget_ms);
-    }
-    return budget_ms ? SDL_GetTicksNS() + (uint64_t)budget_ms * 1000000ull : 0;
-#else
-    (void)count;
-    return 0;
-#endif
-}
-
-static void wait_critical_graphics(_Atomic int *state, const char *kind, uint64_t deadline) {
-    if (!deadline) { wait_first_use(state, kind); return; }
-    if (atomic_load_explicit(state, memory_order_acquire) != 0) return;
-    uint64_t start = SDL_GetTicksNS();
-    while (atomic_load_explicit(state, memory_order_acquire) == 0 && SDL_GetTicksNS() < deadline)
-        SDL_Delay(1);
-    uint64_t elapsed = SDL_GetTicksNS() - start;
-    stat_first_use_wait_ns += elapsed;
-    stat_first_use_waits++;
-    if (atomic_load_explicit(state, memory_order_acquire) == 0) {
-        stat_first_use_timeouts++;
-        static int warnings;
-        if (warnings++ < 12)
-            LOG("[vk] critical draw: %s pending after %.0f ms; fallback skip\n", kind, elapsed / 1e6);
-    }
 }
 
 // Shader translation: one dedicated thread (the translator isn't re-entrant - translate.c's RSC2 string ring - and
@@ -1036,22 +948,6 @@ const char *renderer_stats(void) {
     {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
-    }
-    {
-        size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n,
-                 " | shader pending: program %llu pipeline %llu compute %llu",
-                 (unsigned long long)stat_prog_pending, (unsigned long long)stat_pipe_pending,
-                 (unsigned long long)stat_compute_pending);
-        stat_prog_pending = stat_pipe_pending = stat_compute_pending = 0;
-    }
-    {
-        size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n,
-                 " | first-use wait %llu jobs %.1fms timeout %llu",
-                 (unsigned long long)stat_first_use_waits, stat_first_use_wait_ns / 1e6,
-                 (unsigned long long)stat_first_use_timeouts);
-        stat_first_use_waits = stat_first_use_wait_ns = stat_first_use_timeouts = 0;
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     {
@@ -1492,7 +1388,6 @@ typedef struct {
     uint64_t code[2], cmax[2];  // translation inputs (copied: translated on the translator thread)
     ShaderKey vkey, fkey;
     VkShaderModule vs, fs;
-    uint64_t vs_hash, fs_hash;  // persistent shader identities for pipeline replay
     VkBindingInfo binds[MAX_BIND];
     int nbinds;
     VkDescriptorSetLayout set_layout[2];
@@ -1526,8 +1421,6 @@ static void compile_program(void *arg) {
     uint32_t *sv = vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv);
     uint32_t *sf = sv ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : NULL;
     if (!sv || !sf) { free(sv); free(sf); atomic_store(&p->state, 2); return; }
-    p->vs_hash = vk_shader_cache_key(p->vi->msl, STAGE_VERTEX);
-    p->fs_hash = vk_shader_cache_key(p->fi->msl, STAGE_FRAGMENT);
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
     p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
     p->vs = vk_module(sv, nv);
@@ -1781,7 +1674,6 @@ typedef struct {
 typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
 #define PIPE_TAB 8192
 static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
-static VkPipeline warm_pipe_lookup(const PipeKey *k);
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
 // stored constants (fragment-shader hashes) and must not change.
@@ -1802,7 +1694,6 @@ static VkPrimitiveTopology topo_class_base(uint8_t c) {
     return c == 0 ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : c == 1 ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
-static void warm_record_pipeline(const Pipe *pp);  // snapshot only after a real successful build
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
     PipeKey *k = &pp->k;
@@ -1867,202 +1758,7 @@ static void build_pipeline(void *arg) {
     }
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&pp->state, r == VK_SUCCESS ? 1 : 2);
-    if (r == VK_SUCCESS) warm_record_pipeline(pp);
 }
-
-// Eden-style disk resource replay. vk_pipelines.bin alone is an opaque driver cache:
-// it doesn't say which Vulkan pipelines should be created. Preserve a separate
-// descriptor of pipelines actually observed in gameplay and rebuild them before
-// backend_init releases the guest. No game shader code or game assets are stored.
-#ifdef __ANDROID__
-#define VK_WARM_MAGIC 0x31574B56u  // VKW1, bump when PipeKey or shader translation changes
-#define VK_WARM_LIMIT (8u * 1024u * 1024u)
-#define VK_WARM_SEEN 16384u
-typedef struct {
-    uint32_t magic, bytes, vendor, device;
-    uint64_t vs_hash, fs_hash;
-    PipeKey k;  // k.prog is always NULL on disk (process pointers are not portable)
-} WarmRecord;
-static pthread_mutex_t warm_mutex = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t warm_seen[VK_WARM_SEEN];
-static bool warm_loading;
-static unsigned warm_recorded;
-// Keep actual startup-created pipelines, not only opaque driver-cache data.
-// The temporary shader modules and layouts can be released after pipeline
-// creation; runtime descriptor sets use identically reflected layouts.
-typedef struct {
-    uint64_t id, vs_hash, fs_hash;
-    PipeKey key;  // .prog must be NULL
-    VkPipeline pipeline;
-} WarmLivePipe;
-static WarmLivePipe *warm_live;
-static unsigned warm_live_slots;
-static uint64_t warm_live_hits;
-static bool warm_enabled(void) {
-    const char *v = getenv("LARECOMP_VK_PIPELINE_PREWARM");
-    return !v || atoi(v) != 0;
-}
-static uint64_t warm_identity(const WarmRecord *r) {
-    uint64_t h = hash_words(r->vs_hash ^ (r->fs_hash * 0x9E3779B97F4A7C15ull), &r->k, sizeof r->k);
-    return h ? h : 1;
-}
-static VkPipeline warm_pipe_lookup(const PipeKey *k) {
-    if (!warm_live || !warm_live_slots || !k->prog || !k->prog->vs_hash || !k->prog->fs_hash)
-        return VK_NULL_HANDLE;
-    WarmRecord rec = {0};
-    rec.vs_hash = k->prog->vs_hash;
-    rec.fs_hash = k->prog->fs_hash;
-    rec.k = *k;
-    rec.k.prog = NULL;
-    uint64_t id = warm_identity(&rec);
-    unsigned slot = (unsigned)id & (warm_live_slots - 1);
-    for (unsigned i = 0; i < warm_live_slots; ++i, slot = (slot + 1) & (warm_live_slots - 1)) {
-        const WarmLivePipe *w = &warm_live[slot];
-        if (!w->id) return VK_NULL_HANDLE;
-        if (w->id == id && w->vs_hash == rec.vs_hash && w->fs_hash == rec.fs_hash &&
-            !memcmp(&w->key, &rec.k, sizeof rec.k)) {
-            if (++warm_live_hits == 1 || warm_live_hits % 128 == 0)
-                LOG("[vk] pipeline replay reused %llu resident graphics pipelines without recompilation\n",
-                    (unsigned long long)warm_live_hits);
-            return w->pipeline;
-        }
-    }
-    return VK_NULL_HANDLE;
-}
-static bool warm_new(const WarmRecord *r) {
-    uint64_t h = warm_identity(r);
-    uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (VK_WARM_SEEN - 1);
-    for (uint32_t i = 0; i < VK_WARM_SEEN; ++i, slot = (slot + 1) & (VK_WARM_SEEN - 1)) {
-        if (warm_seen[slot] == h) return false;
-        if (!warm_seen[slot]) { warm_seen[slot] = h; return true; }
-    }
-    return false;
-}
-static void warm_record_pipeline(const Pipe *pp) {
-    if (!warm_enabled() || warm_loading || !pp->k.prog || !pp->k.prog->vi || !pp->k.prog->fi) return;
-    const char *vs = pp->k.prog->vi->msl, *fs = pp->k.prog->fi->msl;
-    if (!vs || !fs) return;
-    WarmRecord r = {0};
-    r.magic = VK_WARM_MAGIC;
-    r.bytes = sizeof r;
-    r.vendor = g_vk.props.vendorID;
-    r.device = g_vk.props.deviceID;
-    r.vs_hash = vk_shader_cache_key(vs, STAGE_VERTEX);
-    r.fs_hash = vk_shader_cache_key(fs, STAGE_FRAGMENT);
-    r.k = pp->k;
-    r.k.prog = NULL;
-    pthread_mutex_lock(&warm_mutex);
-    if (warm_new(&r)) {
-        mkdir("cache", 0755);
-        FILE *f = fopen("cache/vk_warmup_v1.bin", "ab");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long size = ftell(f);
-            if (size >= 0 && (unsigned long)size + sizeof r <= VK_WARM_LIMIT &&
-                fwrite(&r, sizeof r, 1, f) == 1) {
-                if (++warm_recorded == 1 || warm_recorded % 128 == 0)
-                    LOG("[vk] pipeline replay recorded %u pipelines for next boot\n", warm_recorded);
-            }
-            fclose(f);
-        }
-    }
-    pthread_mutex_unlock(&warm_mutex);
-}
-void vk_pipeline_records_warmup(void) {
-    if (!warm_enabled()) {
-        LOG("[vk] pipeline replay disabled\n");
-        return;
-    }
-    FILE *f = fopen("cache/vk_warmup_v1.bin", "rb");
-    if (!f) {
-        LOG("[vk] pipeline replay: no recorded pipelines; first launch learns them\n");
-        return;
-    }
-    // Bound boot compilation time and memory; allow an explicit larger limit.
-    const char *ev = getenv("LARECOMP_VK_PREWARM_MAX");
-    int limit = ev ? atoi(ev) : 1024;
-    if (limit < 0) limit = 0;
-    if (limit > 8192) limit = 8192;
-    fseek(f, 0, SEEK_END);
-    long bytes = ftell(f);
-    rewind(f);
-    int total = bytes > 0 ? (int)((unsigned long)bytes / sizeof(WarmRecord)) : 0;
-    if (total > limit) total = limit;
-    // Bounded sparse table; out-of-memory falls back to driver-cache-only replay.
-    if (!warm_live && total > 0) {
-        unsigned slots = 16;
-        while (slots < (unsigned)total * 2u) slots <<= 1;
-        warm_live = calloc(slots, sizeof *warm_live);
-        if (warm_live) warm_live_slots = slots;
-    }
-    LOG("[vk] pipeline replay starting: %d recorded pipelines to inspect (retention %s)\n",
-        total, warm_live ? "enabled" : "disabled");
-    int seen = 0, built = 0, missing = 0, rejected = 0;
-    WarmRecord rec;
-    warm_loading = true;
-    while (seen < limit && fread(&rec, sizeof rec, 1, f) == 1) {
-        if (rec.magic != VK_WARM_MAGIC || rec.bytes != sizeof rec ||
-            rec.vendor != g_vk.props.vendorID || rec.device != g_vk.props.deviceID ||
-            rec.k.prog || rec.k.ncolor > 8 || !rec.k.samples ||
-            (rec.k.samples & (rec.k.samples - 1)) != 0) {
-            rejected++;
-            continue;
-        }
-        if (!warm_new(&rec)) continue;
-        ++seen;
-        size_t nv = 0, nf = 0;
-        uint32_t *sv = vk_shader_cache_read(rec.vs_hash, &nv);
-        uint32_t *sf = vk_shader_cache_read(rec.fs_hash, &nf);
-        if (!sv || !sf) {
-            missing++;
-            free(sv); free(sf);
-            continue;
-        }
-        Prog p = {0};
-        p.nbinds = vk_reflect(sv, nv, p.binds, MAX_BIND);
-        p.nbinds += vk_reflect(sf, nf, p.binds + p.nbinds, MAX_BIND - p.nbinds);
-        p.vs = vk_module(sv, nv);
-        p.fs = vk_module(sf, nf);
-        free(sv); free(sf);
-        if (p.vs && p.fs) {
-            p.layout = make_layout(&p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
-            Pipe pp = {0};
-            pp.k = rec.k;
-            pp.k.prog = &p;
-            build_pipeline(&pp);  // records a driver pipeline; never stalls gameplay
-            if (pp.pipe) {
-                built++;
-                if (warm_live) {
-                    uint64_t id = warm_identity(&rec);
-                    unsigned slot = (unsigned)id & (warm_live_slots - 1);
-                    while (warm_live[slot].id) slot = (slot + 1) & (warm_live_slots - 1);
-                    warm_live[slot] = (WarmLivePipe){.id = id, .vs_hash = rec.vs_hash,
-                        .fs_hash = rec.fs_hash, .key = rec.k, .pipeline = pp.pipe};
-                } else vkDestroyPipeline(g_vk.dev, pp.pipe, NULL);
-            }
-            vkDestroyPipelineLayout(g_vk.dev, p.layout, NULL);
-            for (int i = 0; i < 2; i++) vkDestroyDescriptorSetLayout(g_vk.dev, p.set_layout[i], NULL);
-        } else {
-            missing++;
-        }
-        if (p.vs) vkDestroyShaderModule(g_vk.dev, p.vs, NULL);
-        if (p.fs) vkDestroyShaderModule(g_vk.dev, p.fs, NULL);
-        if (seen % 100 == 0) LOG("[vk] pipeline replay loading %d/%d, built %d\n", seen, total, built);
-    }
-    warm_loading = false;
-    fclose(f);
-    LOG("[vk] pipeline replay complete: known %d built %d SPIR-V missing %d incompatible %d, retained %s\n",
-        seen, built, missing, rejected, warm_live ? "yes" : "no");
-    if (built) {
-        extern void vk_pipeline_cache_save(void);
-        vk_pipeline_cache_save();
-    }
-}
-#else
-static void warm_record_pipeline(const Pipe *pp) { (void)pp; }
-static VkPipeline warm_pipe_lookup(const PipeKey *k) { (void)k; return VK_NULL_HANDLE; }
-void vk_pipeline_records_warmup(void) {}
-#endif
 
 // ================================================================== feedback snapshots (renderer.m resolve_feedback)
 static NvnTexture *feedback_tex[4];
@@ -3340,12 +3036,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
-    if (cp) wait_first_use(&cp->p.state, "compute pipeline");
-    if (!cp || atomic_load(&cp->p.state) != 1) {
-        if (cp && atomic_load(&cp->p.state) == 0) stat_compute_pending++;
-        stat_skipped++;
-        return;
-    }
+    if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
     {   // LARECOMP_SKIP_CS=<code address hex> (debug): skip that compute shader's dispatches, to see what it does
         static uint64_t skip = ~0ull;
         if (skip == ~0ull) { const char *e = getenv("LARECOMP_SKIP_CS"); skip = e ? strtoull(e, NULL, 16) : 0; }
@@ -3442,15 +3133,8 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
-    // Share a single bounded deadline across shader translation and pipeline creation.
-    uint64_t critical_deadline = critical_graphics_deadline(r->x[2]);
     Prog *pr = get_program(st.program, &vkey, &fkey);
-    if (pr) wait_critical_graphics(&pr->state, "graphics program", critical_deadline);
-    if (!pr || atomic_load(&pr->state) != 1) {
-        if (pr && atomic_load(&pr->state) == 0) stat_prog_pending++;
-        stat_skipped++;
-        return;
-    }
+    if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
@@ -3464,12 +3148,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
-            if (pr) wait_critical_graphics(&pr->state, "mirror program", critical_deadline);
-            if (!pr || atomic_load(&pr->state) != 1) {
-                if (pr && atomic_load(&pr->state) == 0) stat_prog_pending++;
-                stat_skipped++;
-                return;
-            }
+            if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; return; }
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
@@ -3586,18 +3265,9 @@ static void draw_(CmdRec *r, bool indexed) {
         pp->k = k;
         pipe_tab[pslot].key = ph;
         pipe_tab[pslot].pipe = pp;
-        VkPipeline prewarmed = warm_pipe_lookup(&k);
-        if (prewarmed) {
-            pp->pipe = prewarmed;
-            atomic_store_explicit(&pp->state, 1, memory_order_release);
-        } else run_job(build_pipeline, pp);
+        run_job(build_pipeline, pp);
     }
-    wait_critical_graphics(&pp->state, "graphics pipeline", critical_deadline);
-    if (atomic_load(&pp->state) != 1) {
-        if (atomic_load(&pp->state) == 0) stat_pipe_pending++;
-        stat_skipped++;
-        return;
-    }
+    if (atomic_load(&pp->state) != 1) { stat_skipped++; return; }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
@@ -4247,23 +3917,6 @@ static VkPipeline present_pipeline(VkFormat fmt) {
     VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
     for (int i = 0; i < 4; i++) if (!cache[i].p) { cache[i].f = fmt; cache[i].p = p; break; }
     return p;
-}
-
-// Android: compile the fixed presentation pipeline before allowing the guest
-// renderer to begin. Never wait for Zelda's shader compiler jobs during play.
-// A known render-target format is sufficient to create only this built-in pipeline.
-void vk_present_pipeline_warmup(void) {
-#ifdef __ANDROID__
-    const char *option = getenv("LARECOMP_VK_BOOT_PREWARM");
-    if (option && strcmp(option, "0") == 0) {
-        LOG("[vk] boot present pipeline prewarm disabled\n");
-        return;
-    }
-    if (!g_vk.dev || !g_vk.swapchain || g_vk.sc_format == VK_FORMAT_UNDEFINED) return;
-    uint64_t t0 = SDL_GetTicksNS();
-    (void)present_pipeline(g_vk.sc_format);
-    LOG("[vk] boot present pipeline prewarmed in %.1f ms\n", (double)(SDL_GetTicksNS() - t0) / 1e6);
-#endif
 }
 
 // Scanout shows the bytes the game wrote: sRGB images are read through a UNORM view (no decode), like metal.m.

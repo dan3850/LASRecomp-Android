@@ -55,9 +55,6 @@ static void cache_store(uint64_t h, const uint32_t *spv, size_t nwords) {
     if (!ok || rename(tmp, path) != 0) remove(tmp);  // (another thread may have stored it first)
 }
 
-uint64_t vk_shader_cache_key(const char *src, int stage) { return src_hash(src, stage); }
-uint32_t *vk_shader_cache_read(uint64_t key, size_t *nwords) { return cache_load(key, nwords); }
-
 // Vertex shaders: every float add/sub/mul/div/fma gets NoContraction, so no compiler fuses or splits them. Depth
 // pre-pass and colour pass are different shaders computing the same position, and the colour pass tests EQUAL:
 // any difference in fusing leaves holes (foliage flickered black). GLSL's `precise gl_Position` only covers what
