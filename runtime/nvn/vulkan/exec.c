@@ -1452,6 +1452,7 @@ typedef struct {
     uint64_t code[2], cmax[2];  // translation inputs (copied: translated on the translator thread)
     ShaderKey vkey, fkey;
     VkShaderModule vs, fs;
+    uint64_t vs_hash, fs_hash;  // persistent shader identities for pipeline replay
     VkBindingInfo binds[MAX_BIND];
     int nbinds;
     VkDescriptorSetLayout set_layout[2];
@@ -1485,6 +1486,8 @@ static void compile_program(void *arg) {
     uint32_t *sv = vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv);
     uint32_t *sf = sv ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : NULL;
     if (!sv || !sf) { free(sv); free(sf); atomic_store(&p->state, 2); return; }
+    p->vs_hash = vk_shader_cache_key(p->vi->msl, STAGE_VERTEX);
+    p->fs_hash = vk_shader_cache_key(p->fi->msl, STAGE_FRAGMENT);
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
     p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
     p->vs = vk_module(sv, nv);
@@ -1738,6 +1741,7 @@ typedef struct {
 typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
 #define PIPE_TAB 8192
 static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
+static VkPipeline warm_pipe_lookup(const PipeKey *k);
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
 // stored constants (fragment-shader hashes) and must not change.
@@ -1843,6 +1847,17 @@ static pthread_mutex_t warm_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t warm_seen[VK_WARM_SEEN];
 static bool warm_loading;
 static unsigned warm_recorded;
+// Keep actual startup-created pipelines, not only opaque driver-cache data.
+// The temporary shader modules and layouts can be released after pipeline
+// creation; runtime descriptor sets use identically reflected layouts.
+typedef struct {
+    uint64_t id, vs_hash, fs_hash;
+    PipeKey key;  // .prog must be NULL
+    VkPipeline pipeline;
+} WarmLivePipe;
+static WarmLivePipe *warm_live;
+static unsigned warm_live_slots;
+static uint64_t warm_live_hits;
 static bool warm_enabled(void) {
     const char *v = getenv("LARECOMP_VK_PIPELINE_PREWARM");
     return !v || atoi(v) != 0;
@@ -1850,6 +1865,29 @@ static bool warm_enabled(void) {
 static uint64_t warm_identity(const WarmRecord *r) {
     uint64_t h = hash_words(r->vs_hash ^ (r->fs_hash * 0x9E3779B97F4A7C15ull), &r->k, sizeof r->k);
     return h ? h : 1;
+}
+static VkPipeline warm_pipe_lookup(const PipeKey *k) {
+    if (!warm_live || !warm_live_slots || !k->prog || !k->prog->vs_hash || !k->prog->fs_hash)
+        return VK_NULL_HANDLE;
+    WarmRecord rec = {0};
+    rec.vs_hash = k->prog->vs_hash;
+    rec.fs_hash = k->prog->fs_hash;
+    rec.k = *k;
+    rec.k.prog = NULL;
+    uint64_t id = warm_identity(&rec);
+    unsigned slot = (unsigned)id & (warm_live_slots - 1);
+    for (unsigned i = 0; i < warm_live_slots; ++i, slot = (slot + 1) & (warm_live_slots - 1)) {
+        const WarmLivePipe *w = &warm_live[slot];
+        if (!w->id) return VK_NULL_HANDLE;
+        if (w->id == id && w->vs_hash == rec.vs_hash && w->fs_hash == rec.fs_hash &&
+            !memcmp(&w->key, &rec.k, sizeof rec.k)) {
+            if (++warm_live_hits == 1 || warm_live_hits % 128 == 0)
+                LOG("[vk] pipeline replay reused %llu resident graphics pipelines without recompilation\n",
+                    (unsigned long long)warm_live_hits);
+            return w->pipeline;
+        }
+    }
+    return VK_NULL_HANDLE;
 }
 static bool warm_new(const WarmRecord *r) {
     uint64_t h = warm_identity(r);
@@ -1910,7 +1948,15 @@ void vk_pipeline_records_warmup(void) {
     rewind(f);
     int total = bytes > 0 ? (int)((unsigned long)bytes / sizeof(WarmRecord)) : 0;
     if (total > limit) total = limit;
-    LOG("[vk] pipeline replay starting: %d recorded pipelines to inspect\n", total);
+    // Bounded sparse table; out-of-memory falls back to driver-cache-only replay.
+    if (!warm_live && total > 0) {
+        unsigned slots = 16;
+        while (slots < (unsigned)total * 2u) slots <<= 1;
+        warm_live = calloc(slots, sizeof *warm_live);
+        if (warm_live) warm_live_slots = slots;
+    }
+    LOG("[vk] pipeline replay starting: %d recorded pipelines to inspect (retention %s)\n",
+        total, warm_live ? "enabled" : "disabled");
     int seen = 0, built = 0, missing = 0, rejected = 0;
     WarmRecord rec;
     warm_loading = true;
@@ -1946,7 +1992,13 @@ void vk_pipeline_records_warmup(void) {
             build_pipeline(&pp);  // records a driver pipeline; never stalls gameplay
             if (pp.pipe) {
                 built++;
-                vkDestroyPipeline(g_vk.dev, pp.pipe, NULL);
+                if (warm_live) {
+                    uint64_t id = warm_identity(&rec);
+                    unsigned slot = (unsigned)id & (warm_live_slots - 1);
+                    while (warm_live[slot].id) slot = (slot + 1) & (warm_live_slots - 1);
+                    warm_live[slot] = (WarmLivePipe){.id = id, .vs_hash = rec.vs_hash,
+                        .fs_hash = rec.fs_hash, .key = rec.k, .pipeline = pp.pipe};
+                } else vkDestroyPipeline(g_vk.dev, pp.pipe, NULL);
             }
             vkDestroyPipelineLayout(g_vk.dev, p.layout, NULL);
             for (int i = 0; i < 2; i++) vkDestroyDescriptorSetLayout(g_vk.dev, p.set_layout[i], NULL);
@@ -1959,8 +2011,8 @@ void vk_pipeline_records_warmup(void) {
     }
     warm_loading = false;
     fclose(f);
-    LOG("[vk] pipeline replay complete: known %d built %d SPIR-V missing %d incompatible %d\n",
-        seen, built, missing, rejected);
+    LOG("[vk] pipeline replay complete: known %d built %d SPIR-V missing %d incompatible %d, retained %s\n",
+        seen, built, missing, rejected, warm_live ? "yes" : "no");
     if (built) {
         extern void vk_pipeline_cache_save(void);
         vk_pipeline_cache_save();
@@ -1968,6 +2020,7 @@ void vk_pipeline_records_warmup(void) {
 }
 #else
 static void warm_record_pipeline(const Pipe *pp) { (void)pp; }
+static VkPipeline warm_pipe_lookup(const PipeKey *k) { (void)k; return VK_NULL_HANDLE; }
 void vk_pipeline_records_warmup(void) {}
 #endif
 
@@ -3491,7 +3544,11 @@ static void draw_(CmdRec *r, bool indexed) {
         pp->k = k;
         pipe_tab[pslot].key = ph;
         pipe_tab[pslot].pipe = pp;
-        run_job(build_pipeline, pp);
+        VkPipeline prewarmed = warm_pipe_lookup(&k);
+        if (prewarmed) {
+            pp->pipe = prewarmed;
+            atomic_store_explicit(&pp->state, 1, memory_order_release);
+        } else run_job(build_pipeline, pp);
     }
     wait_first_use(&pp->state, "graphics pipeline");
     if (atomic_load(&pp->state) != 1) {
