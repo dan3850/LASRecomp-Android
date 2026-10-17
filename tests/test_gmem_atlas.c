@@ -30,6 +30,15 @@ int main(void) {
     guest[1300] ^= 1;
     assert(gmem_atlas_region_find(rr, 3, shadow, sizeof shadow, guest, sizeof guest, 1280, 256, &offset) && offset == 1800);
     // Reject out-of-range and unaligned queries; failure never changes offset.
+    // All 64-KiB pages within a large region must index the same immutable
+    // snapshot, including a query that begins in its second page.
+    uint32_t big_start = 0x10000, big_len = 0x20000;
+    assert(gmem_atlas_region_pages(big_start, big_len) == 2);
+    assert(gmem_atlas_page_bucket(big_start) ==
+           gmem_atlas_page_bucket(big_start + 0xFFFC));
+    assert(gmem_atlas_page_bucket(big_start + 0x10000) ==
+           gmem_atlas_page_bucket(big_start + 0x1FFFC));
+    assert(gmem_atlas_region_pages(0x1FFFC, 8) == 2);
     offset = UINT32_MAX;
     assert(!gmem_atlas_region_find(rr, 3, shadow, sizeof shadow, guest, sizeof guest, 8192, 4, &offset));
     assert(!gmem_atlas_region_find(rr, 3, shadow, sizeof shadow, guest, sizeof guest, 1025, 256, &offset));

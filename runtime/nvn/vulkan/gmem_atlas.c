@@ -21,6 +21,8 @@
 #define ATLAS_SLOTS 8
 #define ATLAS_CAPACITY (8u << 20)
 #define ATLAS_REGIONS 2048u
+#define ATLAS_LINKS 8192u
+typedef struct { uint32_t region, next; } AtlasLink;
 
 typedef struct {
     VkBuffer buffer;
@@ -28,8 +30,10 @@ typedef struct {
     uint8_t *mapped;
     uint8_t *shadow;    // CPU cached copy, never read from WC device memory
     uint32_t capacity, used, dirty_lo, dirty_hi;
-    uint32_t nregions;
+    uint32_t nregions, nlinks;
     GmemAtlasRegion regions[ATLAS_REGIONS];
+    uint32_t heads[GMEM_ATLAS_BUCKET_COUNT];
+    AtlasLink links[ATLAS_LINKS];
     uint64_t seq;       // last submission referencing this slab
 } GmemAtlas;
 
@@ -109,7 +113,9 @@ VkDescriptorBufferInfo vk_gmem_atlas_get(const GmemPlan *plan,
             return (VkDescriptorBufferInfo){0};
         }
         a->seq = pending;
-        a->used = a->nregions = 0;
+        a->used = a->nregions = a->nlinks = 0;
+        for (unsigned b = 0; b < GMEM_ATLAS_BUCKET_COUNT; ++b)
+            a->heads[b] = UINT32_MAX;
         a->dirty_lo = UINT32_MAX;
         a->dirty_hi = 0;
     }
@@ -126,6 +132,7 @@ VkDescriptorBufferInfo vk_gmem_atlas_get(const GmemPlan *plan,
     bool copied[GMAP_MAX] = {0};
     uint64_t needed = 0;
     uint32_t new_entries = 0;
+    uint32_t new_links = 0;
     const uint8_t *guest = (const uint8_t *)(uintptr_t)HEAP_BASE;
     uint64_t heap_bytes = kernel_heap_size();
     for (unsigned i = 0; i < count; ++i) {
@@ -134,23 +141,38 @@ VkDescriptorBufferInfo vk_gmem_atlas_get(const GmemPlan *plan,
             (uint64_t)first + len > heap_bytes) {
             fallback++; return (VkDescriptorBufferInfo){0};
         }
-        uint32_t off;
-        if (gmem_atlas_region_find(a->regions, a->nregions,
-                                   a->shadow, a->capacity, guest, heap_bytes,
-                                   first, len, &off)) {
+        uint32_t off = 0;
+        bool found = false;
+        // Index every atlas snapshot in the 64-KiB pages it covers.
+        // A subrange can therefore reuse a much larger earlier region
+        // without scanning thousands of unrelated snapshots.
+        uint32_t bucket = gmem_atlas_page_bucket(first);
+        for (uint32_t link = a->heads[bucket]; link != UINT32_MAX;
+             link = a->links[link].next) {
+            const GmemAtlasRegion *r = &a->regions[a->links[link].region];
+            if (gmem_atlas_region_matches(r, a->shadow, a->capacity,
+                                          guest, heap_bytes, first, len, &off)) {
+                found = true;
+                break;
+            }
+        }
+        if (found) {
             offsets[i] = off;
             hits++;
             avoided_bytes += len;
         } else {
             uint64_t dest = (uint64_t)a->used + needed;
+            uint32_t links = gmem_atlas_region_pages(first, len);
             if ((dest & 3u) || dest + len > a->capacity ||
-                a->nregions + new_entries >= ATLAS_REGIONS) {
+                a->nregions + new_entries >= ATLAS_REGIONS ||
+                a->nlinks + (uint64_t)new_links + links > ATLAS_LINKS) {
                 fallback++; return (VkDescriptorBufferInfo){0};
             }
             offsets[i] = (uint32_t)dest;
             copied[i] = true;
             needed += len;
             new_entries++;
+            new_links += links;
         }
     }
 
@@ -163,7 +185,16 @@ VkDescriptorBufferInfo vk_gmem_atlas_get(const GmemPlan *plan,
         uint32_t off = offsets[i];
         memcpy(a->mapped + off, guest + first, len);
         memcpy(a->shadow + off, guest + first, len);
-        a->regions[a->nregions++] = (GmemAtlasRegion){first, len, off};
+        uint32_t index = a->nregions++;
+        a->regions[index] = (GmemAtlasRegion){first, len, off};
+        uint32_t startpage = first >> GMEM_ATLAS_PAGE_SHIFT;
+        uint32_t endpage = (uint32_t)(((uint64_t)first + len - 1) >> GMEM_ATLAS_PAGE_SHIFT);
+        for (uint32_t page = startpage; page <= endpage; ++page) {
+            uint32_t bucket = gmem_atlas_page_bucket(page << GMEM_ATLAS_PAGE_SHIFT);
+            uint32_t link = a->nlinks++;
+            a->links[link] = (AtlasLink){index, a->heads[bucket]};
+            a->heads[bucket] = link;
+        }
         copied_bytes += len;
         copied_regions++;
     }
