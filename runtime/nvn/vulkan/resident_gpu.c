@@ -108,25 +108,26 @@ VkSpan vk_resident_get(const VkResidentRequest *r) {
         (pool->slot_count / RESIDENT_WAYS)) * RESIDENT_WAYS;
     uint64_t pending = vk_pending_seq();
     ResidentSlot *same_done = NULL, *empty = NULL, *lru = NULL;
-    // The exact byte comparison is mandatory on Android: without host
-    // write-tracking an address/hash can have mutated since the last draw.
+    // Verify ALL guest bytes first. A cache hit requires no Vulkan driver
+    // timeline query; query completion only when we need to replace a version.
     for (unsigned i = bucket; i < bucket + RESIDENT_WAYS; ++i) {
         ResidentSlot *s = &pool->slots[i];
-        bool same = identity_matches(s, r);
-        if (same && s->size >= r->size) {
-            pool->scanned_bytes += r->size;
-            if (r->equal(s->shadow, r->context, r->size)) {
-                s->used_seq = pending;
-                pool->hits++;
-                pool->reused_bytes += r->size;
-                return (VkSpan){s->buffer, 0, NULL};
-            }
+        if (!identity_matches(s, r) || s->size < r->size) continue;
+        pool->scanned_bytes += r->size;
+        if (r->equal(s->shadow, r->context, r->size)) {
+            s->used_seq = pending;
+            pool->hits++;
+            pool->reused_bytes += r->size;
+            return (VkSpan){s->buffer, 0, NULL};
         }
-        if (s->buffer && !resident_rewrite_safe(s->used_seq, vk_completed_seq()))
-            continue;
-        if (same && s->size == r->size) same_done = s;
-        if (!s->buffer && !empty) empty = s;
-        if (s->buffer && (!lru || s->used_seq < lru->used_seq)) lru = s;
+    }
+    uint64_t done = vk_completed_seq();
+    for (unsigned i = bucket; i < bucket + RESIDENT_WAYS; ++i) {
+        ResidentSlot *s = &pool->slots[i];
+        if (!s->buffer) { if (!empty) empty = s; continue; }
+        if (!resident_rewrite_safe(s->used_seq, done)) continue;
+        if (identity_matches(s, r) && s->size == r->size) same_done = s;
+        if (!lru || s->used_seq < lru->used_seq) lru = s;
     }
 
     // Reuse a completed version; never overwrite a currently bound version,
@@ -135,7 +136,7 @@ VkSpan vk_resident_get(const VkResidentRequest *r) {
     if (!s) { pool->busy++; failed(pool); return (VkSpan){0}; }
 
     bool can_delta = identity_matches(s, r) && s->size == r->size &&
-        resident_rewrite_safe(s->used_seq, vk_completed_seq());
+        resident_rewrite_safe(s->used_seq, done);
     uint8_t *fresh = calloc(1, padded);
     uint8_t *fresh_id = malloc(r->identity_size);
     if (!fresh || !fresh_id) {
