@@ -13,6 +13,7 @@
 #include "../../kernel.h"
 #include "gmem_atlas.h"
 #include "gmem_atlas_regions.h"
+#include "gmem_atlas_persistent.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,7 @@
 #define ATLAS_CAPACITY (8u << 20)
 #define ATLAS_REGIONS 2048u
 #define ATLAS_LINKS 8192u
+#define ATLAS_PLAN_CACHE 1024u
 typedef struct { uint32_t region, next; } AtlasLink;
 
 typedef struct {
@@ -34,10 +36,22 @@ typedef struct {
     GmemAtlasRegion regions[ATLAS_REGIONS];
     uint32_t heads[GMEM_ATLAS_BUCKET_COUNT];
     AtlasLink links[ATLAS_LINKS];
-    uint64_t seq;       // last submission referencing this slab
+    uint64_t seq;       // last submission writing this slab
+    uint64_t last_use_seq; // last submission referencing this slab
 } GmemAtlas;
 
 static GmemAtlas slabs[ATLAS_SLOTS];
+// Immutable plan offsets. Each cached entry identifies its original writer
+// sequence; overwriting that writer's slab automatically invalidates the entry.
+typedef struct {
+    uint64_t hash, source_seq;
+    uint32_t source_slot;
+    GmemPlan plan;
+    uint32_t offsets[(GMAP_MAX + 1)*4];
+} AtlasCachedPlan;
+static AtlasCachedPlan plan_cache[ATLAS_PLAN_CACHE];
+static int persist_on = -1;
+static uint64_t persist_hits, persist_bytes, persist_local, persist_changed;
 static int enabled = -1, unavailable;
 static uint64_t hits, misses, copied_bytes, avoided_bytes, fallback;
 static uint64_t busy, total_regions, total_buffers;
@@ -56,6 +70,58 @@ static bool atlas_on(void) {
             enabled ? "enabled" : "disabled", v ? v : "unset");
     }
     return enabled != 0 && !unavailable;
+}
+
+static bool atlas_persist_enabled(void) {
+    if (persist_on < 0) {
+        const char *v=getenv("LARECOMP_VK_GMEM_INTERSUBMIT");
+#ifdef __ANDROID__
+        persist_on = !v || atoi(v) != 0;
+#else
+        persist_on = v && atoi(v) != 0;
+#endif
+        LOG("[vk-gmem] persistent atlas %s (LARECOMP_VK_GMEM_INTERSUBMIT=%s)\n",
+            persist_on ? "enabled" : "disabled", v ? v : "unset");
+    }
+    return persist_on != 0;
+}
+static uint64_t atlas_hash_plan(const GmemPlan *plan) {
+    const uint8_t *p=(const uint8_t *)plan;
+    uint64_t h=UINT64_C(14695981039346656037);
+    for (size_t i=0;i<sizeof *plan;++i) {
+        h^=p[i];
+        h*=UINT64_C(1099511628211);
+    }
+    return h ? h : 1;
+}
+static VkDescriptorBufferInfo atlas_saved_plan(
+    const GmemPlan *plan, uint32_t *table,
+    uint64_t pending, uint64_t hash, AtlasCachedPlan **out) {
+    AtlasCachedPlan *c=&plan_cache[hash&(ATLAS_PLAN_CACHE-1)];
+    *out=c;
+    if (c->hash != hash || memcmp(&c->plan,plan,sizeof *plan) ||
+        c->source_slot>=ATLAS_SLOTS)
+        return (VkDescriptorBufferInfo){0};
+    GmemAtlas *source=&slabs[c->source_slot];
+    if (!source->buffer || !source->shadow || source->seq != c->source_seq)
+        return (VkDescriptorBufferInfo){0};
+    if (!gmem_atlas_saved_plan_matches(plan->tab,c->offsets,
+            plan->tab[GMAP_MAX*4], source->shadow,source->capacity,
+            (const uint8_t *)(uintptr_t)HEAP_BASE,kernel_heap_size())) {
+        persist_changed++;
+        return (VkDescriptorBufferInfo){0};
+    }
+    memcpy(table,c->offsets,sizeof c->offsets);
+    if (source->last_use_seq<pending) source->last_use_seq=pending;
+    if (source->seq != pending) {
+        persist_hits++;
+        persist_bytes+=plan->size;
+    } else persist_local++;
+    hits+=plan->tab[GMAP_MAX*4];
+    avoided_bytes+=plan->size;
+    total_regions+=plan->tab[GMAP_MAX*4];
+    misses++;
+    return (VkDescriptorBufferInfo){source->buffer,0,source->capacity};
 }
 
 static bool atlas_allocate(GmemAtlas *a) {
@@ -102,9 +168,16 @@ VkDescriptorBufferInfo vk_gmem_atlas_get(const GmemPlan *plan,
     if (!count || count > GMAP_MAX) { fallback++; return (VkDescriptorBufferInfo){0}; }
     uint64_t pending = vk_pending_seq();
     GmemAtlas *a = &slabs[pending % ATLAS_SLOTS];
+    AtlasCachedPlan *chosen=NULL;
+    uint64_t hash=0;
+    if (atlas_persist_enabled()) {
+        hash=atlas_hash_plan(plan);
+        VkDescriptorBufferInfo reuse=atlas_saved_plan(plan,table,pending,hash,&chosen);
+        if (reuse.buffer) return reuse;
+    }
     if (a->seq != pending) {
         // Never modify a buffer referenced by a previous, unfinished frame.
-        if (a->seq && a->seq > vk_completed_seq()) {
+        if (a->last_use_seq && a->last_use_seq > vk_completed_seq()) {
             busy++; fallback++;
             return (VkDescriptorBufferInfo){0};
         }
@@ -113,6 +186,7 @@ VkDescriptorBufferInfo vk_gmem_atlas_get(const GmemPlan *plan,
             return (VkDescriptorBufferInfo){0};
         }
         a->seq = pending;
+        a->last_use_seq = pending;
         a->used = a->nregions = a->nlinks = 0;
         for (unsigned b = 0; b < GMEM_ATLAS_BUCKET_COUNT; ++b)
             a->heads[b] = UINT32_MAX;
@@ -209,6 +283,13 @@ VkDescriptorBufferInfo vk_gmem_atlas_get(const GmemPlan *plan,
     for (unsigned i = 0; i < count; ++i) table[i*4+2] = offsets[i] / 4;
     misses++;
     total_regions += count;
+    if (chosen) {
+        chosen->hash=hash;
+        chosen->source_seq=a->seq;
+        chosen->source_slot=(uint32_t)(a-slabs);
+        chosen->plan=*plan;
+        memcpy(chosen->offsets,table,sizeof chosen->offsets);
+    }
     return (VkDescriptorBufferInfo){a->buffer, 0, a->capacity};
 }
 
@@ -231,17 +312,23 @@ void vk_gmem_atlas_reset(void) {
         memset(a, 0, sizeof *a);
     }
     unavailable = 0;
+    memset(plan_cache,0,sizeof plan_cache);
 }
 
 void vk_gmem_atlas_stats_append(char *text, size_t capacity) {
     if (!capacity || !atlas_on()) return;
     snprintf(text, capacity,
         " | atlas maps %llu ranges %llu shared %llu new %llu "
-        "copied %.1fMB avoided %.1fMB fallback %llu busy %llu",
+        "copied %.1fMB avoided %.1fMB fallback %llu busy %llu "
+        "persist %llu maps %.1fMB local %llu changed %llu",
         (unsigned long long)misses, (unsigned long long)total_regions,
         (unsigned long long)hits, (unsigned long long)copied_regions,
         copied_bytes / 1048576.0, avoided_bytes / 1048576.0,
-        (unsigned long long)fallback, (unsigned long long)busy);
+        (unsigned long long)fallback, (unsigned long long)busy,
+        (unsigned long long)persist_hits, persist_bytes/1048576.0,
+        (unsigned long long)persist_local,
+        (unsigned long long)persist_changed);
     hits = misses = copied_bytes = avoided_bytes = fallback = busy = 0;
     total_regions = copied_regions = 0;
+    persist_hits = persist_bytes = persist_local = persist_changed = 0;
 }
