@@ -1008,6 +1008,10 @@ void ui_window_init(void) {
     vk_exec_init();
     vk_shaders_init();
 #ifdef __ANDROID__
+    // Recreate previously encountered Zelda pipelines while the guest still
+    // waits for ui_ready, like Eden's LoadDiskResources before system.Run().
+    extern void vk_pipeline_records_warmup(void);
+    vk_pipeline_records_warmup();
     // Device, swapchain and SPIR-V compiler are ready; the guest's backend_init
     // still waits for ui_ready, so this one-time prewarm runs before gameplay.
     extern void vk_present_pipeline_warmup(void);
