@@ -1834,6 +1834,7 @@ typedef struct {
 static pthread_mutex_t warm_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t warm_seen[VK_WARM_SEEN];
 static bool warm_loading;
+static unsigned warm_recorded;
 static bool warm_enabled(void) {
     const char *v = getenv("LARECOMP_VK_PIPELINE_PREWARM");
     return !v || atoi(v) != 0;
@@ -1871,8 +1872,11 @@ static void warm_record_pipeline(const Pipe *pp) {
         if (f) {
             fseek(f, 0, SEEK_END);
             long size = ftell(f);
-            if (size >= 0 && (unsigned long)size + sizeof r <= VK_WARM_LIMIT)
-                fwrite(&r, sizeof r, 1, f);
+            if (size >= 0 && (unsigned long)size + sizeof r <= VK_WARM_LIMIT &&
+                fwrite(&r, sizeof r, 1, f) == 1) {
+                if (++warm_recorded == 1 || warm_recorded % 128 == 0)
+                    LOG("[vk] pipeline replay recorded %u pipelines for next boot\n", warm_recorded);
+            }
             fclose(f);
         }
     }
@@ -1893,6 +1897,12 @@ void vk_pipeline_records_warmup(void) {
     int limit = ev ? atoi(ev) : 1024;
     if (limit < 0) limit = 0;
     if (limit > 8192) limit = 8192;
+    fseek(f, 0, SEEK_END);
+    long bytes = ftell(f);
+    rewind(f);
+    int total = bytes > 0 ? (int)((unsigned long)bytes / sizeof(WarmRecord)) : 0;
+    if (total > limit) total = limit;
+    LOG("[vk] pipeline replay starting: %d recorded pipelines to inspect\n", total);
     int seen = 0, built = 0, missing = 0, rejected = 0;
     WarmRecord rec;
     warm_loading = true;
@@ -1937,7 +1947,7 @@ void vk_pipeline_records_warmup(void) {
         }
         if (p.vs) vkDestroyShaderModule(g_vk.dev, p.vs, NULL);
         if (p.fs) vkDestroyShaderModule(g_vk.dev, p.fs, NULL);
-        if (seen % 100 == 0) LOG("[vk] pipeline replay loading %d/%d, built %d\n", seen, limit, built);
+        if (seen % 100 == 0) LOG("[vk] pipeline replay loading %d/%d, built %d\n", seen, total, built);
     }
     warm_loading = false;
     fclose(f);
