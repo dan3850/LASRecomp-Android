@@ -505,6 +505,7 @@ static void snapshot_capacity_eviction(void) {
 // Persistent uniform staging: immutable repeated bindings, busy GPU fallback,
 // and safe in-place refresh after timeline completion.
 static void uniform_staging(void) {
+    cbuf_snapshots_clear(); // isolate this case from earlier shader tests
     uint8_t *src = (uint8_t *)(uintptr_t)(HEAP_BASE + 0x90000);
     memset(src, 0x33, 8192);
     uint64_t before = stat_upload_bytes, saved = cbuf_saved_bytes;
