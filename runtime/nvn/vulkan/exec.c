@@ -28,6 +28,7 @@
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
+static uint64_t stat_gmem_stream_bytes, stat_gmem_stream_maps;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -1024,7 +1025,12 @@ const char *renderer_stats(void) {
     }
     {
         size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n, ", gmem saved %.1fMB", stat_gmem_reused_bytes / 1048576.0);
+        snprintf(stats_text + n, sizeof stats_text - n,
+            ", gmem saved %.1fMB, stream %llu maps %.1fMB",
+            stat_gmem_reused_bytes / 1048576.0,
+            (unsigned long long)stat_gmem_stream_maps,
+            stat_gmem_stream_bytes / 1048576.0);
+        stat_gmem_stream_bytes = stat_gmem_stream_maps = 0;
     }
     {
         size_t n = strlen(stats_text);
@@ -2659,7 +2665,37 @@ static void resident_gmem_fill(uint8_t *out, const void *ctx, size_t size) {
                p->tab[i * 4 + 1]);
 }
 
+// GPU-resident GMEM proved counterproductive on Adreno 840: the 2026-10-17
+// outdoor trace shows 400-650 MB of device copies per two-second interval
+// with near-zero exact cache hits and thousands of in-flight fallbacks.
+//
+// The device has shared physical memory but does NOT expose
+// VK_EXT_external_memory_host. We still must pack the guest ranges; however,
+// the existing host-visible Vulkan transient ring is already readable by the
+// GPU and timeline-protected. Stream read-only GMEM directly into that ring
+// instead of CPU shadow -> staging ring -> device-local GMEM VkBuffer.
+// The writable compute/store path remains unchanged.
+//
+// LARECOMP_VK_GMEM_STREAM=0 restores both snapshot tiers for direct A/B testing.
+static bool gmem_stream_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *env = getenv("LARECOMP_VK_GMEM_STREAM");
+#ifdef __ANDROID__
+        enabled = !env || atoi(env) != 0;
+#else
+        enabled = env && atoi(env) != 0;
+#endif
+        LOG("[vk-gmem] read-only streaming %s (LARECOMP_VK_GMEM_STREAM=%s): "
+            "one host-visible ring upload, no separate device-local copy\n",
+            enabled ? "enabled" : "disabled", env ? env : "unset");
+    }
+    return enabled != 0;
+}
+
 static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
+    if (gmem_stream_enabled()) return (VkSpan){0}; // legacy snapshot and GPU-resident GMEM bypassed
+
     if (plan->size >= 4096 && plan->size <= (2ull << 20) && vk_resident_enabled()) {
         const VkResidentRequest request = {
             .domain = VK_RESIDENT_GMEM, .key = hash_words(0, plan, sizeof *plan),
@@ -2791,7 +2827,13 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
         span = (VkSpan){w->buf, 0, w->after};
     } else span = gmem_read_snapshot(&plan);
     bool copy = store || !span.buf;
-    if (!span.buf) span = vk_transient(plan.size, 256);
+    if (!span.buf) {
+        span = vk_transient(plan.size, 256);
+        if (!store && gmem_stream_enabled()) {
+            stat_gmem_stream_bytes += plan.size;
+            stat_gmem_stream_maps++;
+        }
+    }
     if (copy) {
         for (unsigned i = 0; i < plan.tab[GMAP_MAX * 4]; ++i)
             memcpy((uint8_t *)span.ptr + (uint64_t)plan.tab[i * 4 + 2] * 4,
