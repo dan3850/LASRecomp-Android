@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #endif
 #include <pthread.h>
+#include <stdatomic.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,7 @@
 
 #include "gamelib.h"
 #include "hle.h"
+#include "guest_forward_guard.h"
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
 static FnTable tables[2];
@@ -130,6 +132,53 @@ GuestFn dispatch_lookup(uint64_t addr) {
     return NULL;
 }
 
+// Targeted guest virtual-forwarding fix for Link's Awakening main v1.0.0.
+// The generated function 0x70010cce50 forwards via *(this+0x10)->vtable[0xA0].
+// Its neighbouring function 0x70010cce00 sets this+0x10 to NULL, and the
+// nullable thunk 0x70010cce80 already tests a nullable child before calling.
+// Several runs crashed in f_70010cce50+0x34 when that child was NULL.
+//
+// This intercepts only INDIRECT dispatch to that exact game function.
+// All non-null calls enter the unmodified private recompiled function; only
+// an absent child returns without issuing the impossible virtual call.
+// No copyrighted game code, game state, or private recompilation library is
+// bundled. This is a mitigation for the known NULL dispatch, NOT a claim that
+// the object lifecycle has been repaired.
+//
+// Disable for A/B: LARECOMP_GUEST_NULL_FORWARD=0.
+#define LA_NULLABLE_FORWARD 0x70010cce50ull
+static int nullable_forward_on(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *env = getenv("LARECOMP_GUEST_NULL_FORWARD");
+        enabled = !env || atoi(env) != 0;
+        LOG("[guest-null-forward] %s (LARECOMP_GUEST_NULL_FORWARD=%s)\n",
+            enabled ? "enabled" : "disabled", env ? env : "unset");
+    }
+    return enabled;
+}
+static void nullable_child_virtual_forward(Cpu *c) {
+    uint64_t object = c->x[0], caller = c->x[30];
+    if (rt_guest_nullable_child_return(c)) {
+        static _Atomic unsigned count;
+        unsigned k = atomic_fetch_add_explicit(&count, 1, memory_order_relaxed) + 1;
+        if (k <= 16 || k % 256 == 0) {
+            // When object is NULL, we deliberately do not dereference it.
+            // With a non-null object, original code already dereferences its
+            // +0x10 member; the vtable read is solely crash diagnostics.
+            uint64_t vt = object ? LD64(object) : 0;
+            LOG("[guest-null-forward] skipped null child at f_70010cce50 "
+                "object=%#llx vtable=%#llx caller=%#llx count=%u\n",
+                (unsigned long long)object, (unsigned long long)vt,
+                (unsigned long long)caller, k);
+        }
+        return; // return to host caller; do not re-dispatch into this thunk
+    }
+    GuestFn normal = dispatch_lookup(LA_NULLABLE_FORWARD);
+    if (!normal) FATAL("missing original optional-child forward thunk\n");
+    normal(c); // preserve ALL normal guest behaviour, including tail dispatch
+}
+
 // Small direct-mapped cache in front of the binary search
 #define DCACHE 4096
 static __thread struct { uint64_t addr; GuestFn fn; } dcache[DCACHE];
@@ -147,6 +196,13 @@ static GuestFn dispatch_slow(Cpu *c) {
     }
     for (int i = 0; i < override_count; i++)
         if (overrides[i].addr == pc) return overrides[i].fn;
+#ifdef __ANDROID__
+    // Installed through the existing indirect-dispatch cache. A direct call
+    // into the generated code is unaffected; the observed vtable dispatch
+    // always passes through this route.
+    if (pc == LA_NULLABLE_FORWARD && nullable_forward_on())
+        return nullable_child_virtual_forward;
+#endif
     GuestFn f = dispatch_lookup(pc);
     if (!f) {
         uint64_t off;
