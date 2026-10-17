@@ -84,6 +84,7 @@ typedef struct TexBackend {
     uint32_t width, height, depth, layers, levels, samples;
     VkImageAspectFlags aspect;
     bool gpu_owned, uploaded, dynamic;
+    bool color_target_seen, host_uploaded;  // color alias eligibility (not just a GPU-owned texture)
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     uint64_t checked_cpu_writes; // explicit CPU flushes can update a glyph atlas within the same frame
     uint32_t wgen;  // page write tracking generation at the last upload check (textures.c)

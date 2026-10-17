@@ -420,6 +420,7 @@ static uint32_t level_h(const TexBackend *b, uint32_t lv) { uint32_t v = b->heig
 static void destroy_image(TexBackend *b) {
     vk_native_texture_discard(b);
     b->uploaded = false;  // a recreated image must receive a fresh initial upload
+    b->color_target_seen = false;
     views_forget(b);
     if (b->image || b->mem) defer((Dead){.img = b->image, .mem = b->mem});  // (never the same allocation twice)
     b->image = VK_NULL_HANDLE;
@@ -749,7 +750,11 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
-    if (b->pending_rgba) upload_pending(b);
+    if (b->pending_rgba) {
+        extern void vk_alias_before_host_upload(NvnTexture *);
+        vk_alias_before_host_upload(t);
+        upload_pending(b);
+    }
     if (for_render) {
         if (!b->gpu_owned) vk_native_texture_discard(b);
         b->gpu_owned = true;
@@ -786,6 +791,7 @@ void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t 
     pthread_mutex_lock(&pending_lock);
     free(b->pending_rgba);
     b->pending_rgba = copy;
+    b->host_uploaded = true;
     b->pending_w = w; b->pending_h = h; b->pending_stride = stride;
     b->gpu_owned = true;
     pthread_mutex_unlock(&pending_lock);
