@@ -18,6 +18,7 @@
 #include "gmem_delta.h"
 #include "gmem_retarget.h"
 #include "gmem_atlas.h"
+#include "scheduler.h"
 #include "resident_gpu.h"
 #include "texture_native.h"
 #include "rt_graph.h"
@@ -465,7 +466,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     int n = 0;
     vc_flush();
     if (s->upload_begun) {
-        vk_full_barrier(s->upload);  // uploads complete before anything in the main buffer reads them
+        vk_sched_barrier(s->upload, VKSCHED_UPLOAD_READY); // transfer writes -> subsequent commands
         VK_CHECK(vkEndCommandBuffer(s->upload));
         cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->upload};
     }
@@ -1047,6 +1048,10 @@ const char *renderer_stats(void) {
     }
     {
         size_t n = strlen(stats_text);
+        vk_sched_stats_append(stats_text + n, sizeof stats_text - n);
+    }
+    {
+        size_t n = strlen(stats_text);
         vk_resident_stats_append(stats_text + n, sizeof stats_text - n);
     }
     {
@@ -1231,7 +1236,7 @@ static void begin_pass(void) {
     if (dl_on == 2) renderer_flush();  // (LARECOMP_VK_DEVLOST_TRACE=2: each pass its own submission)
     st.rt_dirty = false;
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);  // passes, copies and dispatches see each other's results
+    vk_sched_barrier(cb, VKSCHED_BEFORE_GRAPHICS); // earlier writes -> graphics consumers
     {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
@@ -1969,7 +1974,7 @@ static void debug_save_depth(TexBackend *b, const char *path) {
     uint64_t n = (uint64_t)b->width * b->height;
     VkSpan out = vk_readback(n * 4);
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);
+    vk_sched_barrier(cb, VKSCHED_BEFORE_TRANSFER);
     VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
                            .imageExtent = {b->width, b->height, 1}};
     vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
@@ -2474,7 +2479,7 @@ static void gfast_prepare(VkCommandBuffer cb) {
         }
     }
     vkCmdCopyBuffer(cb, gmem_buf, gfast_buf, (uint32_t)m, cp);
-    vk_full_barrier(cb);
+    vk_sched_barrier(cb, VKSCHED_TRANSFER_TO_COMPUTE);
     gmap_tab[GMAP_MAX * 4] = (uint32_t)m;
     memcpy(gfast_cp, cp, (size_t)m * sizeof cp[0]);
     gfast_n = m;
@@ -2485,9 +2490,9 @@ static void gfast_finish(VkCommandBuffer cb) {
     if (!gfast_n) return;
     VkBufferCopy back[GMAP_MAX];
     for (int i = 0; i < gfast_n; i++) back[i] = (VkBufferCopy){gfast_cp[i].dstOffset, gfast_cp[i].srcOffset, gfast_cp[i].size};
-    vk_full_barrier(cb);
+    vk_sched_barrier(cb, VKSCHED_COMPUTE_TO_TRANSFER);
     vkCmdCopyBuffer(cb, gfast_buf, gmem_buf, (uint32_t)gfast_n, back);
-    vk_full_barrier(cb);
+    vk_sched_barrier(cb, VKSCHED_TRANSFER_TO_ALL);
     gfast_n = 0;
 }
 
@@ -3532,7 +3537,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     gmem_read_stage(5, cp->si);
     vk_end_pass();
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);
+    vk_sched_barrier(cb, VKSCHED_BEFORE_COMPUTE);
     gp_mark(cb, "dispatch %ux%ux%u (local %ux%ux%u) cs %llx gmem %d", gx, gy, gz, cp->local[0], cp->local[1], cp->local[2],
             (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
     dl_note("dispatch %ux%ux%u cs %llx gmem %d", gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
@@ -4185,7 +4190,7 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
         bool ok = las_bcn_decode(b->bcn_format, blocks, ns, w, h, nz, s.ptr, np);
         free(blocks);
         if (!ok) { vk_diag_event(VD_UPLOAD_SKIPPED, "BCn buffer copy decode failed"); return; }
-        VkCommandBuffer cb = vk_cmd(); vk_full_barrier(cb);
+        VkCommandBuffer cb = vk_cmd(); vk_sched_barrier(cb, VKSCHED_BEFORE_TRANSFER);
         VkBufferImageCopy c = {.bufferOffset = s.off, .bufferRowLength = w, .bufferImageHeight = h,
             .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)level, array ? (uint32_t)rg[2] : 0, array ? nz : 1},
             .imageOffset = {rg[0], rg[1], array ? 0 : rg[2]}, .imageExtent = {w, h, array ? 1 : nz}};
@@ -4203,7 +4208,7 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     uint32_t out_bpb = fi->bpb == 3 ? 4 : fi->bpb;
     uint32_t nz = (uint32_t)rg[5];
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);
+    vk_sched_barrier(cb, VKSCHED_BEFORE_TRANSFER);
     uint64_t out_row = (uint64_t)wb * out_bpb;
     VkSpan s = vk_transient(out_row * hb * nz, 16);
     for (uint32_t z = 0; z < nz; z++)
@@ -4242,7 +4247,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     float tsx, tsy;
     renderer_texture_scale(t, &tsx, &tsy);
     VkCommandBuffer cb = vk_cmd();
-    vk_full_barrier(cb);
+    vk_sched_barrier(cb, VKSCHED_BEFORE_TRANSFER);
     VkImage srcimg = b->image;
     VmaAllocation small_mem = NULL;
     if ((tsx != 1 || tsy != 1) && level == 0 && !renderer_format_is_depth(t->format)) {
@@ -4256,7 +4261,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)b->width, (int32_t)b->height, 1}},
                           .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {(int32_t)t->width, (int32_t)t->height, 1}}};
         vkCmdBlitImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, srcimg, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
-        vk_full_barrier(cb);
+        vk_sched_barrier(cb, VKSCHED_TRANSFER_TO_ALL);
     }
     bool array = b->layers > 1 && b->depth == 1;
     uint32_t nz = (uint32_t)rg[5];
@@ -4528,7 +4533,7 @@ static VkImageView smaa_lut(int i) {
 static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const float pc[8],
                       bool clear) {
     VkPipeline pipe = post_pipeline(fs);  // (before the rendering begins: created inside it, the NVIDIA driver crashed)
-    vk_full_barrier(cb);
+    vk_sched_barrier(cb, VKSCHED_BEFORE_GRAPHICS);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = post_view(dst),
                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                                     .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
