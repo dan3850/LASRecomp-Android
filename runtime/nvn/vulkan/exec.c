@@ -366,13 +366,15 @@ VkCommandBuffer vk_cmd(void) {
     return s->main;
 }
 
+static void vk_upload_scope_barrier(VkCommandBuffer cb, bool beginning);
+
 VkCommandBuffer vk_upload_cmd(void) {
     Sub *s = sub();
     if (!s->upload_begun) {
         begin_cb(&s->upload, &s->upload_begun);
         // after everything submitted before it: a submission's commands may start while the previous one's still run,
         // and these copies overwrite what those may read (textures being replaced, vertex cache pages)
-        vk_full_barrier(s->upload);
+        vk_upload_scope_barrier(s->upload, true);
     }
     return s->upload;
 }
@@ -382,6 +384,35 @@ void vk_full_barrier(VkCommandBuffer cb) {
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &di);
+}
+
+// Android-native experiment: upload command buffers only write via transfer
+// operations (copies and clears). Keep the dependency from prior graphics,
+// compute and transfer work, including previous GPU reads of upload targets,
+// but limit the *destination* of the first barrier to transfer operations.
+// At the end, publish those transfer writes for the following main buffer.
+// This does not bypass hazards: all commands/reads remain ordered where needed.
+// LARECOMP_VK_UPLOAD_SCOPE=0 restores the original full barriers for A/B tests.
+static void vk_upload_scope_barrier(VkCommandBuffer cb, bool beginning) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_VK_UPLOAD_SCOPE");
+        on = !e || atoi(e) != 0;
+        LOG("[vk] upload scope barriers %s (LARECOMP_VK_UPLOAD_SCOPE=%s)\n",
+            on ? "transfer-scoped" : "legacy-full", e ? e : "unset");
+    }
+    if (!on) { vk_full_barrier(cb); return; }
+    VkMemoryBarrier2 mb = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = beginning ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .srcAccessMask = beginning ? VK_ACCESS_2_MEMORY_WRITE_BIT : VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = beginning ? VK_PIPELINE_STAGE_2_TRANSFER_BIT : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = beginning ? (VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT)
+                                   : (VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT),
+    };
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                           .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     vkCmdPipelineBarrier2(cb, &di);
 }
 
@@ -457,7 +488,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     int n = 0;
     vc_flush();
     if (s->upload_begun) {
-        vk_full_barrier(s->upload);  // uploads complete before anything in the main buffer reads them
+        vk_upload_scope_barrier(s->upload, false);  // publish uploads before the main buffer reads them
         VK_CHECK(vkEndCommandBuffer(s->upload));
         cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->upload};
     }
