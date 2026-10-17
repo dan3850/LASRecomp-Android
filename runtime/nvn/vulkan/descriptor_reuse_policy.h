@@ -26,6 +26,19 @@ static inline bool las_ds_equal(const LasDsKey *a,const LasDsKey *b) {
      a->count!=b->count) return false;
  return !memcmp(a,b,offsetof(LasDsKey,binds)+a->count*sizeof a->binds[0]);
 }
+// Copy ONLY the live key prefix. This avoids writing the unused 24-binding
+// tail for each newly generated descriptor set, while comparisons and hashes
+// also deliberately ignore the tail.
+static inline size_t las_ds_size(const LasDsKey *key) {
+ if (!key || key->count>LAS_DS_LIMIT) return 0;
+ return offsetof(LasDsKey,binds) + (size_t)key->count*sizeof key->binds[0];
+}
+static inline bool las_ds_copy(LasDsKey *out,const LasDsKey *in) {
+ size_t n=las_ds_size(in);
+ if (!out || !n) return false;
+ memcpy(out,in,n);
+ return true;
+}
 static inline bool las_ds_valid(uint64_t seq,uint64_t needed,
  uint64_t hash,uint64_t expected,const LasDsKey *previous,const LasDsKey *current) {
  return seq==needed && hash==expected && las_ds_equal(previous,current);

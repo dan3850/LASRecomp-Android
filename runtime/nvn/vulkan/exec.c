@@ -3386,9 +3386,12 @@ static VkDescriptorSet ds_reuse_lookup(
   if (n>LAS_DS_LIMIT) ds_large++;
   return VK_NULL_HANDLE;
  }
- memset(key,0,sizeof *key);
+ // Every binding field is set explicitly below. Only the fixed header must
+ // be initialized: the unused binding tail never participates in hashing or
+ // equality, and zeroing it at every draw used unnecessary memory bandwidth.
  key->layout=(uint64_t)(uintptr_t)layout;
  key->count=n;
+ key->reserved=0;
  for (uint32_t i=0;i<n;++i) {
   LasDsBind *b=&key->binds[i];
   b->binding=w[i].dstBinding;
@@ -3503,7 +3506,9 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     if(cached) {
         cached->seq=vk_pending_seq();
         cached->hash=hash;
-        cached->key=key;
+        // Copy only live bindings. Keys contain no guest pointers and stay
+        // valid until this submission's descriptor pool is retired.
+        las_ds_copy(&cached->key,&key);
         cached->ds=ds;
     }
     return ds;

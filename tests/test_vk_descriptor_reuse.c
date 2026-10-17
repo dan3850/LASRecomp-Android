@@ -22,5 +22,22 @@ int main(void) {
  b=a; b.binds[1].type++; assert(!las_ds_equal(&a,&b));
  b=a; b.count=LAS_DS_LIMIT+1; assert(!las_ds_equal(&a,&b));
  assert(!las_ds_hash(&b));
+ // Unused entries MUST NOT enter the hash/equality check, and partial
+ // copying must retain the complete prefix but leave destination tail alone.
+ LasDsKey compact={0},noisy={0},dest={0};
+ compact.layout=0x999; compact.count=1; compact.reserved=0;
+ compact.binds[0]=(LasDsBind){8,6,0xabc,32,128};
+ noisy=compact;
+ for (unsigned i=1;i<LAS_DS_LIMIT;++i)
+   noisy.binds[i]=(LasDsBind){i,7,i+1,i+2,i+3};
+ assert(las_ds_hash(&compact)==las_ds_hash(&noisy));
+ assert(las_ds_equal(&compact,&noisy));
+ memset(&dest,0xA5,sizeof dest);
+ assert(las_ds_copy(&dest,&compact));
+ assert(las_ds_equal(&dest,&compact));
+ assert(dest.binds[1].a==UINT64_C(0xA5A5A5A5A5A5A5A5));
+ assert(las_ds_size(&compact)==offsetof(LasDsKey,binds)+sizeof(LasDsBind));
+ assert(!las_ds_copy(NULL,&compact));
+ assert(!las_ds_copy(&dest,NULL));
  puts("TEST_VK_DESCRIPTOR_REUSE_PASS");
 }
