@@ -823,14 +823,14 @@ static bool sync_shaders(void) {
 // draws while they were building, making a new room appear in pieces even as
 // gameplay progressed. Wait only on an actually pending first-use shader;
 // ready shaders and all GPU submissions still follow the original fast path.
-// LARECOMP_VK_WAIT_FIRST_USE_MS=0 restores the old async-skip behavior.
+// Gameplay must stay asynchronous; LARECOMP_VK_WAIT_FIRST_USE_MS opts into the old wait experiment.
 static void wait_first_use(_Atomic int *state, const char *kind) {
 #ifdef __ANDROID__
     if (atomic_load_explicit(state, memory_order_acquire) != 0) return;
     static int timeout_ms = -1;
     if (timeout_ms < 0) {
         const char *v = getenv("LARECOMP_VK_WAIT_FIRST_USE_MS");
-        timeout_ms = v ? atoi(v) : 5000;
+        timeout_ms = v ? atoi(v) : 0;  // no gameplay stalls by default; legacy experiment is opt-in
         if (timeout_ms < 0) timeout_ms = 0;
         if (timeout_ms > 10000) timeout_ms = 10000;
         LOG("[vk] first-use shader wait: %d ms (0=async skip)\n", timeout_ms);
@@ -1750,6 +1750,7 @@ static VkPrimitiveTopology topo_class_base(uint8_t c) {
     return c == 0 ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : c == 1 ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
+static void warm_record_pipeline(const Pipe *pp);  // snapshot only after a real successful build
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
     PipeKey *k = &pp->k;
@@ -1814,7 +1815,143 @@ static void build_pipeline(void *arg) {
     }
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&pp->state, r == VK_SUCCESS ? 1 : 2);
+    if (r == VK_SUCCESS) warm_record_pipeline(pp);
 }
+
+// Eden-style disk resource replay. vk_pipelines.bin alone is an opaque driver cache:
+// it doesn't say which Vulkan pipelines should be created. Preserve a separate
+// descriptor of pipelines actually observed in gameplay and rebuild them before
+// backend_init releases the guest. No game shader code or game assets are stored.
+#ifdef __ANDROID__
+#define VK_WARM_MAGIC 0x31574B56u  // VKW1, bump when PipeKey or shader translation changes
+#define VK_WARM_LIMIT (8u * 1024u * 1024u)
+#define VK_WARM_SEEN 16384u
+typedef struct {
+    uint32_t magic, bytes, vendor, device;
+    uint64_t vs_hash, fs_hash;
+    PipeKey k;  // k.prog is always NULL on disk (process pointers are not portable)
+} WarmRecord;
+static pthread_mutex_t warm_mutex = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t warm_seen[VK_WARM_SEEN];
+static bool warm_loading;
+static bool warm_enabled(void) {
+    const char *v = getenv("LARECOMP_VK_PIPELINE_PREWARM");
+    return !v || atoi(v) != 0;
+}
+static uint64_t warm_identity(const WarmRecord *r) {
+    uint64_t h = hash_words(r->vs_hash ^ (r->fs_hash * 0x9E3779B97F4A7C15ull), &r->k, sizeof r->k);
+    return h ? h : 1;
+}
+static bool warm_new(const WarmRecord *r) {
+    uint64_t h = warm_identity(r);
+    uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (VK_WARM_SEEN - 1);
+    for (uint32_t i = 0; i < VK_WARM_SEEN; ++i, slot = (slot + 1) & (VK_WARM_SEEN - 1)) {
+        if (warm_seen[slot] == h) return false;
+        if (!warm_seen[slot]) { warm_seen[slot] = h; return true; }
+    }
+    return false;
+}
+static void warm_record_pipeline(const Pipe *pp) {
+    if (!warm_enabled() || warm_loading || !pp->k.prog || !pp->k.prog->vi || !pp->k.prog->fi) return;
+    const char *vs = pp->k.prog->vi->msl, *fs = pp->k.prog->fi->msl;
+    if (!vs || !fs) return;
+    WarmRecord r = {0};
+    r.magic = VK_WARM_MAGIC;
+    r.bytes = sizeof r;
+    r.vendor = g_vk.props.vendorID;
+    r.device = g_vk.props.deviceID;
+    r.vs_hash = vk_shader_cache_key(vs, STAGE_VERTEX);
+    r.fs_hash = vk_shader_cache_key(fs, STAGE_FRAGMENT);
+    r.k = pp->k;
+    r.k.prog = NULL;
+    pthread_mutex_lock(&warm_mutex);
+    if (warm_new(&r)) {
+        mkdir("cache", 0755);
+        FILE *f = fopen("cache/vk_warmup_v1.bin", "ab");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long size = ftell(f);
+            if (size >= 0 && (unsigned long)size + sizeof r <= VK_WARM_LIMIT)
+                fwrite(&r, sizeof r, 1, f);
+            fclose(f);
+        }
+    }
+    pthread_mutex_unlock(&warm_mutex);
+}
+void vk_pipeline_records_warmup(void) {
+    if (!warm_enabled()) {
+        LOG("[vk] pipeline replay disabled\n");
+        return;
+    }
+    FILE *f = fopen("cache/vk_warmup_v1.bin", "rb");
+    if (!f) {
+        LOG("[vk] pipeline replay: no recorded pipelines; first launch learns them\n");
+        return;
+    }
+    // Bound boot compilation time and memory; allow an explicit larger limit.
+    const char *ev = getenv("LARECOMP_VK_PREWARM_MAX");
+    int limit = ev ? atoi(ev) : 1024;
+    if (limit < 0) limit = 0;
+    if (limit > 8192) limit = 8192;
+    int seen = 0, built = 0, missing = 0, rejected = 0;
+    WarmRecord rec;
+    warm_loading = true;
+    while (seen < limit && fread(&rec, sizeof rec, 1, f) == 1) {
+        if (rec.magic != VK_WARM_MAGIC || rec.bytes != sizeof rec ||
+            rec.vendor != g_vk.props.vendorID || rec.device != g_vk.props.deviceID ||
+            rec.k.prog || rec.k.ncolor > 8 || !rec.k.samples ||
+            (rec.k.samples & (rec.k.samples - 1)) != 0) {
+            rejected++;
+            continue;
+        }
+        if (!warm_new(&rec)) continue;
+        ++seen;
+        size_t nv = 0, nf = 0;
+        uint32_t *sv = vk_shader_cache_read(rec.vs_hash, &nv);
+        uint32_t *sf = vk_shader_cache_read(rec.fs_hash, &nf);
+        if (!sv || !sf) {
+            missing++;
+            free(sv); free(sf);
+            continue;
+        }
+        Prog p = {0};
+        p.nbinds = vk_reflect(sv, nv, p.binds, MAX_BIND);
+        p.nbinds += vk_reflect(sf, nf, p.binds + p.nbinds, MAX_BIND - p.nbinds);
+        p.vs = vk_module(sv, nv);
+        p.fs = vk_module(sf, nf);
+        free(sv); free(sf);
+        if (p.vs && p.fs) {
+            p.layout = make_layout(&p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
+            Pipe pp = {0};
+            pp.k = rec.k;
+            pp.k.prog = &p;
+            build_pipeline(&pp);  // records a driver pipeline; never stalls gameplay
+            if (pp.pipe) {
+                built++;
+                vkDestroyPipeline(g_vk.dev, pp.pipe, NULL);
+            }
+            vkDestroyPipelineLayout(g_vk.dev, p.layout, NULL);
+            for (int i = 0; i < 2; i++) vkDestroyDescriptorSetLayout(g_vk.dev, p.set_layout[i], NULL);
+        } else {
+            missing++;
+        }
+        if (p.vs) vkDestroyShaderModule(g_vk.dev, p.vs, NULL);
+        if (p.fs) vkDestroyShaderModule(g_vk.dev, p.fs, NULL);
+        if (seen % 100 == 0) LOG("[vk] pipeline replay loading %d/%d, built %d\n", seen, limit, built);
+    }
+    warm_loading = false;
+    fclose(f);
+    LOG("[vk] pipeline replay complete: known %d built %d SPIR-V missing %d incompatible %d\n",
+        seen, built, missing, rejected);
+    if (built) {
+        extern void vk_pipeline_cache_save(void);
+        vk_pipeline_cache_save();
+    }
+}
+#else
+static void warm_record_pipeline(const Pipe *pp) { (void)pp; }
+void vk_pipeline_records_warmup(void) {}
+#endif
 
 // ================================================================== feedback snapshots (renderer.m resolve_feedback)
 static NvnTexture *feedback_tex[4];
