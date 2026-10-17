@@ -1007,6 +1007,12 @@ void ui_window_init(void) {
     create_swapchain();
     vk_exec_init();
     vk_shaders_init();
+#ifdef __ANDROID__
+    // Device, swapchain and SPIR-V compiler are ready; the guest's backend_init
+    // still waits for ui_ready, so this one-time prewarm runs before gameplay.
+    extern void vk_present_pipeline_warmup(void);
+    vk_present_pipeline_warmup();
+#endif
 }
 
 SDL_Window *ui_window(void) { return window; }
