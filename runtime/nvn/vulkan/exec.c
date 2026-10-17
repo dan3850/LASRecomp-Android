@@ -2550,10 +2550,16 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
         stat_gmem_size_bypass += plan->size;
         return (VkSpan){0};
     }
-    unsigned base = (hash_words(0, plan, sizeof *plan) % (GMEM_SNAP_SLOTS / GMEM_SNAP_WAYS)) * GMEM_SNAP_WAYS;
+    // Fully associative within the existing 128 entries / 32 MiB budget.
+    // The previous four-way hash set often saturated with pending versions
+    // of a hot range while many other slots were free (Android outdoor logs:
+    // ~6 MiB resident yet >100 MiB per interval bypassed as busy).
+    // Checking all entries lets colliding plans borrow spare slots without
+    // changing the memory budget or touching an in-flight allocation.
     uint64_t pending = vk_pending_seq();
+    uint64_t done = vk_completed_seq();
     struct GmemSnapshot *match = NULL;
-    for (unsigned i = base; i < base + GMEM_SNAP_WAYS; ++i) {
+    for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i) {
         struct GmemSnapshot *s = &gmem_snap[i];
         if (!s->buf || memcmp(&s->plan, plan, sizeof *plan)) continue;
         bool same = true;
@@ -2563,23 +2569,27 @@ static VkSpan gmem_read_snapshot(const GmemPlan *plan) {
                        plan->tab[r * 4 + 1])) { same = false; break; }
         }
         if (same) { s->seq = pending; stat_gmem_reused_bytes += plan->size; return (VkSpan){s->buf, 0, NULL}; }
-        match = s;
+        // Prefer the most recently completed version: it is usually closest
+        // to the new contents, reducing dirty blocks on an in-place update.
+        if (s->seq <= done && (!match || s->seq > match->seq)) match = s;
     }
-    uint64_t done = vk_completed_seq();
-    struct GmemSnapshot *pick = match && match->seq <= done ? match : NULL;
-    for (unsigned i = base; !pick && i < base + GMEM_SNAP_WAYS; ++i)
+    struct GmemSnapshot *pick = match;
+    // A new snapshot can live anywhere; never force a transient upload just
+    // because the four entries sharing a hash are still in use.
+    for (unsigned i = 0; !pick && i < GMEM_SNAP_SLOTS; ++i)
         if (!gmem_snap[i].buf) pick = &gmem_snap[i];
     if (!pick) {
-        for (unsigned i = base; i < base + GMEM_SNAP_WAYS; ++i)
-            if (gmem_snap[i].seq <= done && (!pick || gmem_snap[i].seq < pick->seq)) pick = &gmem_snap[i];
+        for (unsigned i = 0; i < GMEM_SNAP_SLOTS; ++i)
+            if (gmem_snap[i].buf && gmem_snap[i].seq <= done &&
+                (!pick || gmem_snap[i].seq < pick->seq)) pick = &gmem_snap[i];
     }
     if (!pick) {
-        // All four ways in this set are still in use. Never stall or overwrite.
+        // Every slot is still in use. Never stall or overwrite GPU reads.
         stat_gmem_capacity_bypass += plan->size;
         stat_gmem_busy_bypass += plan->size;
         return (VkSpan){0};
     }
-    // A completed entry in another set can retain the entire 32 MB budget.
+    // Completed entries can retain the entire 32 MiB budget.
     // Reclaim the globally oldest completed snapshots before bypassing this
     // allocation; no budget increase and no timeline wait. Preflight ensures
     // a failed request does not evict useful entries for no benefit.
