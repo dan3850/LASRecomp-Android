@@ -21,6 +21,7 @@
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
+static uint64_t stat_first_use_wait_ns, stat_first_use_waits, stat_first_use_timeouts;
 // Pending compilation skips, excluding intentional draw filters (render thread only).
 static uint64_t stat_prog_pending, stat_pipe_pending, stat_compute_pending;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
@@ -818,6 +819,43 @@ static bool sync_shaders(void) {
     return v;
 }
 
+// First-use shaders are compiled on workers. Previously the renderer skipped
+// draws while they were building, making a new room appear in pieces even as
+// gameplay progressed. Wait only on an actually pending first-use shader;
+// ready shaders and all GPU submissions still follow the original fast path.
+// LARECOMP_VK_WAIT_FIRST_USE_MS=0 restores the old async-skip behavior.
+static void wait_first_use(_Atomic int *state, const char *kind) {
+#ifdef __ANDROID__
+    if (atomic_load_explicit(state, memory_order_acquire) != 0) return;
+    static int timeout_ms = -1;
+    if (timeout_ms < 0) {
+        const char *v = getenv("LARECOMP_VK_WAIT_FIRST_USE_MS");
+        timeout_ms = v ? atoi(v) : 5000;
+        if (timeout_ms < 0) timeout_ms = 0;
+        if (timeout_ms > 10000) timeout_ms = 10000;
+        LOG("[vk] first-use shader wait: %d ms (0=async skip)\n", timeout_ms);
+    }
+    if (!timeout_ms) return;
+    uint64_t start = SDL_GetTicksNS();
+    const uint64_t budget = (uint64_t)timeout_ms * 1000000ull;
+    while (atomic_load_explicit(state, memory_order_acquire) == 0 &&
+           SDL_GetTicksNS() - start < budget) SDL_Delay(1);
+    uint64_t elapsed = SDL_GetTicksNS() - start;
+    stat_first_use_wait_ns += elapsed;
+    stat_first_use_waits++;
+    if (atomic_load_explicit(state, memory_order_acquire) == 0) {
+        stat_first_use_timeouts++;
+        static int warned;
+        if (warned++ < 8)
+            LOG("[vk] %s shader/pipeline still compiling after %.0f ms; skipping this use\n",
+                kind, elapsed / 1e6);
+    }
+#else
+    (void)state;
+    (void)kind;
+#endif
+}
+
 // Shader translation: one dedicated thread (the translator isn't re-entrant - translate.c's RSC2 string ring - and
 // translating on the game thread cost up to ~90 ms per frame on entering an area). Compiles go on to the workers.
 static pthread_mutex_t translate_lock = PTHREAD_MUTEX_INITIALIZER;  // (compute shaders translate on the game thread)
@@ -958,6 +996,14 @@ const char *renderer_stats(void) {
                  (unsigned long long)stat_prog_pending, (unsigned long long)stat_pipe_pending,
                  (unsigned long long)stat_compute_pending);
         stat_prog_pending = stat_pipe_pending = stat_compute_pending = 0;
+    }
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 " | first-use wait %llu jobs %.1fms timeout %llu",
+                 (unsigned long long)stat_first_use_waits, stat_first_use_wait_ns / 1e6,
+                 (unsigned long long)stat_first_use_timeouts);
+        stat_first_use_waits = stat_first_use_wait_ns = stat_first_use_timeouts = 0;
     }
     stat_feedback_copies = stat_upload_bytes = stat_gmem_reused_bytes = 0;
     {
@@ -3046,6 +3092,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
     CsProg *cp = compute_program(st.program);
+    if (cp) wait_first_use(&cp->p.state, "compute pipeline");
     if (!cp || atomic_load(&cp->p.state) != 1) {
         if (cp && atomic_load(&cp->p.state) == 0) stat_compute_pending++;
         stat_skipped++;
@@ -3148,6 +3195,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
     Prog *pr = get_program(st.program, &vkey, &fkey);
+    if (pr) wait_first_use(&pr->state, "graphics program");
     if (!pr || atomic_load(&pr->state) != 1) {
         if (pr && atomic_load(&pr->state) == 0) stat_prog_pending++;
         stat_skipped++;
@@ -3166,11 +3214,12 @@ static void draw_(CmdRec *r, bool indexed) {
         if (mirror_draw(composite)) {
             vkey.flip_x = fkey.flip_x = true;
             pr = get_program(st.program, &vkey, &fkey);
+            if (pr) wait_first_use(&pr->state, "mirror program");
             if (!pr || atomic_load(&pr->state) != 1) {
-        if (pr && atomic_load(&pr->state) == 0) stat_prog_pending++;
-        stat_skipped++;
-        return;
-    }
+                if (pr && atomic_load(&pr->state) == 0) stat_prog_pending++;
+                stat_skipped++;
+                return;
+            }
             g_mirror_w = (float)st.rt.color[0]->width;
         }
     }
@@ -3289,6 +3338,7 @@ static void draw_(CmdRec *r, bool indexed) {
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
     }
+    wait_first_use(&pp->state, "graphics pipeline");
     if (atomic_load(&pp->state) != 1) {
         if (atomic_load(&pp->state) == 0) stat_pipe_pending++;
         stat_skipped++;
