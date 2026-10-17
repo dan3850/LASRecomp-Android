@@ -10,6 +10,7 @@
 
 #include "gamelib.h"
 #include "hle.h"
+#include "kernel.h"
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
 static FnTable tables[2];
@@ -158,8 +159,8 @@ static GuestFn dispatch_slow(Cpu *c) {
         // to be mapped in the reproducible crash; avoid inspecting arbitrary
         // host pointers outside the guest heap.
         uint64_t size = kernel_heap_size();
-        if (object >= HEAP_BASE && size >= 24 &&
-            object - HEAP_BASE <= size - 24) {
+        if (object >= HEAP_BASE && size >= 32 &&
+            object - HEAP_BASE <= size - 32) {
             uint64_t child = LD64(object + 0x10);
             if (!child) {
                 fprintf(stderr,
