@@ -2169,6 +2169,18 @@ bool vk_alias_host_upload_ready(NvnTexture *t) {
         if (aliases[i].src == t || aliases[i].dst == t) return false;
     return true;
 }
+// An alias destination may later become the frame presented to Android.
+// Unlike sampling (which can read the alias source directly), presentation
+// binds the TexBackend image, so materialize the exact destination beforehand.
+void vk_alias_before_present(NvnTexture *t) {
+    if (!t || !naliases) return;
+    for (int i = naliases - 1; i >= 0; --i) {
+        if (aliases[i].dst != t) continue;
+        if (alias_valid(&aliases[i]))
+            alias_copy(&aliases[i], ((TexBackend *)t->backend)->aspect, "present");
+        alias_drop(i);
+    }
+}
 void vk_alias_reset(void) { naliases = 0; }  // (reboot: every texture goes)
 
 // (renderer_stats, once per stats interval) copies made aliases / renamed / partly or fully copied later

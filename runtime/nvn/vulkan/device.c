@@ -804,6 +804,8 @@ void backend_represent(void) {
 
 void backend_present(NvnTexture *t) {
     g_last_presented = t;
+    extern void vk_alias_before_present(NvnTexture *);
+    vk_alias_before_present(t);
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
     vk_end_pass();
