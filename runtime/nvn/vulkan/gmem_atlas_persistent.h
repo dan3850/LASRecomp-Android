@@ -5,6 +5,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+// Each GPU consumer extends the lifetime of its source allocation.
+// The allocation may be recycled only once the timeline has completed that
+// consumer's submission, not merely its original writer's submission.
+static inline bool gmem_atlas_slot_reclaimable(
+        uint64_t last_use_seq, uint64_t completed_seq) {
+    return !last_use_seq || last_use_seq <= completed_seq;
+}
+
 static inline bool gmem_atlas_saved_plan_matches(
     const uint32_t *original, const uint32_t *mapped, uint32_t count,
     const uint8_t *shadow, size_t capacity,

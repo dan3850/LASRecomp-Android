@@ -30,6 +30,13 @@ int main(void) {
     assert(!gmem_atlas_saved_plan_matches(plan,saved,2,shadow,sizeof shadow,guest,sizeof guest));
     plan[4]=1024;
     assert(gmem_atlas_saved_plan_matches(plan,saved,2,shadow,sizeof shadow,guest,sizeof guest));
-    puts("PASS: cross-submission GMEM snapshots validate byte-for-byte");
+    assert(gmem_atlas_slot_reclaimable(0, 0));
+    assert(gmem_atlas_slot_reclaimable(100, 100));
+    assert(gmem_atlas_slot_reclaimable(100, 105));
+    assert(!gmem_atlas_slot_reclaimable(101, 100));
+    // Writer 10 may be finished, but a reader in submission 18 still pins.
+    assert(!gmem_atlas_slot_reclaimable(18, 10));
+    assert(gmem_atlas_slot_reclaimable(18, 18));
+    puts("PASS: cross-submission GMEM data and timeline lifetime");
     return 0;
 }

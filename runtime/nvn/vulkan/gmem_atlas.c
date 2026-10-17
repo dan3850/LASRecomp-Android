@@ -177,7 +177,8 @@ VkDescriptorBufferInfo vk_gmem_atlas_get(const GmemPlan *plan,
     }
     if (a->seq != pending) {
         // Never modify a buffer referenced by a previous, unfinished frame.
-        if (a->last_use_seq && a->last_use_seq > vk_completed_seq()) {
+        if (a->last_use_seq &&
+            !gmem_atlas_slot_reclaimable(a->last_use_seq, vk_completed_seq())) {
             busy++; fallback++;
             return (VkDescriptorBufferInfo){0};
         }
