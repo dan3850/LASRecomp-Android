@@ -2996,25 +2996,45 @@ static void gmem_resolve_done(uint64_t done) {
     pthread_mutex_unlock(&gmem_lock);
 }
 
-static bool gmem_overlaps(uint64_t addr, uint64_t size) {
-    if (!addr || !size || !atomic_load(&gmem_pending)) return false;
-    bool overlap = false;
+// Return the newest overlapping writer, not just a boolean: a writer from an
+// ALREADY SUBMITTED batch only requires waiting for its timeline value. Sending
+// the current graphics batch too would unnecessarily end its command buffer,
+// increase submission pressure and extend the GPU/CPU dependency chain.
+static uint64_t gmem_overlap_seq(uint64_t addr, uint64_t size) {
+    if (!addr || !size || !atomic_load(&gmem_pending)) return 0;
+    uint64_t newest = 0;
     pthread_mutex_lock(&gmem_lock);
-    for (GmemWrite *w = gmem_writes; w && !overlap; w = w->next)
+    for (GmemWrite *w = gmem_writes; w; w = w->next)
         for (unsigned i = 0; i < w->plan.tab[GMAP_MAX * 4]; ++i) {
             uint64_t start = HEAP_BASE + w->plan.tab[i * 4], len = w->plan.tab[i * 4 + 1];
-            if (addr >= start ? addr - start < len : start - addr < size) { overlap = true; break; }
+            if (addr >= start ? addr - start < len : start - addr < size) {
+                if (w->seq > newest) newest = w->seq;
+                break;
+            }
         }
     pthread_mutex_unlock(&gmem_lock);
-    return overlap;
+    return newest;
+}
+
+static bool gmem_overlaps(uint64_t addr, uint64_t size) {
+    return gmem_overlap_seq(addr, size) != 0;
 }
 
 // Preflight only, before beginning a render pass or capturing its command buffer.
-// renderer_flush may switch submission slots, so never call this during a draw.
+// Preserve the GPU->CPU dependency without submitting unrelated pending draws.
 static void gmem_read_range(uint64_t addr, uint64_t size) {
-    if (!gmem_overlaps(addr, size)) return;
-    wait_why = "compute -> CPU snapshot";
-    renderer_flush();
+    uint64_t needed = gmem_overlap_seq(addr, size);
+    if (!needed) return;
+    pthread_mutex_lock(&seq_lock);
+    uint64_t submitted = submit_seq;
+    pthread_mutex_unlock(&seq_lock);
+    if (needed <= submitted) {
+        wait_why = "compute -> CPU snapshot (submitted)";
+        vk_wait_seq(needed); // gmem_resolve_done applies all completed writes
+    } else {
+        wait_why = "compute -> CPU snapshot (pending)";
+        renderer_flush(); // writer is still in the current command buffer
+    }
     if (gmem_overlaps(addr, size)) FATAL("portable GMEM dependency did not complete after the GPU wait\n");
 }
 
