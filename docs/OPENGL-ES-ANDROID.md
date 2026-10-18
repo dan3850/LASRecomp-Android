@@ -362,3 +362,28 @@ Code changes in this milestone:
 This subset does **not** implement every Maxwell stage, compute shaders,
 global memory or complete NVN render semantics. No game APK has been
 compiled on the user's Termux or gameplay validated here.
+
+## Milestone 11: pass depth/stencil, full color formats and firstInstance
+The native GLES `graphics/gles.txt` from the 2026-10-18 11:45
+Adreno 840 diagnostic lists 71,607 native Maxwell draws, 28,901
+fixed depth/stencil rejects, 7,813 base-instance rejects and
+5,159 color-format rejects. The ZIP also contains unrelated historic
+Vulkan/PixelCopy overlay data; those files are not GLES evidence.
+
+- GLES depth/stencil enablement now matches Vulkan `pass_depth` /
+  `pass_stencil`: requested tests are inactive when a matching
+  framebuffer attachment is absent, rather than blocking the draw.
+- Supported color output formats use the GLES native `gpu_format`
+  table and continue through GL framebuffer completeness validation,
+  rather than an independent short format whitelist.
+- NVN/Vulkan firstInstance is applied to GLSL ES vertex
+  `gl_InstanceIndex` using a uniform for `gl_InstanceID+firstInstance`.
+  Per-instance VBO pointers advance by `firstInstance * stride`.
+  Indexed and array draws share the behavior, with checked ranges.
+  The Vulkan GLSL translator path is untouched.
+- New diagnostics: depth_without_attachment, stencil_without_attachment,
+  indexed_base_instance_draws and arrays_base_instance_draws.
+
+The native backend still lacks some Maxwell shaders, GMEM/compute and
+certain texture copies. Correct rendered pixels have not been verified
+by the assistant on Android; no claim that the black screen is fixed.

@@ -67,7 +67,7 @@ static void report(void) {
     mkdir("graphics", 0755);
     FILE *f = fopen("graphics/gles.txt", "w");
     if (!f) return;
-    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-full-mips-v3\n"
+    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-pass-depth-baseinstance-v4\n"
                "NVN_renderer=OpenGL_ES\nVulkan_initialized=0\n");
     fprintf(f, "native_maxwell_draws=%" PRIu64 "\ngles_programs_linked=%" PRIu64
                "\ngles_programs_failed=%" PRIu64 "\n",
@@ -230,6 +230,13 @@ static FormatGL gpu_format(uint32_t format) {
                           GL_DEPTH_STENCIL_ATTACHMENT};
     default: return (FormatGL){0};
     }
+}
+// Share the renderer's actual native format table with NVN draw validation.
+// The previous caller duplicated a short whitelist (rejecting e.g. R8/RG8)
+// before the GLES framebuffer completeness check could run.
+bool gles_color_target_supported(uint32_t format) {
+    FormatGL f=gpu_format(format);
+    return f.internal != 0 && f.attachment == GL_COLOR_ATTACHMENT0;
 }
 static GlesTexture *texture(NvnTexture *tex) {
     if (!tex || !tex->width || !tex->height || tex->width > 8192 || tex->height > 8192 ||

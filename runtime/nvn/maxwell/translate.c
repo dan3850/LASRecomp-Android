@@ -1806,7 +1806,11 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         // compile failures, never silently replaced with different operations.
         sp(&s, "#version 320 es\nprecision highp float;\nprecision highp int;\n"
                "#define gl_VertexIndex gl_VertexID\n"
-               "#define gl_InstanceIndex gl_InstanceID\n");
+               "#define gl_InstanceIndex (uint(gl_InstanceID) + gles_base_instance)\n");
+        // Vulkan SPIR-V gl_InstanceIndex includes firstInstance. Native GLES
+        // gl_InstanceID starts at zero even for base-instance draws.
+        if (stage == STAGE_VERTEX)
+            sp(&s, "uniform highp uint gles_base_instance;\n");
         sp(&s, "%s", strstr(glsl_prelude, "#define cbr"));
     } else {
         sp(&s, "%s", glsl_prelude);

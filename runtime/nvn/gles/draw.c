@@ -16,6 +16,7 @@ extern bool gles_draw_framebuffer(NvnTexture *const colors[8], int ncolor,
 extern bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler, int unit,
                                 bool shadow, uint8_t type,
                                 const uint8_t swizzle[4]);
+extern bool gles_color_target_supported(uint32_t format);
 extern void gles_mark_texture_written(NvnTexture *tex);
 extern uint32_t nvn_window_origin(void);
 extern uint32_t nvn_depth_mode(void);
@@ -41,6 +42,8 @@ static GLuint uniform_buffers[36], vertex_buffers[16], index_buffer, vao;
 static uint64_t native_draws, shaders_ok, shaders_failed, rejection[13];
 static uint64_t checked_draws, gl_draw_errors;
 static uint64_t mrt_draws, rebased_index_draws, rejected_base_instance;
+static uint64_t depth_without_attachment, stencil_without_attachment;
+static uint64_t indexed_base_instance_draws, arrays_base_instance_draws;
 static uint64_t reject_target_layout, reject_target_format, reject_target_fbo;
 enum { FIX_MULTISAMPLE, FIX_POLYGON, FIX_BLEND, FIX_DEPTH, FIX_STENCIL, FIX_SCISSOR, FIX_COUNT };
 static uint64_t reject_fixed[FIX_COUNT];
@@ -117,9 +120,13 @@ const char *gles_draw_rejection_stats(void) {
         "\nrejected_fixed_multisample=%" PRIu64
         "\nrejected_fixed_polygon=%" PRIu64
         "\nrejected_fixed_blend=%" PRIu64
+        "\ndepth_without_attachment=%" PRIu64
+        "\nstencil_without_attachment=%" PRIu64
         "\nrejected_fixed_depth=%" PRIu64
         "\nrejected_fixed_stencil=%" PRIu64
         "\nrejected_fixed_scissor=%" PRIu64
+        "\nindexed_base_instance_draws=%" PRIu64
+        "\narrays_base_instance_draws=%" PRIu64
         "\nrebased_index_draws=%" PRIu64
         "\nrejected_base_instance=%" PRIu64
         "\nmrt_draws=%" PRIu64
@@ -150,8 +157,10 @@ const char *gles_draw_rejection_stats(void) {
         rejection[R_UBO], rejection[R_DEPTH_BLEND], rejection[R_CACHE],
         reject_target_layout, reject_target_format, reject_target_fbo,
         reject_fixed[FIX_MULTISAMPLE], reject_fixed[FIX_POLYGON],
-        reject_fixed[FIX_BLEND], reject_fixed[FIX_DEPTH],
+        reject_fixed[FIX_BLEND], depth_without_attachment,
+        stencil_without_attachment, reject_fixed[FIX_DEPTH],
         reject_fixed[FIX_STENCIL], reject_fixed[FIX_SCISSOR],
+        indexed_base_instance_draws, arrays_base_instance_draws,
         rebased_index_draws, rejected_base_instance, mrt_draws,
         rejection[R_TEXTURE], texture_rejection[T_KIND], texture_rejection[T_POOL],
         texture_rejection[T_HANDLE], texture_rejection[T_DESCRIPTOR],
@@ -618,7 +627,8 @@ static bool bind_textures(Program *p) {
     return true;
 }
 
-static bool attributes(Program *p, uint32_t last_index, uint32_t first_index, uint32_t instances) {
+static bool attributes(Program *p, uint32_t last_index, uint32_t first_index,
+                       uint32_t instances, uint32_t base_instance) {
     uint64_t stream_bytes[16] = {0};
     // First validate the WHOLE vertex layout. No partial GL draws when a
     // required attribute is unsupported, unbound or outside the guest range.
@@ -635,7 +645,11 @@ static bool attributes(Program *p, uint32_t last_index, uint32_t first_index, ui
         if (!stride || stride > 2048 || off > 65536 || !v.addr || !v.size) {
             rejection[R_VERTEX_FORMAT]++; return false;
         }
-        uint64_t maxv = divisor ? ((uint64_t)instances - 1)/divisor : last_index;
+        // NVN/Vulkan firstInstance biases the per-instance binding;
+        // GLES3 lacks base-instance draw entry points, so bias its VBO
+        // attribute start. The divisor still applies to local gl_InstanceID.
+        uint64_t maxv = divisor ? (uint64_t)base_instance +
+                                  ((uint64_t)instances - 1)/divisor : last_index;
         uint64_t need = maxv*(uint64_t)stride + off + f.bytes;
         if (need > v.size || need > 16u*1024*1024 || !safe_guest(v.addr,need)) {
             rejection[R_VERTEX_RANGE]++; return false;
@@ -663,9 +677,11 @@ static bool attributes(Program *p, uint32_t last_index, uint32_t first_index, ui
         }
         uint32_t stride = st.stream[stream][0], divisor = st.stream[stream][1];
         glBindBuffer(GL_ARRAY_BUFFER,vertex_buffers[stream]);
-        if (f.integer) glVertexAttribIPointer((GLuint)i,f.components,f.type,(GLsizei)stride,(const void *)(uintptr_t)off);
+        uint64_t attr_off=(uint64_t)off +
+            (divisor ? (uint64_t)base_instance*stride : 0);
+        if (f.integer) glVertexAttribIPointer((GLuint)i,f.components,f.type,(GLsizei)stride,(const void *)(uintptr_t)attr_off);
         else glVertexAttribPointer((GLuint)i,f.components,f.type,f.normalized?GL_TRUE:GL_FALSE,
-                                   (GLsizei)stride,(const void *)(uintptr_t)off);
+                                   (GLsizei)stride,(const void *)(uintptr_t)attr_off);
         glEnableVertexAttribArray((GLuint)i);
         glVertexAttribDivisor((GLuint)i,divisor);
     }
@@ -790,23 +806,27 @@ static bool bind_fixed_state(void) {
         glBlendFuncSeparate(cs, cd, as, ad);
         glBlendEquationSeparate(ce, ae);
     } else glDisable(GL_BLEND);
-    if (st.ds[0]) {
-        GLenum compare = comparison(st.ds[2]);
-        if (!compare || !st.depth) {
-            reject_fixed[FIX_DEPTH]++;return false;
-        }
+    // Match the Vulkan renderer: dt = st.ds[0] && pass_depth,
+    // sten = st.ds[3] && pass_stencil. NVN can keep tests enabled in
+    // persistent state while drawing to a color-only or depth-only target.
+    // Missing attachments disable the corresponding test, not the draw.
+    const bool depth_attachment=st.depth &&
+        (st.depth->format>=0x32 && st.depth->format<=0x36);
+    const bool stencil_attachment=st.depth &&
+        (st.depth->format==0x35 || st.depth->format==0x36);
+    if (st.ds[0] && depth_attachment) {
+        GLenum compare=comparison(st.ds[2]);
+        if (!compare) {reject_fixed[FIX_DEPTH]++;return false;}
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(compare);
         glDepthMask(st.ds[1] ? GL_TRUE : GL_FALSE);
     } else {
+        if (st.ds[0]) depth_without_attachment++;
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
     }
     glDepthRangef(st.depth_range[0][0], st.depth_range[0][1]);
-    if (st.ds[3]) {
-        if (!st.depth || (st.depth->format != 0x35 && st.depth->format != 0x36)) {
-            reject_fixed[FIX_STENCIL]++;return false;
-        }
+    if (st.ds[3] && stencil_attachment) {
         uint32_t bits = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
         for (int face = 0; face < 2; ++face) {
             GLenum target = face ? GL_BACK : GL_FRONT;
@@ -823,7 +843,10 @@ static bool bind_fixed_state(void) {
             glStencilMaskSeparate(target, st.stencil_mask[face]);
         }
         glEnable(GL_STENCIL_TEST);
-    } else glDisable(GL_STENCIL_TEST);
+    } else {
+        if (st.ds[3]) stencil_without_attachment++;
+        glDisable(GL_STENCIL_TEST);
+    }
     // NVN scissor state is already recorded in pixel coordinates.
     // A large default rectangle is equivalent to scissor disabled.
     if (st.scissor[0][2] < 0 || st.scissor[0][3] < 0) {
@@ -847,12 +870,7 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
     if (!st.color[color_index]) {
         rejection[R_TARGET]++;reject_target_layout++;return false;
     }
-    if (st.color[color_index] &&
-        st.color[color_index]->format != 0x19 && st.color[color_index]->format != 0x25 &&
-        st.color[color_index]->format != 0x29 && st.color[color_index]->format != 0x2e &&
-        st.color[color_index]->format != 0x3f && st.color[color_index]->format != 0x37 &&
-        st.color[color_index]->format != 0x38 && st.color[color_index]->format != 0x6d &&
-        st.color[color_index]->format != 0x71 && st.color[color_index]->format != 0x76) {
+    if (!gles_color_target_supported(st.color[color_index]->format)) {
         rejection[R_TARGET]++;reject_target_format++;return false;
     }
     }
@@ -863,13 +881,17 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
     if (!instances) instances=1;
     if (instances>1024 || first>1000000) { rejection[R_VERTEX_RANGE]++; return false; }
     uint32_t maxindex=first+count-1;
+    uint64_t first_instance_raw=indexed ? r->x[5] : r->x[3];
+    if (first_instance_raw>UINT32_MAX) {
+        rejected_base_instance++;rejection[R_INDICES]++;return false;
+    }
+    uint32_t base_instance=(uint32_t)first_instance_raw;
     GLenum index_type=0;
     int32_t base_vertex = indexed ? (int32_t)r->x[4] : 0;
     if (indexed) {
         uint32_t ty=(uint32_t)r->x[1];
         uint64_t bytes = (uint64_t)count*(ty==0?1u:ty==1?2u:4u);
-        if (ty>2 || !safe_guest(r->x[3],bytes) || r->x[5]) {
-            if(r->x[5]) rejected_base_instance++;
+        if (ty>2 || !safe_guest(r->x[3],bytes)) {
             rejection[R_INDICES]++; return false;
         }
         index_type=ty==0?GL_UNSIGNED_BYTE:ty==1?GL_UNSIGNED_SHORT:GL_UNSIGNED_INT;
@@ -886,9 +908,6 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
                 if((uint64_t)index>maxindex) maxindex=(uint32_t)index;
             }
         } else maxindex=index_max(r,count);
-    } else if (r->x[3]) {
-        // gl_InstanceID has no native base-instance adjustment in ES3.2.
-        rejection[R_INDICES]++; return false;
     }
     Program *p=program_for_draw();
     if (!p || !p->gl_program) return false;
@@ -904,7 +923,12 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
                (GLsizei)st.viewport[0][2],(GLsizei)st.viewport[0][3]);
     if (!bind_fixed_state()) { rejection[R_DEPTH_BLEND]++; return false; }
     glUseProgram(p->gl_program);
-    if (!bind_uniforms(p) || !attributes(p,maxindex,first,instances)) return false;
+    // The GLES shader prelude accounts for NVN firstInstance in the
+    // Vulkan-style gl_InstanceIndex; gl_InstanceID itself still starts at 0.
+    GLint base_uniform=glGetUniformLocation(p->gl_program,"gles_base_instance");
+    if(base_uniform>=0) glUniform1ui(base_uniform,base_instance);
+    if (!bind_uniforms(p) ||
+        !attributes(p,maxindex,first,instances,base_instance)) return false;
     if (indexed) {
         const void *upload=(const void *)(uintptr_t)r->x[3];
         uint32_t *rebased=NULL;
@@ -951,6 +975,10 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
     for(int i=0;i<st.ncolor;i++) gles_mark_texture_written(st.color[i]);
     if (st.ds[0] || st.ds[3]) gles_mark_texture_written(st.depth);
     if(st.ncolor>1) mrt_draws++;
+    if(base_instance) {
+        if(indexed) indexed_base_instance_draws++;
+        else arrays_base_instance_draws++;
+    }
     native_draws++;
     if (native_draws <= 12) fprintf(stderr, "[gles-nvn] GLES NVN draw issued: primitive=%u count=%u program=%u\n",
                   (unsigned)r->x[0],count,p->gl_program);

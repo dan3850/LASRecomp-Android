@@ -169,7 +169,7 @@ assert "glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA" not in gles
 assert "normalize_swizzle(" in draws
 assert "view_reject_target=" in draws
 assert "view_reject_swizzle_conflict=" in draws
-assert "backend_milestone=nvn-gles-full-mips-v3" in gles
+assert "backend_milestone=nvn-gles-pass-depth-baseinstance-v4" in gles
 assert "backend_milestone=nvn-gles-array-identityviews-v1" not in gles
 print("GLES NVN six view flags and native swizzle translation: source assertions passed")
 
@@ -208,7 +208,7 @@ for token in ("for (GLint level=0; level<t->levels; ++level)",
               "glTexSubImage2D(host->target,(GLint)level",
               "glTexSubImage3D(host->target,(GLint)level",
               "GL_LINEAR_MIPMAP_LINEAR", "GL_TEXTURE_MAX_LEVEL",
-              "mip_levels_uploaded=", "backend_milestone=nvn-gles-full-mips-v3"):
+              "mip_levels_uploaded=", "backend_milestone=nvn-gles-pass-depth-baseinstance-v4"):
     assert token in gles, f"Missing NVN native full mip-chain support: {token}"
 print("GLES complete Tegra mip chain and full-view source assertions passed")
 
@@ -235,3 +235,36 @@ for token in ("gles_draw_framebuffer(st.color, st.ncolor, st.depth",
     assert token in draws, f"Missing GLES MRT / A2C / base vertex support: {token}"
 assert "r->x[4] || r->x[5]" not in draws
 print("GLES MRT, alpha-to-coverage and indexed base-vertex paths: source assertions passed")
+
+# The 11:45 Adreno GLES log shows 28,901 depth/stencil rejects,
+# 7,813 base-instance rejections, and 5,159 rejected target formats.
+gles=source("runtime/nvn/gles/gles.c")
+draws=source("runtime/nvn/gles/draw.c")
+translator=source("runtime/nvn/maxwell/translate.c")
+for token in ("bool gles_color_target_supported(uint32_t format)",
+              "f.attachment == GL_COLOR_ATTACHMENT0"):
+    assert token in gles, f"Missing GLES color target format support: {token}"
+for token in ("gles_color_target_supported(st.color[color_index]->format)",
+              "const bool depth_attachment=st.depth",
+              "const bool stencil_attachment=st.depth",
+              "if (st.ds[0] && depth_attachment)",
+              "if (st.ds[3] && stencil_attachment)",
+              "depth_without_attachment++", "stencil_without_attachment++",
+              "depth_without_attachment=", "stencil_without_attachment="):
+    assert token in draws, f"Missing attachment-aware native GLES state: {token}"
+assert "st.color[color_index]->format != 0x19" not in draws
+assert "if (!compare || !st.depth)" not in draws
+for token in ("gl_InstanceID) + gles_base_instance",
+              "uniform highp uint gles_base_instance;"):
+    assert token in translator, f"Missing GLES firstInstance shader support: {token}"
+for token in ("uint64_t first_instance_raw=indexed ? r->x[5] : r->x[3]",
+              "first_instance_raw>UINT32_MAX", "uint32_t base_instance=",
+              'glGetUniformLocation(p->gl_program,"gles_base_instance")',
+              "glUniform1ui(base_uniform,base_instance)",
+              "attributes(p,maxindex,first,instances,base_instance)",
+              "(uint64_t)base_instance*stride",
+              "indexed_base_instance_draws++", "arrays_base_instance_draws++"):
+    assert token in draws, f"Missing real NVN firstInstance handling: {token}"
+assert "|| r->x[5])" not in draws
+assert "else if (r->x[3])" not in draws
+print("GLES attachment-aware depth/stencil, native color formats and firstInstance checks passed")
