@@ -169,7 +169,7 @@ assert "glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA" not in gles
 assert "normalize_swizzle(" in draws
 assert "view_reject_target=" in draws
 assert "view_reject_swizzle_conflict=" in draws
-assert "backend_milestone=nvn-gles-pass-depth-baseinstance-v4" in gles
+assert "backend_milestone=nvn-gles-feedback-snapshot-v5" in gles
 assert "backend_milestone=nvn-gles-array-identityviews-v1" not in gles
 print("GLES NVN six view flags and native swizzle translation: source assertions passed")
 
@@ -208,7 +208,7 @@ for token in ("for (GLint level=0; level<t->levels; ++level)",
               "glTexSubImage2D(host->target,(GLint)level",
               "glTexSubImage3D(host->target,(GLint)level",
               "GL_LINEAR_MIPMAP_LINEAR", "GL_TEXTURE_MAX_LEVEL",
-              "mip_levels_uploaded=", "backend_milestone=nvn-gles-pass-depth-baseinstance-v4"):
+              "mip_levels_uploaded=", "backend_milestone=nvn-gles-feedback-snapshot-v5"):
     assert token in gles, f"Missing NVN native full mip-chain support: {token}"
 print("GLES complete Tegra mip chain and full-view source assertions passed")
 
@@ -356,3 +356,28 @@ for _ in range(4096):
     got_left=a if shift==0 else ((a<<shift)|(b>>(32-shift)))&mask32
     assert expected_right == got_right and expected_left == got_left
 print("GLES ES3 32-bit carry/funnel shift regression: 4096 reference cases passed")
+
+# Adreno GLES 12:57: 1,095 real sampling draws were lost on feedback.
+# They now read a GLES framebuffer snapshot of the previous attachment
+# pixels, not the forbidden live render texture (or fabricated values).
+gles=source("runtime/nvn/gles/gles.c")
+draws=source("runtime/nvn/gles/draw.c")
+for token in ("bool gles_bind_feedback_snapshot(",
+              "glBlitFramebuffer(0,0,h->width,h->height",
+              "glBindFramebuffer(GL_READ_FRAMEBUFFER,h->framebuffer)",
+              "glBindFramebuffer(GL_DRAW_FRAMEBUFFER,h->feedback_framebuffer)",
+              "h->target!=GL_TEXTURE_2D", "h->levels!=1",
+              "glTexImage2D(GL_TEXTURE_2D,0,(GLint)f.internal",
+              "h->feedback_color", "h->feedback_framebuffer",
+              "glBindTexture(GL_TEXTURE_2D,h->feedback_color)",
+              "glDeleteTextures(1, &t->feedback_color)",
+              "glDeleteFramebuffers(1, &t->feedback_framebuffer)",
+              "feedback_copy_ok=", "feedback_copy_failed=",
+              "feedback_allocated=", "bad_alloc:"):
+    assert token in gles, f"Missing native GLES render-target snapshot: {token}"
+for token in ("gles_bind_feedback_snapshot(tex,i,swizzle)",
+              "for(int attachment=0;attachment<st.ncolor;attachment++)",
+              "if(tex==st.depth)", "texture_rejection[T_FEEDBACK]++"):
+    assert token in draws, f"Missing NVN feedback draw binding: {token}"
+assert "tex==st.color[0] || tex==st.depth" not in draws
+print("Native GLES same-pass color feedback snapshot and rejection path checks passed")

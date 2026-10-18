@@ -19,6 +19,7 @@
 
 typedef struct {
     GLuint color, framebuffer;
+    GLuint feedback_color, feedback_framebuffer; // Persistent native read snapshot for feedback draws
     GLsizei width, height, layers, levels;
     GLenum target, attachment;
     GLuint depth_bound;
@@ -38,6 +39,7 @@ static bool g_draw_needs_reset;
 static uint64_t g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported, g_unsupported;
 static int g_last_unsupported = -1;
 static uint64_t g_sample_ok, g_sample_fail, g_sample_uploaded_bytes, g_sample_cached;
+static uint64_t g_feedback_copy_ok, g_feedback_copy_failed, g_feedback_allocated;
 static uint64_t g_mip_textures_uploaded, g_mip_levels_uploaded;
 static uint64_t g_copies_attempted, g_copies_succeeded, g_copies_failed;
 static uint64_t g_uniform_updates_ok, g_uniform_updates_failed;
@@ -67,7 +69,7 @@ static void report(void) {
     mkdir("graphics", 0755);
     FILE *f = fopen("graphics/gles.txt", "w");
     if (!f) return;
-    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-pass-depth-baseinstance-v4\n"
+    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-feedback-snapshot-v5\n"
                "NVN_renderer=OpenGL_ES\nVulkan_initialized=0\n");
     fprintf(f, "native_maxwell_draws=%" PRIu64 "\ngles_programs_linked=%" PRIu64
                "\ngles_programs_failed=%" PRIu64 "\n",
@@ -93,6 +95,9 @@ static void report(void) {
             g_last_present_gl_error);
     fprintf(f, "mip_textures_uploaded=%" PRIu64 "\nmip_levels_uploaded=%" PRIu64 "\n",
             g_mip_textures_uploaded, g_mip_levels_uploaded);
+    fprintf(f, "feedback_copy_ok=%" PRIu64 "\nfeedback_copy_failed=%" PRIu64
+               "\nfeedback_allocated=%" PRIu64 "\n",
+            g_feedback_copy_ok,g_feedback_copy_failed,g_feedback_allocated);
     fprintf(f, "sample_ok=%" PRIu64 "\nsample_failed=%" PRIu64
                "\nsample_cached=%" PRIu64 "\nsample_uploaded_bytes=%" PRIu64 "\n",
             g_sample_ok, g_sample_fail, g_sample_cached, g_sample_uploaded_bytes);
@@ -176,7 +181,7 @@ void gles_init(SDL_Window *window) {
     glGenVertexArrays(1, &g_vertex_array);
     glGenSamplers(32, g_texture_samplers);
     gles_draw_init();
-    LOG("[gles] native backend milestone=nvn-gles-full-mips-v3\n");
+    LOG("[gles] native backend milestone=nvn-gles-feedback-snapshot-v5\n");
     LOG("[gles] genuine GLES backend: %s / %s, version %s\n",
         glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION));
     report();
@@ -652,6 +657,75 @@ bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
     g_sample_ok++;
     return true;
 }
+// NVN is allowed to sample an earlier version of an attachment that is
+// simultaneously the target for its next draw. GLES forbids an attached
+// texture from being sampled by the same draw. Snapshot its *actual rendered
+// GPU pixels* to a second native texture via framebuffer blit before drawing,
+// just as the Vulkan renderer resolves framebuffer feedback. Never substitute
+// black texels or silently read live feedback; unsupported depth/array views
+// still fail closed. Persistent allocation avoids per-draw texture creation.
+bool gles_bind_feedback_snapshot(NvnTexture *tex,int unit,const uint8_t swizzle[4]) {
+    GlesTexture *h=tex ? texture(tex) : NULL;
+    if (!h || !h->gpu_written || !h->framebuffer || !h->color ||
+        h->target!=GL_TEXTURE_2D || h->attachment!=GL_COLOR_ATTACHMENT0 ||
+        h->levels!=1 || unit<0 || unit>=32) goto bad;
+    FormatGL f=gpu_format(tex->format);
+    if (!f.internal || f.attachment!=GL_COLOR_ATTACHMENT0) goto bad;
+    uint64_t pixels=(uint64_t)h->width*(uint64_t)h->height;
+    uint64_t bpp=f.internal==GL_RGBA32F ? 16u : f.internal==GL_RGBA16F ? 8u :
+                 f.internal==GL_RGB8 ? 3u : 4u;
+    if (!pixels || pixels*bpp>(64ull<<20)) goto bad;
+    if (!h->feedback_color) {
+        glGenTextures(1,&h->feedback_color);
+        if (!h->feedback_color) goto bad;
+        glBindTexture(GL_TEXTURE_2D,h->feedback_color);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D,0,(GLint)f.internal,h->width,h->height,
+                     0,f.format,f.type,NULL);
+        if (glGetError()!=GL_NO_ERROR) goto bad_alloc;
+        glGenFramebuffers(1,&h->feedback_framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER,h->feedback_framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D,h->feedback_color,0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE) goto bad_alloc;
+        g_feedback_allocated++;
+    }
+    // The attachment is read before any draw for this command. GLES executes
+    // draws and blits in submission order, preserving previously stored pixels.
+    for(int i=0;i<8 && glGetError()!=GL_NO_ERROR;i++) {}
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,h->framebuffer);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,h->feedback_framebuffer);
+    const GLenum out=GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1,&out);
+    glDisable(GL_SCISSOR_TEST);
+    glBlitFramebuffer(0,0,h->width,h->height,0,0,h->width,h->height,
+                      GL_COLOR_BUFFER_BIT,GL_NEAREST);
+    if(glGetError()!=GL_NO_ERROR) goto bad;
+    glActiveTexture(GL_TEXTURE0+(GLenum)unit);
+    glBindTexture(GL_TEXTURE_2D,h->feedback_color);
+    const GLint channels[6]={GL_ZERO,GL_ONE,GL_RED,GL_GREEN,GL_BLUE,GL_ALPHA};
+    const GLenum pnames[4]={GL_TEXTURE_SWIZZLE_R,GL_TEXTURE_SWIZZLE_G,
+                            GL_TEXTURE_SWIZZLE_B,GL_TEXTURE_SWIZZLE_A};
+    for(int c=0;c<4;c++){
+        if(swizzle[c]>5u) goto bad;
+        glTexParameteri(GL_TEXTURE_2D,pnames[c],channels[swizzle[c]]);
+    }
+    if(glGetError()!=GL_NO_ERROR) goto bad;
+    g_feedback_copy_ok++;
+    return true;
+bad_alloc:
+    glDeleteFramebuffers(1,&h->feedback_framebuffer);
+    glDeleteTextures(1,&h->feedback_color);
+    h->feedback_framebuffer=0;
+    h->feedback_color=0;
+bad:
+    g_feedback_copy_failed++;
+    return false;
+}
 void gles_mark_texture_written(NvnTexture *tex) {
     if (!tex || !tex->backend) return;
     ((GlesTexture *)tex->backend)->gpu_written=true;
@@ -675,6 +749,8 @@ void gles_texture_destroyed(NvnTexture *tex) {
     // NVN objects may be finalized by non-GL threads. Avoid invoking GLES
     // with no current context; a per-context deferred-delete queue is next.
     if (g_context && SDL_GL_GetCurrentContext() == g_context) {
+        glDeleteFramebuffers(1, &t->feedback_framebuffer);
+        glDeleteTextures(1, &t->feedback_color);
         glDeleteFramebuffers(1, &t->framebuffer);
         glDeleteTextures(1, &t->color);
     }

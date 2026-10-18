@@ -468,3 +468,28 @@ Remaining GMEM, subgroup, compute, and copy functionality is not
 implemented here. Neither a successful compile on the RedMagic nor
 correct game pixels is claimed; validation on the target device remains
 necessary.
+
+## Milestone 15: native framebuffer feedback snapshots
+The attached 2026-10-18 12:57 Android GLES diagnostic shows
+1,095 draw rejections from sampling a bound rendering attachment,
+1,944 texture upload failures, and 47,028 missing draws from shader
+programs disabled by unresolved GMEM/subgroup/64-bit features. GLES
+also reports 8,432 successful native texture copies and 1,200
+presentations; presentation does not establish correct Zelda pixels.
+
+This milestone implements an actual **color feedback snapshot** for
+GLES 3.2: when an NVN fragment sampler reads any of the current color
+render targets, the backend allocates a reusable second GL texture of
+the same renderable format and dimensions, with its own complete FBO;
+it copies the GPU color pixels through glBlitFramebuffer before the
+draw and samples that texture using the requested NVN component swizzle
+and existing GLES sampler. It updates the snapshot on every applicable
+draw and destroys its objects with the owning NVN texture. Failed
+allocation is cleaned up.
+
+Depth feedback, array targets, multi-mip read views, oversized or
+unwritten textures still fail closed instead of generating fake pixels.
+The GLES diagnostic records feedback_copy_ok, feedback_copy_failed,
+feedback_allocated. Vulkan's own image snapshot implementation is
+untouched. This does **not** implement GMEM, subgroup or compute; it
+does not itself confirm that the full game scene is visible.

@@ -16,6 +16,8 @@ extern bool gles_draw_framebuffer(NvnTexture *const colors[8], int ncolor,
 extern bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler, int unit,
                                 bool shadow, uint8_t type,
                                 const uint8_t swizzle[4]);
+extern bool gles_bind_feedback_snapshot(NvnTexture *tex,int unit,
+                                        const uint8_t swizzle[4]);
 extern bool gles_color_target_supported(uint32_t format);
 extern void gles_mark_texture_written(NvnTexture *tex);
 extern uint32_t nvn_window_origin(void);
@@ -687,7 +689,12 @@ static bool bind_textures(Program *p) {
             rejection[R_TEXTURE]++; texture_rejection[T_VIEW]++; return false;
         }
         seen_tex[bound]=tex; memcpy(seen_swizzle[bound],swizzle,4); bound++;
-        if (tex==st.color[0] || tex==st.depth) {
+        bool feedback_color=false;
+        for(int attachment=0;attachment<st.ncolor;attachment++)
+            if(tex==st.color[attachment]) feedback_color=true;
+        if(tex==st.depth) {
+            // A depth snapshot needs matching depth-aspect semantics;
+            // this color-only GPU blit must not misrepresent it.
             rejection[R_TEXTURE]++; texture_rejection[T_FEEDBACK]++; return false;
         }
         NvnSamplerDesc *sampler=NULL;
@@ -695,6 +702,10 @@ static bool bind_textures(Program *p) {
             sampler=&((NvnSamplerDesc*)st.spool->entries)[tsc];
         if (!gles_sample_texture(tex,sampler,i,ref->shadow,ref->type,swizzle)) {
             rejection[R_TEXTURE]++; texture_rejection[T_UPLOAD]++; return false;
+        }
+        if (feedback_color &&
+            !gles_bind_feedback_snapshot(tex,i,swizzle)) {
+            rejection[R_TEXTURE]++; texture_rejection[T_FEEDBACK]++; return false;
         }
         if (entry->has_view) texture_views_accepted++;
         if (array) texture_array_bound++;
