@@ -164,3 +164,14 @@ assert "view_reject_swizzle_conflict=" in draws
 assert "backend_milestone=nvn-gles-viewflags-swizzle-v2" in gles
 assert "backend_milestone=nvn-gles-array-identityviews-v1" not in gles
 print("GLES NVN six view flags and native swizzle translation: source assertions passed")
+
+# Catch mismatches between the native sampled-texture signature in the
+# draw dispatcher and its definition before a Termux C compilation.
+assert ("extern bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler, int unit,\n"
+        "                                bool shadow, uint8_t type,\n"
+        "                                const uint8_t swizzle[4]);") in draw
+assert ("bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,\n"
+        "                         int unit, bool shadow, uint8_t target,\n"
+        "                         const uint8_t swizzle[4])") in gl
+assert "static char buffer[2048];" in draw
+print("GLES texture-swizzle ABI and diagnostic buffer source assertions passed")

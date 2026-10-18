@@ -13,7 +13,8 @@
 
 extern bool gles_draw_framebuffer(NvnTexture *color, NvnTexture *depth, int *w, int *h);
 extern bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler, int unit,
-                                bool shadow, uint8_t type);
+                                bool shadow, uint8_t type,
+                                const uint8_t swizzle[4]);
 extern void gles_mark_texture_written(NvnTexture *tex);
 extern uint32_t nvn_window_origin(void);
 extern uint32_t nvn_depth_mode(void);
@@ -96,7 +97,7 @@ const char *gles_draw_rejection_summary(void) {
     return line;
 }
 const char *gles_draw_rejection_stats(void) {
-    static char buffer[640];
+    static char buffer[2048];
     snprintf(buffer, sizeof buffer,
         "maxwell_draw_attempts=%" PRIu64 "\n"
         "rejected_no_program=%" PRIu64 "\nrejected_target=%" PRIu64
