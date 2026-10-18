@@ -120,7 +120,7 @@ for token in ("case CMD_UPDATE_UNIFORM_BUFFER:", "gles_update_uniform(",
               "case CMD_COPY_BUFFER_TO_TEXTURE:", "gles_copy_buffer_texture(",
               "case CMD_SET_COPY_STRIDES:", "glTexSubImage2D(GL_TEXTURE_2D,0,x,y,w,h",
               "GL_UNPACK_ROW_LENGTH", "uniform_updates_ok=",
-              "buf_to_tex_ok=", "backend_milestone=nvn-uniform-buffer2texture-rgb8",
+              "buf_to_tex_ok=",
               "GL_RGB8, GL_RGB, GL_UNSIGNED_BYTE"):
     assert token in gles, f"Missing native GLES NVN GPU buffer transfer: {token}"
 assert "case 0x19: case 0x25:" not in gles
