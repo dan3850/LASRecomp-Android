@@ -16,6 +16,21 @@ bool renderer_prepare(const ShaderRec *r, const ShaderBlob *v, const ShaderBlob 
 }
 int renderer_prepare_pending(void) { return 0; }
 void renderer_prepare_end(void) {}
+
+// This unit test links without SDL/JNI. In Termux, __ANDROID__ is defined,
+// so provide the Android document-bridge symbols used only by the runtime.
+// Tests never open a real game document or use private game assets.
+#ifdef __ANDROID__
+int lasrecomp_external_romfs_manifest(char **out, size_t *length) {
+    if (out) *out = NULL;
+    if (length) *length = 0;
+    return -1;
+}
+int lasrecomp_external_open(const char *relative_path) {
+    (void)relative_path;
+    return -1;
+}
+#endif
 size_t rt_lz4_decompress(const uint8_t *a, size_t n, uint8_t *b, size_t m) {
     (void)a; (void)n; (void)b; (void)m; return 0;
 }
