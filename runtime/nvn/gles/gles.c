@@ -65,6 +65,20 @@ bool gles_selected(void) {
     return name && strcmp(name, "gles") == 0;
 }
 
+// Vulkan may expose subgroup capabilities which are NOT automatically
+// present in an OpenGL ES context on the same Adreno. Read the real GLES
+// extension list instead of assuming a Vulkan feature is callable in GLSL ES.
+static bool gles_extension(const char *name) {
+    if (!g_context || SDL_GL_GetCurrentContext()!=g_context) return false;
+    GLint n=0;
+    glGetIntegerv(GL_NUM_EXTENSIONS,&n);
+    if(n<0 || n>4096) return false;
+    for(GLint i=0;i<n;i++){
+        const char *ext=(const char*)glGetStringi(GL_EXTENSIONS,(GLuint)i);
+        if(ext && strcmp(ext,name)==0) return true;
+    }
+    return false;
+}
 static void report(void) {
     mkdir("graphics", 0755);
     FILE *f = fopen("graphics/gles.txt", "w");
@@ -110,6 +124,17 @@ static void report(void) {
         fprintf(f, "vendor=%s\nrenderer=%s\nversion=%s\n",
                 (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER),
                 (const char *)glGetString(GL_VERSION));
+        // The unsupported Maxwell programs in the 12:57 diagnostic
+        // need GMEM and frequently cross-invocation shuffle. Capture
+        // actual shader extension availability for a correct next port.
+        fprintf(f, "gl_ext_subgroup_basic=%u\ngl_ext_subgroup_shuffle=%u\n"
+                   "gl_ext_subgroup_shuffle_relative=%u\n"
+                   "gl_ext_shader_int64=%u\ngl_ext_color_buffer_float=%u\n",
+                (unsigned)gles_extension("GL_KHR_shader_subgroup_basic"),
+                (unsigned)gles_extension("GL_KHR_shader_subgroup_shuffle"),
+                (unsigned)gles_extension("GL_KHR_shader_subgroup_shuffle_relative"),
+                (unsigned)gles_extension("GL_EXT_shader_explicit_arithmetic_types_int64"),
+                (unsigned)gles_extension("GL_EXT_color_buffer_float"));
     }
     fclose(f);
 }

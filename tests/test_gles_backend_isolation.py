@@ -381,3 +381,15 @@ for token in ("gles_bind_feedback_snapshot(tex,i,swizzle)",
     assert token in draws, f"Missing NVN feedback draw binding: {token}"
 assert "tex==st.color[0] || tex==st.depth" not in draws
 print("Native GLES same-pass color feedback snapshot and rejection path checks passed")
+
+# Subgroup availability must come from the GLES driver's extension list,
+# never inferred from Vulkan's distinct enabled GPU capabilities.
+gles=source("runtime/nvn/gles/gles.c")
+for token in ("glGetIntegerv(GL_NUM_EXTENSIONS,&n)",
+              "glGetStringi(GL_EXTENSIONS,(GLuint)i)",
+              'gles_extension("GL_KHR_shader_subgroup_basic")',
+              'gles_extension("GL_KHR_shader_subgroup_shuffle")',
+              'gles_extension("GL_KHR_shader_subgroup_shuffle_relative")',
+              "gl_ext_subgroup_basic=", "gl_ext_subgroup_shuffle="):
+    assert token in gles, f"Missing GLES shader extension discovery: {token}"
+print("GLES runtime subgroup/int64 driver capability report source checks passed")
