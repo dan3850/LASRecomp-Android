@@ -112,3 +112,17 @@ for token in ("gl_draw_errors=", "glGetError()", "draw rejected by GL driver"):
 assert "if (!src || !dst || src == dst" in gles
 assert "if (!s->gpu_written && !s->cpu_uploaded)" in gles
 print("GLES FBO render graph and real presentation diagnostics: source checks passed")
+
+# Uniform buffer updates and buffer-to-texture copies must run at their
+# recorded NVN command position, before later shaders consume the content.
+gles = source("runtime/nvn/gles/gles.c")
+for token in ("case CMD_UPDATE_UNIFORM_BUFFER:", "gles_update_uniform(",
+              "case CMD_COPY_BUFFER_TO_TEXTURE:", "gles_copy_buffer_texture(",
+              "case CMD_SET_COPY_STRIDES:", "glTexSubImage2D(GL_TEXTURE_2D,0,x,y,w,h",
+              "GL_UNPACK_ROW_LENGTH", "uniform_updates_ok=",
+              "buf_to_tex_ok=", "backend_milestone=nvn-uniform-buffer2texture-rgb8",
+              "GL_RGB8, GL_RGB, GL_UNSIGNED_BYTE"):
+    assert token in gles, f"Missing native GLES NVN GPU buffer transfer: {token}"
+assert "case 0x19: case 0x25:" not in gles
+assert "q->tex->format==0x25 || q->tex->format==0x19" not in gles
+print("GLES NVN uniform-update, buffer-texture copy, RGB8 mapping source checks passed")

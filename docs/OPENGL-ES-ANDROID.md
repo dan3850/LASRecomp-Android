@@ -206,3 +206,31 @@ transfers, complex array/cube views, GMEM, compute, and the full Zelda
 postprocessing pipeline remain to be implemented. No actual Android build
 or device gameplay validation has been performed for this milestone.
 The restored Vulkan reference branch remains untouched.
+
+## Milestone 6: uniform updates and CPU buffer -> native GL texture
+The engine-log excerpt received after milestone 5 still contains
+`real NVN draw ok`, the previous logging string; milestone 5 changed it
+to `GLES NVN draw issued`. The log appears to contain older execution
+records, so it does not prove the latest GPU copy changes ran. The
+`graphics/gles.txt` file now writes a unique `backend_milestone` label
+to confirm exactly which GLES backend is executing.
+
+Two more differences from the Vulkan command executor were corrected:
+- `CMD_UPDATE_UNIFORM_BUFFER` now copies recorded NVN uniform bytes into
+  guest-mapped memory at the correct point in the command stream, with
+  explicit bounds checks. Previously it was ignored, allowing shader
+  uniforms to remain stale even after successful program links.
+- `CMD_COPY_BUFFER_TO_TEXTURE` and `CMD_SET_COPY_STRIDES` now process a
+  strict subset of NVN 2D, single-layer, uncompressed R8/RG8/RGB8/RGBA8
+  uploads using proper pixel-store stride. Other formats/levels are
+  rejected rather than displaying invalid pixels.
+- Corrected NVN format `0x19` to native GL_RGB8 (three bytes per pixel);
+  it had mistakenly been handled as GL_RGBA8 and in the four-byte video
+  upload path, which could fail due to mismatched pixel layout.
+- Added `uniform_updates_ok`, `uniform_updates_failed`,
+  `buf_to_tex_attempts`, `buf_to_tex_ok`, and `buf_to_tex_failed`
+  metrics in `graphics/gles.txt`.
+
+The native GLES backend is **still incomplete** (GMEM, compute, array
+views, further formats and GPU readback paths). Static checks do not
+replace an actual Termux APK build or Adreno 840 gameplay validation.

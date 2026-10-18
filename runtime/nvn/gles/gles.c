@@ -37,6 +37,9 @@ static uint64_t g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported,
 static int g_last_unsupported = -1;
 static uint64_t g_sample_ok, g_sample_fail, g_sample_uploaded_bytes, g_sample_cached;
 static uint64_t g_copies_attempted, g_copies_succeeded, g_copies_failed;
+static uint64_t g_uniform_updates_ok, g_uniform_updates_failed;
+static uint64_t g_buffer_tex_attempts, g_buffer_tex_ok, g_buffer_tex_failed;
+static uint64_t g_copy_row_stride, g_copy_image_stride;
 static uint64_t g_present_missing, g_present_written, g_present_unwritten, g_present_gl_errors;
 static uint32_t g_last_present_id, g_last_present_format, g_last_present_gl_error;
 static GLuint g_texture_samplers[32];
@@ -61,7 +64,8 @@ static void report(void) {
     mkdir("graphics", 0755);
     FILE *f = fopen("graphics/gles.txt", "w");
     if (!f) return;
-    fprintf(f, "backend=opengles\nNVN_renderer=OpenGL_ES\nVulkan_initialized=0\n");
+    fprintf(f, "backend=opengles\nbackend_milestone=nvn-uniform-buffer2texture-rgb8\n"
+               "NVN_renderer=OpenGL_ES\nVulkan_initialized=0\n");
     fprintf(f, "native_maxwell_draws=%" PRIu64 "\ngles_programs_linked=%" PRIu64
                "\ngles_programs_failed=%" PRIu64 "\n",
             gles_draw_native_count(), gles_draw_program_count(), gles_draw_shader_failure_count());
@@ -73,6 +77,11 @@ static void report(void) {
     fprintf(f, "copy_attempted=%" PRIu64 "\ncopy_succeeded=%" PRIu64
                "\ncopy_failed=%" PRIu64 "\n", g_copies_attempted,
             g_copies_succeeded, g_copies_failed);
+    fprintf(f, "uniform_updates_ok=%" PRIu64 "\nuniform_updates_failed=%" PRIu64
+               "\nbuf_to_tex_attempts=%" PRIu64 "\nbuf_to_tex_ok=%" PRIu64
+               "\nbuf_to_tex_failed=%" PRIu64 "\n",
+            g_uniform_updates_ok, g_uniform_updates_failed,
+            g_buffer_tex_attempts, g_buffer_tex_ok, g_buffer_tex_failed);
     fprintf(f, "present_missing=%" PRIu64 "\npresent_written=%" PRIu64
                "\npresent_unwritten=%" PRIu64 "\npresent_gl_errors=%" PRIu64
                "\nlast_present_id=%u\nlast_present_format=%#x\nlast_present_gl_error=%#x\n",
@@ -162,6 +171,7 @@ void gles_init(SDL_Window *window) {
     glGenVertexArrays(1, &g_vertex_array);
     glGenSamplers(32, g_texture_samplers);
     gles_draw_init();
+    LOG("[gles] native backend milestone=nvn-uniform-buffer2texture-rgb8\n");
     LOG("[gles] genuine GLES backend: %s / %s, version %s\n",
         glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION));
     report();
@@ -178,7 +188,10 @@ static FormatGL gpu_format(uint32_t format) {
     case 0x02: return (FormatGL){GL_R8_SNORM, GL_RED, GL_BYTE, GL_COLOR_ATTACHMENT0};
     case 0x0D: return (FormatGL){GL_RG8, GL_RG, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
     case 0x0E: return (FormatGL){GL_RG8_SNORM, GL_RG, GL_BYTE, GL_COLOR_ATTACHMENT0};
-    case 0x19: case 0x25: case 0x6D: 
+    // NVN 0x19 is RGB8 (3 bytes/texel), not RGBA8 (4). Incorrectly
+    // treating it as RGBA could cause GL_INVALID_OPERATION uploads.
+    case 0x19: return (FormatGL){GL_RGB8, GL_RGB, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x25: case 0x6D: 
     case 0x41: case 0x42: case 0x43: case 0x44: case 0x4D:
     case 0x79: case 0x7A: case 0x7B: case 0x7C: case 0x7D:
     case 0x7E: case 0x7F: case 0x80: case 0x81: case 0x82:
@@ -533,7 +546,7 @@ static void gles_flush_video_queue(void) {
         GlesTexture *tex=texture(q->tex);
         if(tex && tex->attachment==GL_COLOR_ATTACHMENT0 &&
            q->w<=tex->width && q->h<=tex->height &&
-           (q->tex->format==0x25 || q->tex->format==0x19 ||
+           (q->tex->format==0x25 ||
             q->tex->format==0x6d || q->tex->format==0x37 ||
             q->tex->format==0x38)) {
             glBindTexture(GL_TEXTURE_2D,tex->color);
@@ -662,6 +675,85 @@ rejected:
     return false;
 }
 
+
+// Guest NVN uniform-buffer updates must be executed at the command's
+// position in the NVN stream: a later Maxwell draw reads the updated bytes.
+static bool guest_memory(uint64_t addr, uint64_t size) {
+    const uint64_t lo=0x7000000000ull, hi=0x7320000000ull;
+    return size && addr >= lo && addr < hi && size <= hi-addr;
+}
+static bool gles_update_uniform(const CmdRec *r) {
+    if (!r->x[3] || r->x[3] > (1u<<20) ||
+        r->x[2] > r->x[1] || r->x[3] > r->x[1]-r->x[2] ||
+        r->x[0] > UINT64_MAX-r->x[2] ||
+        !guest_memory(r->x[0]+r->x[2],r->x[3]) ||
+        r->x[3] > (uint64_t)r->size-sizeof(CmdRec)) {
+        g_uniform_updates_failed++;
+        return false;
+    }
+    memcpy((void *)(uintptr_t)(r->x[0]+r->x[2]),r->extra,(size_t)r->x[3]);
+    g_uniform_updates_ok++;
+    return true;
+}
+
+// NVN buffer->texture is a pixel transfer, NOT a CPU-backed Tegra
+// block-linear layout. Use the explicit copy row pitch recorded by NVN.
+// Limited to uncompressed, single-layer/single-level 2D image regions.
+static bool gles_copy_buffer_texture(uint64_t src_addr, const GlesTexRef *ref) {
+    g_buffer_tex_attempts++;
+    NvnTexture *dst=(NvnTexture *)(uintptr_t)ref->tex;
+    if (!dst || !src_addr || dst->target!=1 || dst->samples>1 ||
+        !copy_view_base_only(ref,dst) || ref->region[2]!=0 ||
+        ref->region[5]>1) goto bad;
+    FormatGL fmt=gpu_format(dst->format);
+    uint32_t bpp=0;
+    switch (dst->format) {
+    case 0x01: bpp=1; break;
+    case 0x0D: bpp=2; break;
+    case 0x19: bpp=3; break;
+    case 0x25: bpp=4; break;
+    default: goto bad;
+    }
+    if (!fmt.internal || fmt.attachment!=GL_COLOR_ATTACHMENT0) goto bad;
+    int x=ref->region[0], y=ref->region[1];
+    int w=ref->region[3] ? ref->region[3] : (int)dst->width;
+    int h=ref->region[4] ? ref->region[4] : (int)dst->height;
+    if (x<0 || y<0 || w<=0 || h<=0 || w>8192 || h>8192 ||
+        (uint64_t)x+(uint32_t)w>dst->width ||
+        (uint64_t)y+(uint32_t)h>dst->height) goto bad;
+    uint64_t row=g_copy_row_stride?g_copy_row_stride:(uint64_t)w*bpp;
+    if (row<(uint64_t)w*bpp || row % bpp || row>65536 ||
+        (g_copy_image_stride && g_copy_image_stride<row*(uint64_t)h))
+        goto bad;
+    uint64_t bytes=(uint64_t)(h-1)*row+(uint64_t)w*bpp;
+    if (!guest_memory(src_addr,bytes)) goto bad;
+    GlesTexture *host=texture(dst);
+    if (!host || !host->color) goto bad;
+    // Always upload from guest-owned source into the actual GL texture.
+    // This preserves render-to-texture output for subsequent presentation.
+    glBindTexture(GL_TEXTURE_2D,host->color);
+    glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH,(GLint)(row/bpp));
+    glTexSubImage2D(GL_TEXTURE_2D,0,x,y,w,h,fmt.format,fmt.type,
+                    (const void *)(uintptr_t)src_addr);
+    GLenum err=glGetError();
+    glPixelStorei(GL_UNPACK_ROW_LENGTH,0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+    if (err!=GL_NO_ERROR) {
+        if(g_buffer_tex_failed<8)
+            LOG("[gles] buffer->texture GL error=%#x fmt=%#x %dx%d\n",
+                err,dst->format,w,h);
+        goto bad;
+    }
+    host->gpu_written=true;
+    host->cpu_uploaded=false;
+    g_buffer_tex_ok++;
+    return true;
+bad:
+    g_buffer_tex_failed++;
+    return false;
+}
+
 static void execute_list(uint64_t handle, int depth) {
     if (!handle || depth > 8) return;
     uint64_t addr = handle;
@@ -730,6 +822,19 @@ static void execute_list(uint64_t handle, int depth) {
             else g_unsupported++;
             break;
         }
+        case CMD_UPDATE_UNIFORM_BUFFER:
+            if (r->size >= sizeof(CmdRec)) (void)gles_update_uniform(r);
+            else g_uniform_updates_failed++;
+            break;
+        case CMD_SET_COPY_STRIDES:
+            g_copy_row_stride=r->x[0];
+            g_copy_image_stride=r->x[1];
+            break;
+        case CMD_COPY_BUFFER_TO_TEXTURE:
+            if (r->size >= sizeof(CmdRec)+sizeof(GlesTexRef))
+                (void)gles_copy_buffer_texture(r->x[0],(const GlesTexRef *)(const void *)r->extra);
+            else g_buffer_tex_failed++;
+            break;
         case CMD_COPY_TEXTURE_TO_TEXTURE:
         case CMD_DOWNSAMPLE: {
             if (r->size >= sizeof(CmdRec)+2*sizeof(GlesTexRef)) {
@@ -875,6 +980,7 @@ void gles_clear_window(void) {
 void gles_reset(void) {
     memset(g_color, 0, sizeof g_color);
     g_depth = NULL;
+    g_copy_row_stride=g_copy_image_stride=0;
     g_clear_scissor[0] = g_clear_scissor[1] = 0;
     g_clear_scissor[2] = g_clear_scissor[3] = 16384;
     // Only a thread with the current GL context can delete shader objects.
