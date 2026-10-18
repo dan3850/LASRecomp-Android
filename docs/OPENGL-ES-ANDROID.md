@@ -387,3 +387,27 @@ Vulkan/PixelCopy overlay data; those files are not GLES evidence.
 The native backend still lacks some Maxwell shaders, GMEM/compute and
 certain texture copies. Correct rendered pixels have not been verified
 by the assistant on Android; no claim that the black screen is fixed.
+
+## Milestone 12: interpolator linkage and stencil parity
+The 2026-10-18 12:05 Adreno GLES diagnostic confirms 107084 native
+Maxwell draws, no target/index/base-instance rejections, and 16878
+stencil-state rejects. Its shader diagnostic repeatedly reports driver
+program-link failure `Unscoped name checking failed`.
+
+NVN's stencil state may contain operation and comparison enums outside
+the recognized subset; the working Vulkan implementation maps those to
+KEEP and ALWAYS respectively. GLES now uses the same fallback instead
+of rejecting the complete draw.
+
+The GLSL ES translator emits fragment `flat` or `noperspective`
+inputs from Maxwell IPA mode but vertex `out vec4` without the matching
+interpolation qualifier. GLES now aligns the generated vertex varying
+declarations against the actual fragment inputs **before shader compile**
+without changing the shared Vulkan translator. The number of matched
+qualifiers appears as `gles_shader_varyings_aligned`; unknown/absent
+outputs remain rejected, not faked.
+
+Other ongoing blockers include GMEM, compute commands, remaining
+unsupported programs, and incomplete texture copies. This source fix
+does not establish that the scene renders correctly until compiled
+and tested on the Adreno Android device.

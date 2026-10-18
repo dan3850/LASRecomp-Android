@@ -43,6 +43,7 @@ static uint64_t native_draws, shaders_ok, shaders_failed, rejection[13];
 static uint64_t checked_draws, gl_draw_errors;
 static uint64_t mrt_draws, rebased_index_draws, rejected_base_instance;
 static uint64_t depth_without_attachment, stencil_without_attachment;
+static uint64_t gles_shader_varyings_aligned;
 static uint64_t indexed_base_instance_draws, arrays_base_instance_draws;
 static uint64_t reject_target_layout, reject_target_format, reject_target_fbo;
 enum { FIX_MULTISAMPLE, FIX_POLYGON, FIX_BLEND, FIX_DEPTH, FIX_STENCIL, FIX_SCISSOR, FIX_COUNT };
@@ -125,6 +126,7 @@ const char *gles_draw_rejection_stats(void) {
         "\nrejected_fixed_depth=%" PRIu64
         "\nrejected_fixed_stencil=%" PRIu64
         "\nrejected_fixed_scissor=%" PRIu64
+        "\ngles_shader_varyings_aligned=%" PRIu64
         "\nindexed_base_instance_draws=%" PRIu64
         "\narrays_base_instance_draws=%" PRIu64
         "\nrebased_index_draws=%" PRIu64
@@ -160,6 +162,7 @@ const char *gles_draw_rejection_stats(void) {
         reject_fixed[FIX_BLEND], depth_without_attachment,
         stencil_without_attachment, reject_fixed[FIX_DEPTH],
         reject_fixed[FIX_STENCIL], reject_fixed[FIX_SCISSOR],
+        gles_shader_varyings_aligned,
         indexed_base_instance_draws, arrays_base_instance_draws,
         rebased_index_draws, rejected_base_instance, mrt_draws,
         rejection[R_TEXTURE], texture_rejection[T_KIND], texture_rejection[T_POOL],
@@ -266,6 +269,51 @@ static Format vertex_format(uint32_t fmt) {
     return (Format){type,(GLint)n,kind==0||kind==1||kind==5||kind==6,kind==2||kind==3||
            kind==7||kind==8||kind==10||kind==11,n*bits/8};
 }
+// GLSL ES requires VS outputs and FS inputs to agree on interpolation.
+// Maxwell's fragment IPA selects flat/noperspective on individual varyings,
+// but the shared Vulkan/MSL translator emits VS varyings without qualifiers.
+// Align only this GLES program's generated vertex source; never change the
+// Vulkan GLSL output or translate a guest shader into a fake substitute.
+static bool align_gles_varying_qualifiers(ShaderInfo *vs, const ShaderInfo *fs) {
+    if (!vs || !fs || !vs->msl || !fs->msl) return false;
+    for (int i=0; i<32; ++i) {
+        char old_decl[96], fragment_decl[112], new_decl[112];
+        const char *qualifier=NULL;
+        snprintf(fragment_decl,sizeof fragment_decl,
+                 "layout(location = %d) flat in vec4 v%d;",i,i);
+        if (strstr(fs->msl,fragment_decl)) qualifier="flat ";
+        else {
+            snprintf(fragment_decl,sizeof fragment_decl,
+                     "layout(location = %d) noperspective in vec4 v%d;",i,i);
+            if (strstr(fs->msl,fragment_decl)) qualifier="noperspective ";
+        }
+        if (!qualifier) continue;
+        snprintf(old_decl,sizeof old_decl,
+                 "layout(location = %d) out vec4 v%d;",i,i);
+        char *pos=strstr(vs->msl,old_decl);
+        if (!pos) {
+            // A fragment input with no matching VS output is invalid.
+            // Do not silently hide the link error.
+            return false;
+        }
+        snprintf(new_decl,sizeof new_decl,
+                 "layout(location = %d) %sout vec4 v%d;",i,qualifier,i);
+        size_t prefix=(size_t)(pos-vs->msl);
+        size_t oldlen=strlen(old_decl), newlen=strlen(new_decl);
+        size_t total=strlen(vs->msl);
+        if (newlen<oldlen || total>SIZE_MAX-(newlen-oldlen)-1) return false;
+        char *patched=malloc(total+(newlen-oldlen)+1);
+        if (!patched) return false;
+        memcpy(patched,vs->msl,prefix);
+        memcpy(patched+prefix,new_decl,newlen);
+        memcpy(patched+prefix+newlen,pos+oldlen,total-prefix-oldlen+1);
+        free(vs->msl);
+        vs->msl=patched;
+        gles_shader_varyings_aligned++;
+    }
+    return true;
+}
+
 static GLuint compile_shader(GLenum kind, const char *source,
                              uint64_t guest_vs, uint64_t guest_fs) {
     GLuint sh = glCreateShader(kind);
@@ -346,6 +394,12 @@ static Program *program_for_draw(void) {
                           p->vs->uses_gmem || p->fs->uses_gmem ||
                           p->vs->uses_gmem_map || p->fs->uses_gmem_map ? "global-memory pending" :
                           "GLSL ES capability pending");
+        rejection[R_SHADER_FEATURE]++; shaders_failed++;
+        return p;
+    }
+    if (!align_gles_varying_qualifiers(p->vs,p->fs)) {
+        shader_diagnostic("varying-interface",vs,fs,
+                          "GLSL ES fragment input lacks a corresponding vertex output");
         rejection[R_SHADER_FEATURE]++; shaders_failed++;
         return p;
     }
@@ -723,7 +777,7 @@ static GLenum comparison(uint32_t op) {
     case 6: return GL_NOTEQUAL;
     case 7: return GL_GEQUAL;
     case 0: case 8: return GL_ALWAYS;
-    default: return 0;
+    default: return GL_ALWAYS; // NVN/Vulkan compare_fn fallback
     }
 }
 static GLenum stencil_op(uint32_t op) {
@@ -736,7 +790,7 @@ static GLenum stencil_op(uint32_t op) {
     case 6: return GL_INVERT;
     case 7: return GL_INCR_WRAP;
     case 8: return GL_DECR_WRAP;
-    default: return 0;
+    default: return GL_KEEP; // NVN/Vulkan stencil_op fallback
     }
 }
 static GLenum blend_factor(uint8_t f) {

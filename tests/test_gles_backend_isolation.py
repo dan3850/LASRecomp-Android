@@ -268,3 +268,15 @@ for token in ("uint64_t first_instance_raw=indexed ? r->x[5] : r->x[3]",
 assert "|| r->x[5])" not in draws
 assert "else if (r->x[3])" not in draws
 print("GLES attachment-aware depth/stencil, native color formats and firstInstance checks passed")
+
+# Native shader link: fragment IPA flat/noperspective interpolation must
+# also be declared on the vertex varying. Do not modify Vulkan shaders.
+draws=source("runtime/nvn/gles/draw.c")
+for token in ("align_gles_varying_qualifiers(", "flat in vec4 v%d;",
+              "noperspective in vec4 v%d;", "flat ", "noperspective ",
+              "out vec4 v%d;", "gles_shader_varyings_aligned=",
+              "if (!align_gles_varying_qualifiers(p->vs,p->fs))"):
+    assert token in draws, f"Missing GLES varyings alignment: {token}"
+assert "default: return GL_ALWAYS; // NVN/Vulkan compare_fn fallback" in draws
+assert "default: return GL_KEEP; // NVN/Vulkan stencil_op fallback" in draws
+print("GLES interpolation interface and stencil fallback checks passed")
