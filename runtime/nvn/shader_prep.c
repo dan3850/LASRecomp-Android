@@ -350,8 +350,8 @@ static FILE *shader_file_open(const char *path) {
         const char *rel = NULL;
         const char *romfs = strstr(path, "/romfs/");
         const char *exefs = strstr(path, "/exefs/");
-        if (romfs) rel = romfs + 1;
-        else if (exefs) rel = exefs + 1;
+        if (exefs) rel = exefs + 1;
+        else if (romfs) rel = romfs + 1;
         else if (!strncmp(path, "romfs/", 6) || !strncmp(path, "exefs/", 6)) rel = path;
         if (rel) {
             extern int lasrecomp_external_open(const char *relative_path);
@@ -415,7 +415,7 @@ static void idx_file(const char *path) {
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    uint8_t *d = n > 0 && n < 0x7FFFFFFF ? malloc((size_t)n) : NULL;
+    uint8_t *d = n > 0 && n <= (256l << 20) ? malloc((size_t)n) : NULL;
     if (d && fread(d, 1, (size_t)n, f) == (size_t)n) {
         uint32_t file = (uint32_t)idx_nfiles;
         bool any = false;
@@ -630,7 +630,11 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
 }
 
 void shader_prep_boot(const char *romfs) {
-    const char *e = getenv("LARECOMP_SHADER_PREP");
-    if (!e || !atoi(e)) return;
+    const char *e = getenv("LARECOMP_VK_HEADSTART");
+#ifdef __ANDROID__
+    if (e && atoi(e) == 0) return;
+#else
+    if (!e || atoi(e) == 0) return;
+#endif
     shader_prep_run(romfs, NULL, NULL);
 }
