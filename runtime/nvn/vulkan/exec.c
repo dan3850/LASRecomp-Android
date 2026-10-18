@@ -1428,7 +1428,7 @@ const char *renderer_stats(void) {
         }
         memset(wait_tab, 0, sizeof wait_tab);
         pthread_mutex_unlock(&wait_tab_lock);
-        if (used) LOG("[vk-wait] %s\\n", wait_summary);
+        if (used) LOG("[vk-wait] %s\n", wait_summary);
     }
     if (prof) {
         prof_up = prof_up_ns;
