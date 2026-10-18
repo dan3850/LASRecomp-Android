@@ -553,3 +553,17 @@ assert "if (downsample || (flags & 1u)) return false;" in gles
 assert "if (sw<=0 || sh<=0 || sw!=dw || sh!=dh || depth<=0" in gles
 assert "glBlitFramebuffer(sx,sy,sx+sw,sy+sh,dx,dy,dx+dw,dy+dh,mask,filter);" in gles
 print("NVN one-layer array views and layered native GPU copies: source checks passed")
+
+# SDL Android EGL_BAD_SURFACE: preserve the existing guest GLES context and
+# reconnect to a newly created SDL EGLSurface; never silently use dead GL IDs.
+gles=source("runtime/nvn/gles/gles.c")
+for token in ("static bool gles_surface_ready(void)", "SDL_GL_MakeCurrent(g_window,g_context)",
+              "SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED", "glIsProgram(g_present_program)",
+              "glIsVertexArray(g_vertex_array)", "if (!gles_surface_ready()) return;",
+              "g_swap_rebind_success++", "swap_surface_failures=", "swap_rebind_success=",
+              "glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);", "glDisable(GL_SAMPLE_COVERAGE);",
+              "glDisable(GL_SAMPLE_MASK);", "glDisable(GL_RASTERIZER_DISCARD);"):
+    assert token in gles, f"Missing GLES Android EGLSurface recovery: {token}"
+assert "SDL_GL_CreateContext(g_window)" not in gles
+assert "SDL_GL_SwapWindow(g_window) && g_present_gl_errors++" not in gles
+print("GLES Android EGL_BAD_SURFACE recovery and state isolation checks passed")

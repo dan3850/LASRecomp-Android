@@ -527,3 +527,17 @@ The diagnostics now provide `gmem_snapshot_draws`,
 `gmem_snapshot_bytes`, and rejection counters for missing ranges,
 size limitations and GL failures. A successful Android build and
 scene rendering are not yet confirmed.
+
+## Milestone 19: Android EGL surface recovery
+The last Adreno GLES capture contains recurrent EGL_BAD_SURFACE swap failures
+despite correct final OpenGL draw status. Android can destroy its SDL SurfaceView
+while leaving the GL context alive. The GLES executor now avoids drawing to a
+missing window and rebinds its **existing** GL context using SDL_GL_MakeCurrent
+once the window is available. It validates the current presentation shader and
+VAO before resuming and does not destroy/recreate guest GPU resources on a
+surface-only interruption. Presentation clears inherited Maxwell alpha-to-
+coverage, sample coverage/mask and rasterizer-discard state.
+
+This does not recover a genuinely lost EGLContext (all shaders/textures must
+then be rebuilt) and does not implement the still-missing subgroup/compute
+shader semantics. Runtime Android build and visible scene remain unverified.

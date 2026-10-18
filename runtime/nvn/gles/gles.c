@@ -50,6 +50,9 @@ static uint64_t g_uniform_updates_ok, g_uniform_updates_failed;
 static uint64_t g_buffer_tex_attempts, g_buffer_tex_ok, g_buffer_tex_failed;
 static uint64_t g_copy_row_stride, g_copy_image_stride;
 static uint64_t g_present_missing, g_present_written, g_present_unwritten, g_present_gl_errors;
+static bool g_swap_surface_invalid;
+static uint64_t g_swap_surface_failures, g_swap_rebind_attempts;
+static uint64_t g_swap_rebind_success, g_swap_surface_skipped;
 static uint32_t g_last_present_id, g_last_present_format, g_last_present_gl_error;
 static GLuint g_texture_samplers[32];
 enum { GLES_VIDEO_QUEUE = 8 };
@@ -111,6 +114,12 @@ static void report(void) {
             g_present_missing, g_present_written, g_present_unwritten,
             g_present_gl_errors, g_last_present_id, g_last_present_format,
             g_last_present_gl_error);
+    fprintf(f, "swap_surface_failures=%" PRIu64 "\nswap_rebind_attempts=%" PRIu64
+               "\nswap_rebind_success=%" PRIu64 "\nswap_surface_skipped=%" PRIu64
+               "\nswap_surface_invalid=%u\n",
+            g_swap_surface_failures, g_swap_rebind_attempts,
+            g_swap_rebind_success, g_swap_surface_skipped,
+            (unsigned)g_swap_surface_invalid);
     fprintf(f, "mip_textures_uploaded=%" PRIu64 "\nmip_levels_uploaded=%" PRIu64 "\n",
             g_mip_textures_uploaded, g_mip_levels_uploaded);
     fprintf(f, "feedback_copy_ok=%" PRIu64 "\nfeedback_copy_failed=%" PRIu64
@@ -207,6 +216,7 @@ void gles_init(SDL_Window *window) {
     glGetProgramiv(g_present_program, GL_LINK_STATUS, &linked);
     if (!linked) FATAL("[gles] presentation program link failed\n");
     g_present_sampler = glGetUniformLocation(g_present_program, "image0");
+    g_swap_surface_invalid=false;
     glGenVertexArrays(1, &g_vertex_array);
     glGenSamplers(32, g_texture_samplers);
     gles_draw_init();
@@ -1365,8 +1375,39 @@ static void execute_list(uint64_t handle, int depth) {
     }
 }
 
+// Android may destroy and recreate the EGLSurface without losing EGLContext.
+// Rebind the original SDL context instead of destroying the guest's GL assets.
+static bool gles_surface_ready(void) {
+    if (!g_context || !g_window) return false;
+    SDL_WindowFlags flags=SDL_GetWindowFlags(g_window);
+    if (flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) {
+        g_swap_surface_skipped++;
+        return false;
+    }
+    if (!g_swap_surface_invalid && SDL_GL_GetCurrentContext()==g_context)
+        return true;
+    g_swap_rebind_attempts++;
+    if (!SDL_GL_MakeCurrent(g_window,g_context)) {
+        g_swap_surface_skipped++;
+        if (g_swap_rebind_attempts<=5)
+            LOG("[gles-surface] cannot rebind SDL EGLSurface: %s\n", SDL_GetError());
+        return false;
+    }
+    // If Android lost the EGLContext itself, every GL object must be rebuilt.
+    // Never present cached IDs from a lost context as if they were valid.
+    if (!glIsProgram(g_present_program) || !glIsVertexArray(g_vertex_array)) {
+        g_swap_surface_skipped++;
+        if (g_swap_rebind_attempts<=5)
+            LOG("[gles-surface] EGLContext resources lost; GL image IDs are stale\n");
+        return false;
+    }
+    g_swap_surface_invalid=false;
+    g_swap_rebind_success++;
+    return true;
+}
+
 void gles_execute(uint64_t handle) {
-    if (!g_context) return;
+    if (!gles_surface_ready()) return;
     if (g_draw_needs_reset) {
         gles_draw_reset();
         g_draw_needs_reset = false;
@@ -1388,7 +1429,14 @@ void gles_execute(uint64_t handle) {
 }
 
 void gles_present(NvnTexture *tex) {
-    if (!g_context) return;
+    if (!gles_surface_ready()) {
+        // Preserve the existing input/frame advancement while Android's
+        // SurfaceView is absent, but submit no GL commands to a dead surface.
+        ++g_frames;
+        extern void input_frame(uint64_t frame);
+        input_frame(g_frames);
+        return;
+    }
     gles_flush_video_queue();
     // Presentation textures can be written by NVN copies or supplied by
     // the guest window directly. Resolve them through the native GLES cache.
@@ -1410,6 +1458,10 @@ void gles_present(NvnTexture *tex) {
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
+    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    glDisable(GL_SAMPLE_COVERAGE);
+    glDisable(GL_SAMPLE_MASK);
+    glDisable(GL_RASTERIZER_DISCARD);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_FALSE);
     glClearColor(0, 0, 0, 1);
@@ -1433,8 +1485,13 @@ void gles_present(NvnTexture *tex) {
                     (unsigned long long)tex->debug_id, tex->format);
         }
     }
-    if (!SDL_GL_SwapWindow(g_window) && g_present_gl_errors++ < 10)
-        LOG("[gles-present] swap failed: %s\n", SDL_GetError());
+    if (!SDL_GL_SwapWindow(g_window)) {
+        g_present_gl_errors++;
+        g_swap_surface_failures++;
+        g_swap_surface_invalid=true;
+        if (g_swap_surface_failures<=10)
+            LOG("[gles-present] swap failed, rebind pending: %s\n", SDL_GetError());
+    }
     g_frames++;
     if (g_frames == 1 || g_frames == 16 || g_frames == 64 ||
         g_frames % 120 == 0) {
@@ -1459,11 +1516,14 @@ void gles_finish(void) {
     if (g_context && SDL_GL_GetCurrentContext() == g_context) glFinish();
 }
 void gles_clear_window(void) {
-    if (!g_context || SDL_GL_GetCurrentContext() != g_context) return;
+    if (!gles_surface_ready()) return;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    SDL_GL_SwapWindow(g_window);
+    if (!SDL_GL_SwapWindow(g_window)) {
+        g_swap_surface_failures++;
+        g_swap_surface_invalid=true;
+    }
 }
 void gles_reset(void) {
     memset(g_color, 0, sizeof g_color);
