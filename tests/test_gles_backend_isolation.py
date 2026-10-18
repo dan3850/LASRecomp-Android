@@ -293,7 +293,11 @@ assert "stencil_zero_op_states=" in draws
 # The Qualcomm GLSL link error "Unscoped name checking failed" can occur
 # when VS/FS declare anonymous cbN global uniform members at different
 # array sizes. Keep block ABI names V_CBn/F_CBn but make its members scoped.
-assert 'uvec4 cb%d[%u]; };\\n' not in translator
+# Vulkan GLSL still intentionally uses the anonymous cbN declaration.
+# Only the GLES-specific branch must use scoped block instances.
+assert 'uvec4 cb%d[%u]; };\\n' in translator
+gles_cbuf = translator.split('            const char *prefix = stage == STAGE_FRAGMENT ? "f" : "v";', 1)[1].split('        } else', 1)[0]
+assert 'uvec4 cb%d[%u]; };\\n' not in gles_cbuf
 assert 'uvec4 words[%u]; } %s_cb%d;' in translator
 assert '#define cb%d %s_cb%d.words' in translator
 assert 'stage == STAGE_FRAGMENT ? "F" : "V"' in translator
