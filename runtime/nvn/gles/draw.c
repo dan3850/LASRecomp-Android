@@ -44,6 +44,7 @@ static uint64_t checked_draws, gl_draw_errors;
 static uint64_t mrt_draws, rebased_index_draws, rejected_base_instance;
 static uint64_t depth_without_attachment, stencil_without_attachment;
 static uint64_t gles_shader_varyings_aligned;
+static uint64_t stencil_zero_op_states;
 static uint64_t indexed_base_instance_draws, arrays_base_instance_draws;
 static uint64_t reject_target_layout, reject_target_format, reject_target_fbo;
 enum { FIX_MULTISAMPLE, FIX_POLYGON, FIX_BLEND, FIX_DEPTH, FIX_STENCIL, FIX_SCISSOR, FIX_COUNT };
@@ -124,6 +125,7 @@ const char *gles_draw_rejection_stats(void) {
         "\ndepth_without_attachment=%" PRIu64
         "\nstencil_without_attachment=%" PRIu64
         "\nrejected_fixed_depth=%" PRIu64
+        "\nstencil_zero_op_states=%" PRIu64
         "\nrejected_fixed_stencil=%" PRIu64
         "\nrejected_fixed_scissor=%" PRIu64
         "\ngles_shader_varyings_aligned=%" PRIu64
@@ -161,7 +163,8 @@ const char *gles_draw_rejection_stats(void) {
         reject_fixed[FIX_MULTISAMPLE], reject_fixed[FIX_POLYGON],
         reject_fixed[FIX_BLEND], depth_without_attachment,
         stencil_without_attachment, reject_fixed[FIX_DEPTH],
-        reject_fixed[FIX_STENCIL], reject_fixed[FIX_SCISSOR],
+        stencil_zero_op_states, reject_fixed[FIX_STENCIL],
+        reject_fixed[FIX_SCISSOR],
         gles_shader_varyings_aligned,
         indexed_base_instance_draws, arrays_base_instance_draws,
         rebased_index_draws, rejected_base_instance, mrt_draws,
@@ -888,9 +891,12 @@ static bool bind_fixed_state(void) {
             GLenum cmp = comparison(face ? st.ds[4] >> 4 : st.ds[4] & 0xf);
             GLenum fail = stencil_op(op & 0xf), pass = stencil_op((op >> 8) & 0xf),
                    depth_fail = stencil_op((op >> 4) & 0xf);
-            if (!cmp || !fail || !pass || !depth_fail) {
-                reject_fixed[FIX_STENCIL]++;return false;
-            }
+            // GL_ZERO is a legal stencil operation with the numeric value
+            // zero. Testing !fail/!pass/!depth_fail wrongly discarded every
+            // draw using it. comparison() and stencil_op() always return a
+            // valid enum (matching Vulkan's ALWAYS/KEEP fallbacks).
+            if (fail==GL_ZERO || pass==GL_ZERO || depth_fail==GL_ZERO)
+                stencil_zero_op_states++;
             glStencilFuncSeparate(target, cmp, (GLint)st.stencil_ref[face],
                                   st.stencil_vmask[face]);
             glStencilOpSeparate(target, fail, depth_fail, pass);

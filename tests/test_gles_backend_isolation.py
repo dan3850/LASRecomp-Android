@@ -280,3 +280,24 @@ for token in ("align_gles_varying_qualifiers(", "flat in vec4 v%d;",
 assert "default: return GL_ALWAYS; // NVN/Vulkan compare_fn fallback" in draws
 assert "default: return GL_KEEP; // NVN/Vulkan stencil_op fallback" in draws
 print("GLES interpolation interface and stencil fallback checks passed")
+
+# 12:25 real Adreno GLES snapshot: 20,700 stencil rejects, because
+# GL_ZERO is a valid stencil enum with value 0, but the old renderer
+# tested !fail/!pass/!depth_fail and rejected those draws as invalid.
+draws=source("runtime/nvn/gles/draw.c")
+translator=source("runtime/nvn/maxwell/translate.c")
+assert "case 2: return GL_ZERO;" in draws
+assert "if (!cmp || !fail || !pass || !depth_fail)" not in draws
+assert "stencil_zero_op_states++" in draws
+assert "stencil_zero_op_states=" in draws
+# The Qualcomm GLSL link error "Unscoped name checking failed" can occur
+# when VS/FS declare anonymous cbN global uniform members at different
+# array sizes. Keep block ABI names V_CBn/F_CBn but make its members scoped.
+assert 'uvec4 cb%d[%u]; };\\n' not in translator
+assert 'uvec4 words[%u]; } %s_cb%d;' in translator
+assert '#define cb%d %s_cb%d.words' in translator
+assert 'stage == STAGE_FRAGMENT ? "F" : "V"' in translator
+assert 'const char *prefix = stage == STAGE_FRAGMENT ? "f" : "v";' in translator
+assert 'layout(std140, set = %d, binding = %d) uniform CB%d' in translator
+assert 'snprintf(name,sizeof name,"%s_CB%d",stage ? "F" : "V", k);' in draws
+print("GLES GL_ZERO stencil and scoped per-stage constant block checks passed")

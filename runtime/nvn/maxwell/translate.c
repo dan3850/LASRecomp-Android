@@ -1821,10 +1821,21 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (c->cbuf_need[i] > n) n = c->cbuf_need[i];
         if ((info->cbuf_dynamic & (1u << i)) && n < 4096) n = 4096;
         if (!n) n = 1;
-        if (es)
-            sp(&s, "layout(std140) uniform %s_CB%d { uvec4 cb%d[%u]; };\n",
-               stage == STAGE_FRAGMENT ? "F" : "V", i, i, n);
-        else
+        if (es) {
+            // The anonymous cbN member becomes a program-global uniform
+            // name in both stages. VS and FS often use different cbN array
+            // lengths, which causes Adreno's "Unscoped name checking failed"
+            // during program link even though each stage compiled.
+            // Keep the V_CBn/F_CBn block ABI that bind_uniforms() queries,
+            // but give every GLES block an instance and a stage-local
+            // macro mapping for the translated Maxwell cbN accesses.
+            // This is ES-only: Vulkan's uniform ABI is untouched.
+            const char *prefix = stage == STAGE_FRAGMENT ? "f" : "v";
+            sp(&s, "layout(std140) uniform %s_CB%d { uvec4 words[%u]; } %s_cb%d;\n"
+                   "#define cb%d %s_cb%d.words\n",
+               stage == STAGE_FRAGMENT ? "F" : "V", i, n,
+               prefix, i, i, prefix, i);
+        } else
             sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
     }
     if (info->uses_gmem) {

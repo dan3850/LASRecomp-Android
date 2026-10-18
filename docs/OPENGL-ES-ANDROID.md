@@ -411,3 +411,31 @@ Other ongoing blockers include GMEM, compute commands, remaining
 unsupported programs, and incomplete texture copies. This source fix
 does not establish that the scene renders correctly until compiled
 and tested on the Adreno Android device.
+
+## Milestone 13: stencil GL_ZERO and GLES constant block linkage
+The supplied 12:25 Oct 18 Adreno GLES log verifies 139,162 native
+Maxwell draws, 20,700 stencil-state rejects, 95 shader programs failed
+(including recurrent "Unscoped name checking failed"), 64,042 sampled
+textures and 2,418 failed texture copies.
+
+**Definite stencil bug:** GLES `GL_ZERO` is integer 0, not an invalid
+operation. `bind_fixed_state()` incorrectly rejected the legitimate
+stencil op by testing `!fail || !pass || !depth_fail`. Remove this
+incorrect validation and count native zero-op states applied in
+`stencil_zero_op_states`. The known NVN op mapping and Vulkan's
+fallback remain unchanged.
+
+**Likely shader-link bug:** GLES shader stages separately declared
+`V_CBn` and `F_CBn` uniform blocks, but their `cbN` arrays were
+members of *anonymous instances* and so exposed identical unscoped
+uniform names to the GL linker. The stages can have different cbN
+array extents; this can cause Adreno's unscoped name checking failure.
+For **only** GLSL ES, use named instances `v_cbn`/`f_cbn` with
+`words[N]` inside, while `#define cbN v_cbn.words` (or f_cbn)
+retains existing shader arithmetic. This leaves the reflected block
+name `V_CBn`/`F_CBn` and the production GLSL Vulkan path intact.
+The link error's exact root cause still requires device confirmation.
+
+The presentation count in graphics/gles.txt means frames were swapped,
+not that the final framebuffer held correct game pixels. GLES GMEM,
+compute, and various copies still need implementation.
