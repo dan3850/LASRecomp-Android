@@ -1,3 +1,4 @@
+#include "shader_prep.h"
 // NVN objects, builders, and state objects (everything except command recording).
 #include <stdlib.h>
 #include <string.h>
@@ -36,7 +37,15 @@ NVN(nvnDeviceBuilderSetFlags) { G(uint32_t, A(0), 0) = (uint32_t)A(1); }
 NVN(nvnDeviceBuilderGetFlags) { RET(G(uint32_t, A(0), 0)); }
 NVN(nvnDeviceInitialize) {
     static bool once;
-    if (!once) { once = true; backend_init(); }
+    if (!once) {
+        once = true;
+        backend_init();
+        // Prepare shader variants on the game's native NVN initialization:
+        // Vulkan and the pipeline replay are ready, but no game draw has run.
+        // Read the user's SAF archives directly; nothing is bundled or copied.
+        extern const char *g_romfs_dir;
+        if (g_romfs_dir) shader_prep_boot(g_romfs_dir);
+    }
     LOG("[nvn] device initialized\n");
     RET(1);
 }
