@@ -55,3 +55,15 @@ for token in ("GL_DEPTH24_STENCIL8", "GL_R11F_G11F_B10F", "GL_RGBA16F",
     assert token in gl, f"Missing native attachment handling: {token}"
 assert "gles_draw_framebuffer(st.color[0], st.depth" in fixed
 print("GLES depth, blend and native framebuffer source assertions passed")
+
+assert "glDisable(GL_CULL_FACE);" in gl
+assert "glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);" in gl
+assert "nvn_lists_executed" in gl
+assert "g_frames == 1" in gl
+print("GLES presentation-state and early-checkpoint source checks passed")
+
+assert "gles-shaders.txt" in source("runtime/nvn/gles/draw.c")
+assert "gles-shaders.txt" in source("android/src/com/retroaura/lasrecomp/GraphicsDiagnostics.java")
+assert "shader_diagnostic(\"vertex-translate\"" in draw
+assert "shader_diagnostic(\"fragment-compile\"" not in draw or "compile_shader(GL_FRAGMENT_SHADER" in draw
+print("GLES driver shader diagnostic source checks passed")

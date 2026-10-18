@@ -113,3 +113,24 @@ This does **not** imply the game is graphically correct or playable.
 Texture sampling, deswizzling, GMEM, compute and synchronization still need
 implementation. Keep the safe Vulkan branch intact and test only in the
 experimental GLES branch.
+
+## Startup diagnosis and GLES presentation state (October 18)
+A user-provided diagnostic cut off in native game initialization (at the
+savedata reads), before any current GLES draw counters were included; the
+historical Vulkan section of the diagnostic is unrelated to the current
+GLES run. This code adds durable startup NVN command-list checkpoints after
+1, 16, 128 and 1024 executed lists, plus early frame checkpoints (1, 16,
+64). They appear in `graphics/gles.txt` and are also logged to the runtime
+log. This avoids relying on the last 16 KB of a noisy engine trace.
+
+Corrected final fullscreen GLES presentation to explicitly reset culling,
+stencil test and all-channel color write mask. The native render state must
+not mask or cull the presentation triangle. **This does not implement
+textures/GMEM/compute or prove a playable scene.**
+
+### Shader error evidence without game assets
+The GLES shader translator now writes at most 24 diagnostic events to
+`graphics/gles-shaders.txt` (included in the usual graphics ZIP). Events
+include the stage, driver error summary and shader addresses, **not** ROM
+data, shader source, game libraries or extracted assets. This helps separate
+unsupported Maxwell features from GLSL ES compilation/link errors.

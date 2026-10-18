@@ -29,6 +29,7 @@ static bool g_draw_needs_reset;
 static uint64_t g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported, g_unsupported;
 static int g_last_unsupported = -1;
 static char g_stats[512];
+static uint64_t g_executed_lists, g_last_checkpoint;
 
 bool gles_selected(void) {
     const char *name = getenv("LARECOMP_RENDERER");
@@ -44,6 +45,7 @@ static void report(void) {
                "\ngles_programs_failed=%" PRIu64 "\n",
             gles_draw_native_count(), gles_draw_program_count(), gles_draw_shader_failure_count());
     fprintf(f, "%s", gles_draw_rejection_stats());
+    fprintf(f, "nvn_lists_executed=%" PRIu64 "\n", g_executed_lists);
     fprintf(f, "frames=%" PRIu64 "\nclears=%" PRIu64 "\nunsupported_draws=%" PRIu64
                "\nunsupported_dispatches=%" PRIu64 "\nunsupported_commands=%" PRIu64
                "\nlast_unsupported_opcode=%d\n",
@@ -409,6 +411,18 @@ void gles_execute(uint64_t handle) {
         g_draw_needs_reset = false;
     }
     execute_list(handle, 0);
+    ++g_executed_lists;
+    // Keep a short-lived startup snapshot even when Android kills the
+    // activity before the first 120 presented frames. The first two writes
+    // are useful for boot failures; later writes are logarithmically spaced.
+    if ((g_executed_lists == 1 || g_executed_lists == 16 ||
+         g_executed_lists == 128 || g_executed_lists == 1024) &&
+        g_last_checkpoint != g_executed_lists) {
+        g_last_checkpoint = g_executed_lists;
+        LOG("[gles] startup NVN lists=%" PRIu64 " %s\n",
+            g_executed_lists, gles_stats());
+        report();
+    }
 }
 
 void gles_present(NvnTexture *tex) {
@@ -417,9 +431,15 @@ void gles_present(NvnTexture *tex) {
     SDL_GetWindowSizeInPixels(g_window, &w, &h);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, w, h);
+    // NVN draw state must not leak into final presentation. Otherwise a
+    // full-screen triangle may be culled, scissored or color-masked out.
     glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_FALSE);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     GlesTexture *t = tex ? tex->backend : NULL;
@@ -433,7 +453,8 @@ void gles_present(NvnTexture *tex) {
     }
     SDL_GL_SwapWindow(g_window);
     g_frames++;
-    if (g_frames % 120 == 0) {
+    if (g_frames == 1 || g_frames == 16 || g_frames == 64 ||
+        g_frames % 120 == 0) {
         LOG("[gles] %s\n", gles_stats());
         report();
     }

@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <sys/stat.h>
 
 extern bool gles_draw_framebuffer(NvnTexture *color, NvnTexture *depth, int *w, int *h);
 extern uint32_t nvn_window_origin(void);
@@ -44,6 +45,25 @@ typedef struct {
 static Program programs[PROGRAM_SLOTS];
 static unsigned num_programs;
 static uint64_t attempts;
+static unsigned shader_diagnostics_recorded;
+
+// Text-only shader diagnostics. Do not export copyrighted guest binaries,
+// translated shader source or ROM data into the user-visible diagnostic ZIP.
+static void shader_diagnostic(const char *phase, uint64_t guest_vs, uint64_t guest_fs,
+                              const char *reason) {
+    if (shader_diagnostics_recorded++ >= 24) return;
+    mkdir("graphics", 0755);
+    FILE *f = fopen("graphics/gles-shaders.txt", "a");
+    if (!f) return;
+    fprintf(f, "event=%u phase=%s vs=%" PRIx64 " fs=%" PRIx64 "\n",
+            shader_diagnostics_recorded, phase, guest_vs, guest_fs);
+    if (reason) {
+        // Keep individual logs small and readable; GLSL driver errors often
+        // include source lines or lengthy verbose dumps.
+        fprintf(f, "reason=%.512s\n", reason);
+    }
+    fclose(f);
+}
 
 uint64_t gles_draw_native_count(void) { return native_draws; }
 uint64_t gles_draw_program_count(void) { return shaders_ok; }
@@ -97,6 +117,13 @@ static void defaults(void) {
 }
 void gles_draw_init(void) {
     defaults();
+    mkdir("graphics", 0755);
+    FILE *f = fopen("graphics/gles-shaders.txt", "w");
+    if (f) {
+        fputs("backend=GLES-3.2\nshader_log=metadata-and-driver-errors-only\n", f);
+        fclose(f);
+    }
+    shader_diagnostics_recorded = 0;
     glGenBuffers(36, uniform_buffers);
     glGenBuffers(16, vertex_buffers);
     glGenBuffers(1, &index_buffer);
@@ -161,7 +188,8 @@ static Format vertex_format(uint32_t fmt) {
     return (Format){type,(GLint)n,kind==0||kind==1||kind==5||kind==6,kind==2||kind==3||
            kind==7||kind==8||kind==10||kind==11,n*bits/8};
 }
-static GLuint compile_shader(GLenum kind, const char *source) {
+static GLuint compile_shader(GLenum kind, const char *source,
+                             uint64_t guest_vs, uint64_t guest_fs) {
     GLuint sh = glCreateShader(kind);
     glShaderSource(sh, 1, &source, NULL);
     glCompileShader(sh);
@@ -172,6 +200,8 @@ static GLuint compile_shader(GLenum kind, const char *source) {
             char log[1024] = {0};
             glGetShaderInfoLog(sh, sizeof log, NULL, log);
             fprintf(stderr, "[gles-nvn] Maxwell GLES shader failed: %s\n", log);
+            shader_diagnostic(kind == GL_VERTEX_SHADER ? "vertex-compile" : "fragment-compile",
+                              guest_vs, guest_fs, log);
         }
         glDeleteShader(sh);
         return 0;
@@ -214,20 +244,33 @@ static Program *program_for_draw(void) {
     if (!vlimit || vlimit > 0x100000) vlimit = 0x10000;
     if (!flimit || flimit > 0x100000) flimit = 0x10000;
     p->vs = maxwell_translate((const uint8_t *)(uintptr_t)vs, vlimit, STAGE_VERTEX, &vk);
-    if (!p->vs || !p->vs->msl) { rejection[R_TRANSLATE]++; shaders_failed++; return p; }
+    if (!p->vs || !p->vs->msl) {
+        shader_diagnostic("vertex-translate", vs, fs,
+                          p->vs ? p->vs->error : "translator returned null");
+        rejection[R_TRANSLATE]++; shaders_failed++; return p;
+    }
     fk.vs_out_mask = p->vs->out_mask;
     p->fs = maxwell_translate((const uint8_t *)(uintptr_t)fs, flimit, STAGE_FRAGMENT, &fk);
-    if (!p->fs || !p->fs->msl) { rejection[R_TRANSLATE]++; shaders_failed++; return p; }
+    if (!p->fs || !p->fs->msl) {
+        shader_diagnostic("fragment-translate", vs, fs,
+                          p->fs ? p->fs->error : "translator returned null");
+        rejection[R_TRANSLATE]++; shaders_failed++; return p;
+    }
     // Do not issue draws with unresolved shader resources or semantics.
     if (p->vs->ntex || p->fs->ntex || p->vs->uses_gmem || p->fs->uses_gmem ||
         p->vs->uses_gmem_map || p->fs->uses_gmem_map ||
         strstr(p->vs->msl, "uint64_t") || strstr(p->fs->msl, "uint64_t") ||
         strstr(p->vs->msl, "subgroup") || strstr(p->fs->msl, "subgroup")) {
+        shader_diagnostic("unsupported-maxwell-feature", vs, fs,
+                          p->vs->ntex || p->fs->ntex ? "texture-sampling pending" :
+                          p->vs->uses_gmem || p->fs->uses_gmem ||
+                          p->vs->uses_gmem_map || p->fs->uses_gmem_map ? "global-memory pending" :
+                          "GLSL ES capability pending");
         rejection[R_SHADER_FEATURE]++; shaders_failed++;
         return p;
     }
-    GLuint v = compile_shader(GL_VERTEX_SHADER,p->vs->msl);
-    GLuint f = v ? compile_shader(GL_FRAGMENT_SHADER,p->fs->msl) : 0;
+    GLuint v = compile_shader(GL_VERTEX_SHADER,p->vs->msl, vs, fs);
+    GLuint f = v ? compile_shader(GL_FRAGMENT_SHADER,p->fs->msl, vs, fs) : 0;
     if (!v || !f) {
         if (v) glDeleteShader(v);
         if (f) glDeleteShader(f);
@@ -245,6 +288,7 @@ static Program *program_for_draw(void) {
             char log[1024] = {0};
             glGetProgramInfoLog(program, sizeof log, NULL, log);
             fprintf(stderr, "[gles-nvn] Maxwell GLES program link: %s\n", log);
+            shader_diagnostic("program-link", vs, fs, log);
         }
         glDeleteProgram(program);
         rejection[R_COMPILE]++; shaders_failed++;
