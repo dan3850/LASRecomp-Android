@@ -122,12 +122,47 @@ step "SDL3 — compila do fonte"
 if [[ -f "$WORK/sdl3/CMakeCache.txt" ]]; then
  sed -i '/^ANDROID:UNINITIALIZED=/d; /^ANDROID:BOOL=/d; /^SDL_ANDROID:UNINITIALIZED=/d' "$WORK/sdl3/CMakeCache.txt"
 fi
-cmake -S "$DEPS/sdl3" -B "$WORK/sdl3" "${CMAKE_OPTS[@]}" \
+# O backend GLES nativo requer EGL + GLES dentro do SDL3. SDL_OPENGL=OFF
+# desabilita apenas desktop GL; SDL_OPENGLES=ON habilita EGL/ES no Android.
+# Resolve os headers/import libs ARM64 sem executar toolchain x86 do NDK.
+SDL_GLES_SYSROOT="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+SDL_GLES_INCLUDE=""
+for candidate in "$PREFIX/include" "$SDL_GLES_SYSROOT/usr/include"; do
+ if [[ -s "$candidate/GLES2/gl2.h" && -s "$candidate/EGL/egl.h" ]]; then
+  SDL_GLES_INCLUDE="$candidate"; break
+ fi
+done
+[[ -n "$SDL_GLES_INCLUDE" ]] || fail "SDL3 EGL/GLES2 headers ausentes no Termux/NDK"
+SDL_GLES_LINKDIR=""
+for candidate in "$PREFIX/lib" \
+ "$SDL_GLES_SYSROOT/usr/lib/aarch64-linux-android/26" \
+ "$SDL_GLES_SYSROOT/usr/lib/aarch64-linux-android/28"; do
+ if [[ -s "$candidate/libGLESv1_CM.so" && -s "$candidate/libGLESv2.so" ]]; then
+  SDL_GLES_LINKDIR="$candidate"; break
+ fi
+done
+[[ -n "$SDL_GLES_LINKDIR" ]] || fail "SDL3: bibliotecas ARM64 GLESv1_CM e GLESv2 ausentes"
+echo "SDL3 EGL/GLES: headers=$SDL_GLES_INCLUDE libs=$SDL_GLES_LINKDIR"
+SDL_CMAKE_OPTS=("${CMAKE_OPTS[@]}")
+SDL_CMAKE_OPTS+=(
+ "-DCMAKE_C_FLAGS=-fPIC -I$SDL_GLES_INCLUDE"
+ "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -L$SDL_GLES_LINKDIR"
+)
+cmake -S "$DEPS/sdl3" -B "$WORK/sdl3" "${SDL_CMAKE_OPTS[@]}" \
  -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF \
- -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_OPENGLES=OFF -DSDL_OPENGLES2=OFF -DSDL_OPENGL=OFF
+ -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_OPENGLES=ON -DSDL_OPENGL=OFF
+if ! grep -Eq '^SDL_OPENGLES:BOOL=ON$' "$WORK/sdl3/CMakeCache.txt"; then
+ fail "SDL3 CMake nao ativou SDL_OPENGLES (nao prosseguir com APK)"
+fi
 cmake --build "$WORK/sdl3" --parallel "$JOBS"
 SDL_SO="$(find "$WORK/sdl3" -name libSDL3.so -type f -print -quit)"
 [[ -s "$SDL_SO" ]] || fail "SDL3 nao gerou libSDL3.so"
+# GLES/EGL precisa estar realmente compilado, nao apenas ligado pelo linker.
+SDL_GL_CONFIG="$(find "$WORK/sdl3" -name SDL_build_config.h -type f -print -quit)"
+if [[ -n "$SDL_GL_CONFIG" ]] && ! grep -Eq '^#define SDL_VIDEO_OPENGL_EGL[[:space:]]+1' "$SDL_GL_CONFIG"; then
+ fail "SDL3 nao compilou suporte a EGL; verifique $SDL_GL_CONFIG"
+fi
+echo "SDL3: suporte OpenGL ES + EGL solicitado e biblioteca reconstruida incrementalmente"
 SDL_HEADERS="$DEPS/sdl3/include"
 SDL_JAVA="$DEPS/sdl3/android-project/app/src/main/java"
 step "Shaderc — compila do fonte"

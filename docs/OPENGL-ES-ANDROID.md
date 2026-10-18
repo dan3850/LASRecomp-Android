@@ -38,3 +38,17 @@ Static source-isolation check:
 ## Return to safe baseline
 `git switch android/native-vulkan-rnd`; compile using the same existing
 incremental build script. No force/reset/clean is necessary.
+
+## SDL3: Android EGL initialization
+The Termux script **must compile SDL 3.2.22 with**
+`-DSDL_OPENGLES=ON` (not `OFF`). On Android this enables
+`SDL_VIDEO_OPENGL_EGL` and `SDL_VIDEO_OPENGL_ES2`, which are necessary for
+`SDL_WINDOW_OPENGL` and `SDL_GL_CreateContext`. SDL remains compiled with
+`SDL_VULKAN=ON` on the same Android build and Vulkan remains selectable.
+
+A previous build failed before any NVN rendering with
+`SDL_CreateWindow: OpenGL support is either not configured ... (android)`.
+The new build script passes native ARM64 GLES libraries to SDL's linker,
+reconfigures its **existing** CMake/Ninja cache, checks the SDL GLES option and
+recompiles only changed SDL objects. Do not delete the SDL cache or Gradle
+artifacts.
