@@ -126,9 +126,10 @@ void vk_wait_seq(uint64_t seq) {
                               .pValues = &seq};
     uint64_t t0 = SDL_GetTicksNS();
     VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
-    stat_wait_ns += SDL_GetTicksNS() - t0;
-    cum_wait += SDL_GetTicksNS() - t0;
-    wait_account(SDL_GetTicksNS() - t0);
+    uint64_t elapsed = SDL_GetTicksNS() - t0;
+    stat_wait_ns += elapsed;
+    cum_wait += elapsed;
+    wait_account(elapsed);
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
     else if (r == VK_SUCCESS) {
         gmem_resolve_done(seq); // guest-visible compute stores must precede the fence return
@@ -1404,6 +1405,30 @@ const char *renderer_stats(void) {
     {
         extern void vk_alias_stats(void);
         vk_alias_stats();
+    }
+    // The aggregate "wait" counter alone cannot distinguish GPU saturation
+    // from guest fence waits or command-ring reuse. Emit the existing per-cause
+    // counters in regular diagnostics, without enabling costly GPU profiling.
+    if (!prof) {
+        char wait_summary[512] = {0};
+        size_t used = 0;
+        pthread_mutex_lock(&wait_tab_lock);
+        for (int i = 0; i < 12 && wait_tab[i].why; ++i) {
+            if (!wait_tab[i].n || used >= sizeof wait_summary - 1) continue;
+            int written = snprintf(wait_summary + used, sizeof wait_summary - used,
+                "%s%s %llux %.0fms", used ? ", " : "",
+                wait_tab[i].why, (unsigned long long)wait_tab[i].n,
+                wait_tab[i].ns / 1e6);
+            if (written < 0) break;
+            if ((size_t)written >= sizeof wait_summary - used) {
+                used = sizeof wait_summary - 1;
+                break;
+            }
+            used += (size_t)written;
+        }
+        memset(wait_tab, 0, sizeof wait_tab);
+        pthread_mutex_unlock(&wait_tab_lock);
+        if (used) LOG("[vk-wait] %s\\n", wait_summary);
     }
     if (prof) {
         prof_up = prof_up_ns;
