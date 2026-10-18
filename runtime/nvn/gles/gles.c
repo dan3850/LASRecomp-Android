@@ -1032,9 +1032,63 @@ static bool copy_view_base_only(const GlesTexRef *r, const NvnTexture *tex) {
     // conversion; Vulkan's raw copy path likewise ignores swizzle.
     return true;
 }
+// NVN can copy images that are sampled as arrays or are not renderable FBO
+// attachments. glBlitFramebuffer cannot express layered copies. GLES 3.2
+// glCopyImageSubData copies the original GPU texels, not substituted pixels.
+// Only exact-size, same-format, non-overlapping image copies are accepted;
+// scaling/depth conversions stay on the existing framebuffer path.
+static bool gles_copy_native_array_image(const GlesTexRef *from,
+                                         const GlesTexRef *to,
+                                         bool downsample, uint64_t flags) {
+    if (downsample || (flags & 1u)) return false;
+    NvnTexture *src=(NvnTexture *)(uintptr_t)from->tex;
+    NvnTexture *dst=(NvnTexture *)(uintptr_t)to->tex;
+    if (!src || !dst || src==dst || src->format!=dst->format ||
+        !copy_view_base_only(from,src) || !copy_view_base_only(to,dst) ||
+        (src->target!=1 && src->target!=4) ||
+        (dst->target!=1 && dst->target!=4) ||
+        (src->target!=4 && dst->target!=4) ||
+        src->samples>1 || dst->samples>1) return false;
+    GlesTexture *s=texture(src), *d=texture(dst);
+    if (!s || !d || !s->color || !d->color) return false;
+    if (!s->gpu_written && src->addr && !sample_cpu_upload(src,s))
+        return false;
+    if (!s->gpu_written && !s->cpu_uploaded) return false;
+
+    int sx=from->region[0], sy=from->region[1], sz=from->region[2];
+    int dx=to->region[0], dy=to->region[1], dz=to->region[2];
+    if (sx<0 || sy<0 || sz<0 || dx<0 || dy<0 || dz<0) return false;
+    int sw=from->region[3] ? from->region[3] : s->width-sx;
+    int sh=from->region[4] ? from->region[4] : s->height-sy;
+    int dw=to->region[3] ? to->region[3] : d->width-dx;
+    int dh=to->region[4] ? to->region[4] : d->height-dy;
+    int sl=src->target==4 ? s->layers : 1;
+    int dl=dst->target==4 ? d->layers : 1;
+    int depth=from->region[5] ? from->region[5] : 1;
+    if (sw<=0 || sh<=0 || sw!=dw || sh!=dh || depth<=0 ||
+        (to->region[5] && to->region[5]!=depth) ||
+        (uint64_t)sx+sw>(uint64_t)s->width ||
+        (uint64_t)sy+sh>(uint64_t)s->height ||
+        (uint64_t)dx+dw>(uint64_t)d->width ||
+        (uint64_t)dy+dh>(uint64_t)d->height ||
+        (uint64_t)sz+depth>(uint64_t)sl ||
+        (uint64_t)dz+depth>(uint64_t)dl) return false;
+    for(int i=0;i<8 && glGetError()!=GL_NO_ERROR;i++) {}
+    glCopyImageSubData(s->color,s->target,0,sx,sy,sz,
+                       d->color,d->target,0,dx,dy,dz,sw,sh,depth);
+    if (glGetError()!=GL_NO_ERROR) return false;
+    d->gpu_written=true;
+    d->content_epoch++; // invalidate cached 2D-as-array sampling snapshots
+    return true;
+}
+
 static bool gles_copy_texture(const GlesTexRef *from, const GlesTexRef *to,
                               bool downsample, uint64_t flags) {
     g_copies_attempted++;
+    if (gles_copy_native_array_image(from,to,downsample,flags)) {
+        g_copies_succeeded++;
+        return true;
+    }
     NvnTexture *src=(NvnTexture *)(uintptr_t)from->tex;
     NvnTexture *dst=(NvnTexture *)(uintptr_t)to->tex;
     if (!src || !dst || src == dst || !copy_view_base_only(from,src) ||

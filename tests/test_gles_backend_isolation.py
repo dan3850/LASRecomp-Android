@@ -144,7 +144,7 @@ for token in ("compatible_texture_view(", "texture_reject_kind=",
               "texture_array_bound="):
     assert token in draws, f"NVN GLES texture-view diagnostics missing: {token}"
 assert "entry->has_view || tex->target!=1" not in draws
-assert "if (!compatible_texture_view(entry,swizzle,&why))" in draws
+assert "if (!compatible_texture_view(entry,array,swizzle,&why))" in draws
 assert "rejected_view(entry,why);" in draws
 for token in ("GL_TEXTURE_2D_ARRAY", "glTexImage3D(", "glTexSubImage3D(",
               "tegra_layer_size(", "layer_size*layers>size",
@@ -528,3 +528,28 @@ assert "tex->content_epoch++; // video replaces the sampled image" in gles
 assert "host->content_epoch++; // invalidate one-layer sampler-array alias" in gles
 assert "feedback_color && !single_layer_array &&" in draws
 print("GLES array aliases track video/copy updates and preserve sampler type")
+
+# 2026-10-18 14:45 Adreno 840: 1210 source views were rejected as
+# V_TARGET despite full one-layer NVN 2D -> sampler2DArray being implemented
+# with real GPU-backed array aliases. Allow that exact view, not arbitrary
+# reinterpretation of the shader sampler target or extra guest layers.
+draws=source("runtime/nvn/gles/draw.c")
+gles=source("runtime/nvn/gles/gles.c")
+for token in ("bool one_layer_alias = array && v->target == 4u",
+              "tex->target == 1u && tex->layout.layers == 1u",
+              "v->target != (array ? 4u : 1u)",
+              "v->target != tex->target && !one_layer_alias",
+              "compatible_texture_view(entry,array,swizzle,&why)"):
+    assert token in draws, f"Missing NVN 2D-as-array view conversion: {token}"
+# GL framebuffer blits cannot copy layered textures. GLES3.2 supports
+# copying exact-sized compatible image regions without framebuffer objects.
+for token in ("static bool gles_copy_native_array_image(",
+              "glCopyImageSubData(s->color,s->target,0,sx,sy,sz,",
+              "src->format!=dst->format", "(src->target!=4 && dst->target!=4)",
+              "if (gles_copy_native_array_image(from,to,downsample,flags))",
+              "d->content_epoch++; // invalidate cached 2D-as-array sampling snapshots"):
+    assert token in gles, f"Missing actual GLES array GPU image copy: {token}"
+assert "if (downsample || (flags & 1u)) return false;" in gles
+assert "if (sw<=0 || sh<=0 || sw!=dw || sh!=dh || depth<=0" in gles
+assert "glBlitFramebuffer(sx,sy,sx+sw,sy+sh,dx,dy,dx+dw,dy+dh,mask,filter);" in gles
+print("NVN one-layer array views and layered native GPU copies: source checks passed")

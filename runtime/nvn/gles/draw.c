@@ -688,8 +688,8 @@ static void normalize_swizzle(const uint8_t *src, uint8_t out[4]) {
         out[0]=2; out[1]=3; out[2]=4; out[3]=5;
     } else memcpy(out,src,4);
 }
-static bool compatible_texture_view(const NvnTexEntry *entry, uint8_t swizzle[4],
-                                    int *reason) {
+static bool compatible_texture_view(const NvnTexEntry *entry, bool array,
+                                    uint8_t swizzle[4], int *reason) {
     const NvnTexture *tex=entry->tex;
     if (!tex) { *reason=V_UNKNOWN; return false; }
     const NvnTextureView *v=&entry->view;
@@ -714,9 +714,17 @@ static bool compatible_texture_view(const NvnTexEntry *entry, uint8_t swizzle[4]
     if ((v->setmask & 4u) && v->format != tex->format) {
         *reason=V_FORMAT; return false;
     }
-    if ((v->setmask & 32u) && v->target != tex->target) {
-        // A 2D slice of an array needs an actual GL texture-view object.
-        *reason=V_TARGET; return false;
+    if (v->setmask & 32u) {
+        // A full one-layer NVN 2D view requested as sampler2DArray is
+        // represented by the real GPU array alias in gles_sample_texture.
+        // Never accept a 2D-array view of multiple layers or change the
+        // meaning of a shader's declared sampler target.
+        bool one_layer_alias = array && v->target == 4u &&
+                               tex->target == 1u && tex->layout.layers == 1u;
+        if (v->target != (array ? 4u : 1u) ||
+            (v->target != tex->target && !one_layer_alias)) {
+            *reason=V_TARGET; return false;
+        }
     }
     if ((v->setmask & 16u) && tex->format >= 0x32 &&
         tex->format <= 0x36 && v->ds_mode != tex->ds_mode) {
@@ -798,7 +806,7 @@ static bool bind_textures(Program *p) {
         }
         uint8_t swizzle[4];
         int why=V_UNKNOWN;
-        if (!compatible_texture_view(entry,swizzle,&why)) {
+        if (!compatible_texture_view(entry,array,swizzle,&why)) {
             rejected_view(entry,why);
             rejection[R_TEXTURE]++; texture_rejection[T_VIEW]++; return false;
         }
