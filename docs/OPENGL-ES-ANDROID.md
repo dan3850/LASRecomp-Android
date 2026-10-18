@@ -493,3 +493,37 @@ The GLES diagnostic records feedback_copy_ok, feedback_copy_failed,
 feedback_allocated. Vulkan's own image snapshot implementation is
 untouched. This does **not** implement GMEM, subgroup or compute; it
 does not itself confirm that the full game scene is visible.
+
+## Milestone 16: native GLES read-only GMEM snapshots
+This experimental branch now implements **LDG reads only** from
+actual guest-owned NVN storage buffers. The Maxwell GLES translator uses
+a 2x32-bit add/borrow calculation for signed guest-heap offsets rather
+than an unavailable 64-bit GLSL ES integer. A bound-checked GMap table
+maps each allowed heap interval into the corresponding packed byte
+offset of `GFast` (a GLES 3.2 shader-storage buffer).
+
+`runtime/nvn/gles/draw.c` reuses the existing **pure C** range
+merging/planning functions from `runtime/nvn/vulkan/gmem.h`, not the
+Vulkan renderer, Vulkan device, or Vulkan command submission. This
+planner has no Vulkan API calls. It clamps copied data to the
+currently committed guest heap, 16 MiB per draw, the real driver
+`GL_MAX_SHADER_STORAGE_BLOCK_SIZE`, and the source's valid byte range.
+The GLES thread uploads a fresh snapshot with orphaned
+`GL_STREAM_DRAW` buffer and `glMapBufferRange`, binds the real
+`GL_SHADER_STORAGE_BUFFER` and matching std140 GMap, and submits
+a real Maxwell shader draw. No fake geometry or zero-filled heap
+substitute is added.
+
+**Scope is deliberately restricted.** Only currently bound storage
+buffer ranges are packed; missing data is not filled from arbitrary
+guest pointers. STG writes, compute dispatches, subgroup, unsupported
+samplers and true uint64 shader operations remain blocked. Those need
+GPU-to-guest writeback and dedicated synchronization rather than
+pretending a read-only snapshot is writable. Frequent per-draw
+snapshots can hurt speed and are a correctness-first starting point,
+not a completed high-performance implementation.
+
+The diagnostics now provide `gmem_snapshot_draws`,
+`gmem_snapshot_bytes`, and rejection counters for missing ranges,
+size limitations and GL failures. A successful Android build and
+scene rendering are not yet confirmed.

@@ -3,6 +3,9 @@
 // Unsupported texture/GMEM/compute/blend/depth paths fail closed and are logged.
 #include "draw.h"
 #include "../maxwell/shader.h"
+#include "../../kernel.h"
+// gmem.h contains a pure C packed-range planner; it does not run Vulkan.
+#include "../vulkan/gmem.h"
 #include <GLES3/gl32.h>
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -41,6 +44,10 @@ typedef struct {
 } DrawState;
 static DrawState st;
 static GLuint uniform_buffers[36], vertex_buffers[16], index_buffer, vao;
+static GLuint gmem_ssbo, gmem_table_ubo;
+static GLuint last_uniform_binding;
+static uint64_t gmem_snapshot_draws, gmem_snapshot_bytes;
+static uint64_t gmem_snapshot_reject_range, gmem_snapshot_reject_size, gmem_snapshot_reject_gl;
 static uint64_t native_draws, shaders_ok, shaders_failed, rejection[13];
 static uint64_t shader_reject_gmem, shader_reject_sampler, shader_reject_int64;
 static uint64_t shader_reject_subgroup, shader_disabled_draws;
@@ -111,7 +118,7 @@ const char *gles_draw_rejection_summary(void) {
     return line;
 }
 const char *gles_draw_rejection_stats(void) {
-    static char buffer[3072];
+    static char buffer[3584];
     snprintf(buffer, sizeof buffer,
         "maxwell_draw_attempts=%" PRIu64 "\n"
         "rejected_no_program=%" PRIu64 "\nrejected_target=%" PRIu64
@@ -121,6 +128,11 @@ const char *gles_draw_rejection_stats(void) {
         "\nshader_reject_int64=%" PRIu64
         "\nshader_reject_subgroup=%" PRIu64
         "\nshader_disabled_draws=%" PRIu64
+        "\ngmem_snapshot_draws=%" PRIu64
+        "\ngmem_snapshot_bytes=%" PRIu64
+        "\ngmem_snapshot_reject_range=%" PRIu64
+        "\ngmem_snapshot_reject_size=%" PRIu64
+        "\ngmem_snapshot_reject_gl=%" PRIu64
         "\nrejected_translation=%" PRIu64
         "\nrejected_compilation=%" PRIu64 "\nrejected_topology=%" PRIu64
         "\nrejected_indices=%" PRIu64 "\nrejected_vertex_format=%" PRIu64
@@ -168,6 +180,9 @@ const char *gles_draw_rejection_stats(void) {
         rejection[R_SHADER_FEATURE], shader_reject_gmem,
         shader_reject_sampler, shader_reject_int64,
         shader_reject_subgroup, shader_disabled_draws,
+        gmem_snapshot_draws, gmem_snapshot_bytes,
+        gmem_snapshot_reject_range, gmem_snapshot_reject_size,
+        gmem_snapshot_reject_gl,
         rejection[R_TRANSLATE], rejection[R_COMPILE], rejection[R_TOPOLOGY], rejection[R_INDICES],
         rejection[R_VERTEX_FORMAT], rejection[R_VERTEX_RANGE],
         rejection[R_UBO], rejection[R_DEPTH_BLEND], rejection[R_CACHE],
@@ -223,6 +238,8 @@ void gles_draw_init(void) {
     glGenBuffers(36, uniform_buffers);
     glGenBuffers(16, vertex_buffers);
     glGenBuffers(1, &index_buffer);
+    glGenBuffers(1, &gmem_ssbo);
+    glGenBuffers(1, &gmem_table_ubo);
     glGenVertexArrays(1, &vao);
 }
 void gles_draw_reset(void) {
@@ -397,19 +414,27 @@ static Program *program_for_draw(void) {
                           p->fs ? p->fs->error : "translator returned null");
         rejection[R_TRANSLATE]++; shaders_failed++; return p;
     }
+    // Read-only guest GMEM is now represented by a native GLES packed
+    // storage-buffer snapshot. Writes, including compute, are not yet
+    // supported: exposing a read-only snapshot as writable would corrupt
+    // guest-visible state, so those programs must still fail closed.
     // Do not issue draws with unresolved shader resources or semantics.
     // Fragment-only native 2D samplers are now supported. Vertex samplers
     // and cross-stage sampler-name conflicts still need a separate mapping.
     const bool needs_sampler = p->vs->ntex || p->fs->ntex > 32;
     const bool needs_gmem = p->vs->uses_gmem || p->fs->uses_gmem ||
                             p->vs->uses_gmem_map || p->fs->uses_gmem_map;
+    const bool gmem_writes = p->vs->uses_gmem_store || p->fs->uses_gmem_store;
+    const bool unsupported_gmem = needs_gmem &&
+        (gmem_writes || (p->vs->uses_gmem && !p->vs->uses_gmem_map) ||
+         (p->fs->uses_gmem && !p->fs->uses_gmem_map));
     const bool needs_int64 = strstr(p->vs->msl,"uint64_t") ||
                              strstr(p->fs->msl,"uint64_t");
     const bool needs_subgroup = strstr(p->vs->msl,"subgroup") ||
                                 strstr(p->fs->msl,"subgroup");
-    if (needs_sampler || needs_gmem || needs_int64 || needs_subgroup) {
+    if (needs_sampler || unsupported_gmem || needs_int64 || needs_subgroup) {
         if (needs_sampler) shader_reject_sampler++;
-        if (needs_gmem) shader_reject_gmem++;
+        if (unsupported_gmem) shader_reject_gmem++;
         if (needs_int64) shader_reject_int64++;
         if (needs_subgroup) shader_reject_subgroup++;
         // Distinguish actual pending operations. Unlike the previous
@@ -418,7 +443,7 @@ static Program *program_for_draw(void) {
         char reason[160];
         snprintf(reason,sizeof reason,
                  "unsupported GLES shader: sampler=%u gmem=%u int64=%u subgroup=%u",
-                 (unsigned)needs_sampler,(unsigned)needs_gmem,
+                 (unsigned)needs_sampler,(unsigned)unsupported_gmem,
                  (unsigned)needs_int64,(unsigned)needs_subgroup);
         shader_diagnostic("unsupported-maxwell-feature",vs,fs,reason);
         rejection[R_SHADER_FEATURE]++; shaders_failed++;
@@ -560,6 +585,97 @@ static bool bind_uniforms(Program *p) {
             glUniformBlockBinding(p->gl_program, block, binding++);
         }
     }
+    last_uniform_binding = binding;
+    return true;
+}
+
+// GLES read-only GMEM: pack actual guest-owned NVN storage ranges into a
+// dedicated native SSBO and provide the matching guest-offset GMap table.
+// This never imports Vulkan memory, uploads an entire uncommitted guest
+// heap, or pretends that a failed read is a valid shader input.
+static bool bind_readonly_gmem(Program *p) {
+    if (!p->vs->uses_gmem && !p->fs->uses_gmem) return true;
+    if (p->vs->uses_gmem_store || p->fs->uses_gmem_store) return false;
+    if (!gmem_ssbo || !gmem_table_ubo) return false;
+    GLint max_bindings=0, max_ssbo_bindings=0;
+    GLint64 max_storage=0;
+    glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS,&max_bindings);
+    glGetIntegerv(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS,&max_ssbo_bindings);
+    glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE,&max_storage);
+    if (max_bindings<1 || last_uniform_binding >= (GLuint)max_bindings ||
+        max_ssbo_bindings<1 || max_storage<4) {
+        gmem_snapshot_reject_gl++; return false;
+    }
+    GLuint map_block=glGetUniformBlockIndex(p->gl_program,"GMap");
+    GLuint fast_block=glGetProgramResourceIndex(p->gl_program,GL_SHADER_STORAGE_BLOCK,"GFast");
+    if (map_block==GL_INVALID_INDEX || fast_block==GL_INVALID_INDEX) {
+        gmem_snapshot_reject_gl++; return false;
+    }
+    uint64_t heap=kernel_heap_size();
+    if (heap > maxwell_gmem_size) heap=maxwell_gmem_size;
+    if (!heap || heap>UINT32_MAX) {
+        gmem_snapshot_reject_range++;return false;
+    }
+    GmemRange ranges[GMAP_MAX];
+    unsigned n=0;
+    for (int stage=0;stage<2;stage++) {
+        if (!(stage ? p->fs : p->vs)->uses_gmem) continue;
+        for (int k=0;k<16;k++) {
+            const Range *b=&st.sbuf[stage][k];
+            if (!b->size) continue;
+            if (b->addr<maxwell_gmem_base ||
+                b->addr-maxwell_gmem_base >= heap ||
+                b->size>heap-(b->addr-maxwell_gmem_base) ||
+                !safe_guest(b->addr,b->size)) {
+                // Non-heap bindings cannot be translated into the GMEM
+                // address space. They cannot safely be copied or indexed.
+                continue;
+            }
+            if (n>=GMAP_MAX) {gmem_snapshot_reject_range++;return false;}
+            ranges[n++]=(GmemRange){b->addr,b->size};
+        }
+    }
+    uint64_t cap=(uint64_t)max_storage;
+    if (cap>(16ull<<20)) cap=16ull<<20;
+    GmemPlan plan;
+    if (!n || !gmem_plan(&plan,ranges,n,maxwell_gmem_base,heap,cap) ||
+        !plan.size || plan.size>(uint64_t)PTRDIFF_MAX) {
+        gmem_snapshot_reject_size++;return false;
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER,gmem_ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,(GLsizeiptr)plan.size,NULL,GL_STREAM_DRAW);
+    if (glGetError()!=GL_NO_ERROR) {
+        gmem_snapshot_reject_gl++;return false;
+    }
+    uint8_t *dst=glMapBufferRange(GL_SHADER_STORAGE_BUFFER,0,(GLsizeiptr)plan.size,
+                                  GL_MAP_WRITE_BIT|GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (!dst) {gmem_snapshot_reject_gl++;return false;}
+    unsigned ranges_count=plan.tab[GMAP_MAX*4];
+    for(unsigned i=0;i<ranges_count;i++) {
+        uint64_t off=plan.tab[i*4], sz=plan.tab[i*4+1];
+        uint64_t dest=(uint64_t)plan.tab[i*4+2]*4;
+        if (off>heap || sz>heap-off || dest>plan.size ||
+            sz>plan.size-dest ||
+            !safe_guest(maxwell_gmem_base+off,sz)) {
+            glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+            gmem_snapshot_reject_range++;return false;
+        }
+        memcpy(dst+dest,(const void *)(uintptr_t)(maxwell_gmem_base+off),(size_t)sz);
+    }
+    if (glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)!=GL_TRUE) {
+        gmem_snapshot_reject_gl++;return false;
+    }
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER,0,gmem_ssbo);
+    glShaderStorageBlockBinding(p->gl_program,fast_block,0);
+    glBindBuffer(GL_UNIFORM_BUFFER,gmem_table_ubo);
+    glBufferData(GL_UNIFORM_BUFFER,sizeof plan.tab,plan.tab,GL_STREAM_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER,last_uniform_binding,gmem_table_ubo);
+    glUniformBlockBinding(p->gl_program,map_block,last_uniform_binding);
+    if (glGetError()!=GL_NO_ERROR) {
+        gmem_snapshot_reject_gl++;return false;
+    }
+    gmem_snapshot_draws++;
+    gmem_snapshot_bytes+=plan.size;
     return true;
 }
 
@@ -1026,7 +1142,7 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
     // Vulkan-style gl_InstanceIndex; gl_InstanceID itself still starts at 0.
     GLint base_uniform=glGetUniformLocation(p->gl_program,"gles_base_instance");
     if(base_uniform>=0) glUniform1ui(base_uniform,base_instance);
-    if (!bind_uniforms(p) ||
+    if (!bind_uniforms(p) || !bind_readonly_gmem(p) ||
         !attributes(p,maxindex,first,instances,base_instance)) return false;
     if (indexed) {
         const void *upload=(const void *)(uintptr_t)r->x[3];

@@ -83,7 +83,7 @@ static void report(void) {
     mkdir("graphics", 0755);
     FILE *f = fopen("graphics/gles.txt", "w");
     if (!f) return;
-    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-feedback-snapshot-v5\n"
+    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-packed-gmem-ldg-v6\n"
                "NVN_renderer=OpenGL_ES\nVulkan_initialized=0\n");
     fprintf(f, "native_maxwell_draws=%" PRIu64 "\ngles_programs_linked=%" PRIu64
                "\ngles_programs_failed=%" PRIu64 "\n",

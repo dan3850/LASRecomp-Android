@@ -1426,6 +1426,51 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         int size = (int)bits(w, 48, 3);
         int64_t off = sbits(w, 20, 24);
         c->info->uses_gmem = true;
+        // GLES 3.2 has no portable uint64 shader arithmetic. For read-only
+        // LDG, form the guest address with two uint halves, then look it up
+        // in the same packed range table format as the portable Vulkan path.
+        // STG is deliberately NOT enabled: it needs a coherent GPU->guest
+        // writeback protocol before a draw can be committed.
+        if (c->key && c->key->glsl_es && !store) {
+            c->info->uses_gmem_map = true;
+            const char *hi = a == RZ || !wide ? "0u" : R(a + 1);
+            const char *lo = a == RZ ? "0u" : R(a);
+            uint32_t off_lo = (uint32_t)off;
+            uint32_t off_hi = off < 0 ? 0xFFFFFFFFu : 0u;
+            unsigned count = size == 5 ? 2u : size >= 6 ? 4u : 1u;
+            unsigned bytes = size < 2 ? 1u : size < 4 ? 2u : count * 4u;
+            sp(&c->body,
+               "    { uint addcarry, borrow;\n"
+               "      uint alo = uaddCarry(%s, 0x%08xu, addcarry);\n"
+               "      uint ahi = %s + 0x%08xu + addcarry;\n"
+               "      uint ga = usubBorrow(alo, 0x%08xu, borrow);\n"
+               "      bool ok = (ahi - 0x%08xu - borrow) == 0u && ga < 0x%08xu &&"
+               " %uu <= 0x%08xu - ga;\n"
+               "      uint fw = ok ? gfind(ga & ~3u, %uu) : 0xFFFFFFFFu;\n",
+               lo, off_lo, hi, off_hi, (uint32_t)maxwell_gmem_base,
+               (uint32_t)(maxwell_gmem_base >> 32),
+               (uint32_t)maxwell_gmem_size, bytes,
+               (uint32_t)maxwell_gmem_size, count * 4u);
+            if (size < 4) {
+                if (d != RZ) {
+                    c->reg_used[d] = 1;
+                    sp(&c->body, "      uint raw = fw != 0xFFFFFFFFu ? gfast_.w[fw] : 0u;\n");
+                    if (size == 0) sp(&c->body, "      r%d = (raw >> ((ga & 3u)*8u)) & 255u;\n", d);
+                    if (size == 1) sp(&c->body, "      r%d = uint(sx8(raw >> ((ga & 3u)*8u)));\n", d);
+                    if (size == 2) sp(&c->body, "      r%d = (raw >> ((ga & 2u)*8u)) & 65535u;\n", d);
+                    if (size == 3) sp(&c->body, "      r%d = uint(sx16(raw >> ((ga & 2u)*8u)));\n", d);
+                }
+            } else {
+                for (unsigned k = 0; k < count; k++)
+                    if (d != RZ && d + k < RZ) {
+                        c->reg_used[d + k] = 1;
+                        sp(&c->body,
+                           "      r%d = fw != 0xFFFFFFFFu ? gfast_.w[fw + %uu] : 0u;\n",
+                           d + k, k);
+                    }
+            }
+            sp(&c->body, "    }\n");
+        } else {
         char addr[256];
         if (a == RZ) sprintf(addr, "ulong(%lld)", (long long)off);
         else if (wide) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)off);
@@ -1528,6 +1573,7 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     sp(&c->body, "      if (ok) *(device uint *)(gmem + ga + %du) = %s;\n", k * 4, R(d == RZ ? RZ : d + k));
         }
         sp(&c->body, "    }\n");
+        }
     } else if (emit_half(c, w)) {
     } else if (OPM(0x50f8000000000000ull, 0xfff8000000000000ull)) {  // FSWZADD
         // per quad lane (laneid & 3), 2 bits of the swizzle pick: a+b, b-a, a-b, b
@@ -1880,7 +1926,11 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
     }
     if (info->uses_gmem) {
-        if (es)
+        // GLES read-only LDG uses the packed GFast snapshot instead. Never
+        // bind a dummy heap-sized SSBO and let the shader read past its end.
+        if (es && !c->uses_gmem_store) {
+            // A GMap/GFast declaration follows through uses_gmem_map.
+        } else if (es)
             sp(&s, "layout(std430) %sbuffer GMem { uint w[]; } gmem_;\n",
                c->uses_gmem_store ? "" : "readonly ");
         else

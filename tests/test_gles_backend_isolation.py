@@ -169,7 +169,7 @@ assert "glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA" not in gles
 assert "normalize_swizzle(" in draws
 assert "view_reject_target=" in draws
 assert "view_reject_swizzle_conflict=" in draws
-assert "backend_milestone=nvn-gles-feedback-snapshot-v5" in gles
+assert "backend_milestone=nvn-gles-packed-gmem-ldg-v6" in gles
 assert "backend_milestone=nvn-gles-array-identityviews-v1" not in gles
 print("GLES NVN six view flags and native swizzle translation: source assertions passed")
 
@@ -181,7 +181,7 @@ assert ("extern bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sample
 assert ("bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,\n"
         "                         int unit, bool shadow, uint8_t target,\n"
         "                         const uint8_t swizzle[4])") in gl
-assert "static char buffer[3072];" in draw
+assert "static char buffer[3584];" in draw
 print("GLES texture-swizzle ABI and diagnostic buffer source assertions passed")
 
 # Android GLES 3.2 provides separate swizzle selectors, not desktop GL's
@@ -208,7 +208,7 @@ for token in ("for (GLint level=0; level<t->levels; ++level)",
               "glTexSubImage2D(host->target,(GLint)level",
               "glTexSubImage3D(host->target,(GLint)level",
               "GL_LINEAR_MIPMAP_LINEAR", "GL_TEXTURE_MAX_LEVEL",
-              "mip_levels_uploaded=", "backend_milestone=nvn-gles-feedback-snapshot-v5"):
+              "mip_levels_uploaded=", "backend_milestone=nvn-gles-packed-gmem-ldg-v6"):
     assert token in gles, f"Missing NVN native full mip-chain support: {token}"
 print("GLES complete Tegra mip chain and full-view source assertions passed")
 
@@ -393,3 +393,55 @@ for token in ("glGetIntegerv(GL_NUM_EXTENSIONS,&n)",
               "gl_ext_subgroup_basic=", "gl_ext_subgroup_shuffle="):
     assert token in gles, f"Missing GLES shader extension discovery: {token}"
 print("GLES runtime subgroup/int64 driver capability report source checks passed")
+
+# Read-only native GLES GMEM: a packed GPU SSBO of actual committed guest
+# storage ranges and an indexed GMap table, not Vulkan execution or a
+# fictitious zero-filled heap. STG/compute remain unsupported.
+draws=source("runtime/nvn/gles/draw.c")
+translator=source("runtime/nvn/maxwell/translate.c")
+planner=source("runtime/nvn/vulkan/gmem.h")
+for token in ("if (c->key && c->key->glsl_es && !store)",
+              "uaddCarry(%s, 0x%08xu, addcarry)",
+              "usubBorrow(alo, 0x%08xu, borrow)",
+              "uint fw = ok ? gfind(ga & ~3u",
+              "gfast_.w[fw + %uu]",
+              "if (es && !c->uses_gmem_store)"):
+    assert token in translator, f"Missing GLES 2x32 packed LDG: {token}"
+for token in ("#include \"../../kernel.h\"",
+              'include "../vulkan/gmem.h"', "gmem_plan(&plan,ranges,n",
+              "glBindBufferBase(GL_SHADER_STORAGE_BUFFER,0,gmem_ssbo)",
+              'glGetProgramResourceIndex(p->gl_program,GL_SHADER_STORAGE_BLOCK,"GFast")',
+              'glGetUniformBlockIndex(p->gl_program,"GMap")',
+              "GL_MAX_SHADER_STORAGE_BLOCK_SIZE", "GL_MAP_INVALIDATE_BUFFER_BIT",
+              "glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)",
+              "gmem_snapshot_draws=", "gmem_snapshot_bytes=",
+              "gmem_snapshot_reject_range=", "gmem_snapshot_reject_gl=",
+              "if (!bind_uniforms(p) || !bind_readonly_gmem(p) ||"):
+    assert token in draws, f"Missing GLES GMEM SSBO snapshot: {token}"
+assert "if (needs_sampler || unsupported_gmem || needs_int64 || needs_subgroup)" in draws
+assert "gmem_writes ||" in draws
+assert "p->vs->uses_gmem_store || p->fs->uses_gmem_store" in draws
+assert "vkCmd" not in re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", "", draws)
+assert "static inline bool gmem_plan(" in planner
+assert "vkCmd" not in planner and "VkBuffer" not in planner
+
+# Two-word arithmetic must reproduce signed 24-bit displacement addition,
+# then subtract the NVN heap base, including borrow through the high word.
+import random
+random_addr=random.Random(0xBA51C)
+mask32=0xffffffff
+heap_base=0x7240000000
+for _ in range(2048):
+    high=random_addr.getrandbits(32)
+    low=random_addr.getrandbits(32)
+    off=random_addr.randint(-0x800000,0x7fffff)
+    w=low+(off&mask32)
+    alo=w&mask32
+    carry=w>>32
+    ahi=(high+(-1 if off<0 else 0)+carry)&mask32
+    diff=(alo-0x40000000)&mask32
+    borrow=int(alo<0x40000000)
+    diff_hi=(ahi-0x72-borrow)&mask32
+    expected=(((high<<32)|low)+off-heap_base)&0xffffffffffffffff
+    assert (diff_hi<<32)|diff == expected
+print("GLES packed read-only GMEM and 64-bit guest address tests passed")
