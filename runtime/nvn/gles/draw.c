@@ -10,7 +10,7 @@
 #include <string.h>
 #include <inttypes.h>
 
-extern bool gles_draw_framebuffer(NvnTexture *tex, int *w, int *h);
+extern bool gles_draw_framebuffer(NvnTexture *color, NvnTexture *depth, int *w, int *h);
 extern uint32_t nvn_window_origin(void);
 extern uint32_t nvn_depth_mode(void);
 
@@ -23,8 +23,10 @@ typedef struct {
     Range vbuf[16], ubuf[6][18], sbuf[6][16];
     float viewport[16][4];
     int32_t scissor[16][4];
-    uint8_t ds[8], poly[4], color_state[4];
+    uint8_t ds[8], poly[4], color_state[4], blend[8][8], ms[0x18];
     uint32_t channel_mask;
+    float depth_range[16][2], blend_color[4];
+    uint32_t stencil_ref[2], stencil_mask[2], stencil_vmask[2];
 } DrawState;
 static DrawState st;
 static GLuint uniform_buffers[36], vertex_buffers[16], index_buffer, vao;
@@ -46,6 +48,17 @@ static uint64_t attempts;
 uint64_t gles_draw_native_count(void) { return native_draws; }
 uint64_t gles_draw_program_count(void) { return shaders_ok; }
 uint64_t gles_draw_shader_failure_count(void) { return shaders_failed; }
+const char *gles_draw_rejection_summary(void) {
+    static char line[240];
+    snprintf(line, sizeof line,
+        "reject target=%" PRIu64 " fixed=%" PRIu64 " no-prog=%" PRIu64
+        " features=%" PRIu64 " translation=%" PRIu64 " compile=%" PRIu64
+        " vertex=%" PRIu64 " indices=%" PRIu64,
+        rejection[R_TARGET], rejection[R_DEPTH_BLEND], rejection[R_NO_PROGRAM],
+        rejection[R_SHADER_FEATURE], rejection[R_TRANSLATE], rejection[R_COMPILE],
+        rejection[R_VERTEX_FORMAT] + rejection[R_VERTEX_RANGE], rejection[R_INDICES]);
+    return line;
+}
 const char *gles_draw_rejection_stats(void) {
     static char buffer[640];
     snprintf(buffer, sizeof buffer,
@@ -72,6 +85,15 @@ static void defaults(void) {
     }
     st.channel_mask = 0xffffffffu;
     st.poly[1] = 1; st.poly[2] = 2;
+    st.ds[1] = 1; st.ds[2] = 2;
+    st.stencil_mask[0] = st.stencil_mask[1] = 0xff;
+    st.stencil_vmask[0] = st.stencil_vmask[1] = 0xff;
+    for (int i=0;i<16;i++) st.depth_range[i][1]=1.f;
+    for (int i=0;i<8;i++) {
+        st.blend[i][1]=2; st.blend[i][2]=1;
+        st.blend[i][3]=2; st.blend[i][4]=1;
+        st.blend[i][5]=1; st.blend[i][6]=1;
+    }
 }
 void gles_draw_init(void) {
     defaults();
@@ -407,13 +429,141 @@ static uint32_t index_max(const CmdRec *r, uint32_t count) {
     if (typ==2) for(uint32_t i=0;i<count;i++) {uint32_t v; memcpy(&v,p+4u*i,4); if(v>max) max=v;}
     return max;
 }
+// NVN enum values mirror the Vulkan backend; unsupported blend factors
+// are rejected instead of silently substituting GL_ONE.
+static GLenum comparison(uint32_t op) {
+    switch(op) {
+    case 1: return GL_NEVER;
+    case 2: return GL_LESS;
+    case 3: return GL_EQUAL;
+    case 4: return GL_LEQUAL;
+    case 5: return GL_GREATER;
+    case 6: return GL_NOTEQUAL;
+    case 7: return GL_GEQUAL;
+    case 0: case 8: return GL_ALWAYS;
+    default: return 0;
+    }
+}
+static GLenum stencil_op(uint32_t op) {
+    switch(op) {
+    case 0: case 1: return GL_KEEP;
+    case 2: return GL_ZERO;
+    case 3: return GL_REPLACE;
+    case 4: return GL_INCR;
+    case 5: return GL_DECR;
+    case 6: return GL_INVERT;
+    case 7: return GL_INCR_WRAP;
+    case 8: return GL_DECR_WRAP;
+    default: return 0;
+    }
+}
+static GLenum blend_factor(uint8_t f) {
+    switch (f) {
+    case 1: return GL_ZERO;
+    case 2: return GL_ONE;
+    case 3: return GL_SRC_COLOR;
+    case 4: return GL_ONE_MINUS_SRC_COLOR;
+    case 5: return GL_SRC_ALPHA;
+    case 6: return GL_ONE_MINUS_SRC_ALPHA;
+    case 7: return GL_DST_ALPHA;
+    case 8: return GL_ONE_MINUS_DST_ALPHA;
+    case 9: return GL_DST_COLOR;
+    case 10: return GL_ONE_MINUS_DST_COLOR;
+    case 11: return GL_SRC_ALPHA_SATURATE;
+    case 0x61: return GL_CONSTANT_COLOR;
+    case 0x62: return GL_ONE_MINUS_CONSTANT_COLOR;
+    case 0x63: return GL_CONSTANT_ALPHA;
+    case 0x64: return GL_ONE_MINUS_CONSTANT_ALPHA;
+    default: return 0;
+    }
+}
+static GLenum blend_equation(uint8_t f) {
+    switch (f) {
+    case 1: return GL_FUNC_ADD;
+    case 2: return GL_FUNC_SUBTRACT;
+    case 3: return GL_FUNC_REVERSE_SUBTRACT;
+    case 4: return GL_MIN;
+    case 5: return GL_MAX;
+    default: return 0;
+    }
+}
+static bool bind_fixed_state(void) {
+    if (st.ms[0xC]) return false; // sample alpha-to-coverage pending
+    if (st.poly[2] != 2) return false; // no polygon-line in OpenGL ES
+    glDisable(GL_CULL_FACE);
+    if (st.poly[0]) {
+        if (st.poly[0] > 2) return false;
+        glEnable(GL_CULL_FACE);
+        glCullFace(st.poly[0] == 1 ? GL_FRONT : GL_BACK);
+        bool face_ccw = (st.poly[1] == 1) != (nvn_window_origin() == 0);
+        glFrontFace(face_ccw ? GL_CCW : GL_CW);
+    }
+    glColorMask(st.channel_mask & 1u, st.channel_mask & 2u,
+                st.channel_mask & 4u, st.channel_mask & 8u);
+    if (st.color_state[0] & 1u) {
+        const uint8_t *b = st.blend[0];
+        GLenum cs = blend_factor(b[1]), cd = blend_factor(b[2]),
+               as = blend_factor(b[3]), ad = blend_factor(b[4]),
+               ce = blend_equation(b[5]), ae = blend_equation(b[6]);
+        if (!cs || !cd || !as || !ad || !ce || !ae) return false;
+        glEnable(GL_BLEND);
+        glBlendColor(st.blend_color[0], st.blend_color[1],
+                     st.blend_color[2], st.blend_color[3]);
+        glBlendFuncSeparate(cs, cd, as, ad);
+        glBlendEquationSeparate(ce, ae);
+    } else glDisable(GL_BLEND);
+    if (st.ds[0]) {
+        GLenum compare = comparison(st.ds[2]);
+        if (!compare || !st.depth) return false;
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(compare);
+        glDepthMask(st.ds[1] ? GL_TRUE : GL_FALSE);
+    } else {
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+    }
+    glDepthRangef(st.depth_range[0][0], st.depth_range[0][1]);
+    if (st.ds[3]) {
+        if (!st.depth || (st.depth->format != 0x35 && st.depth->format != 0x36)) return false;
+        uint32_t bits = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
+        for (int face = 0; face < 2; ++face) {
+            GLenum target = face ? GL_BACK : GL_FRONT;
+            uint32_t op = face ? bits >> 12 : bits;
+            GLenum cmp = comparison(face ? st.ds[4] >> 4 : st.ds[4] & 0xf);
+            GLenum fail = stencil_op(op & 0xf), pass = stencil_op((op >> 8) & 0xf),
+                   depth_fail = stencil_op((op >> 4) & 0xf);
+            if (!cmp || !fail || !pass || !depth_fail) return false;
+            glStencilFuncSeparate(target, cmp, (GLint)st.stencil_ref[face],
+                                  st.stencil_vmask[face]);
+            glStencilOpSeparate(target, fail, depth_fail, pass);
+            glStencilMaskSeparate(target, st.stencil_mask[face]);
+        }
+        glEnable(GL_STENCIL_TEST);
+    } else glDisable(GL_STENCIL_TEST);
+    // NVN scissor state is already recorded in pixel coordinates.
+    // A large default rectangle is equivalent to scissor disabled.
+    if (st.scissor[0][2] < 0 || st.scissor[0][3] < 0) return false;
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(st.scissor[0][0], st.scissor[0][1],
+              st.scissor[0][2], st.scissor[0][3]);
+    return true;
+}
 bool gles_draw_execute(const CmdRec *r, bool indexed) {
     attempts++;
     if (!r->x[2] || r->x[2] > 1000000) return false;
-    if (!st.color[0] || st.ncolor != 1 || st.depth || st.ds[0] ||
-        (st.color_state[0] & 1) || st.channel_mask != 0xffffffffu ||
-        st.poly[0] || st.poly[2] != 2) {
-        rejection[R_DEPTH_BLEND]++; return false;
+    // Preserve attachments and raster states instead of rejecting every
+    // normal scene with depth, blending, culling or channel-mask state.
+    if (!(st.ncolor == 1 && st.color[0]) &&
+        !(st.ncolor == 0 && st.depth)) {
+        rejection[R_TARGET]++; return false;
+    }
+    if (st.color[0] &&
+        st.color[0]->format != 0x19 && st.color[0]->format != 0x25 &&
+        st.color[0]->format != 0x29 && st.color[0]->format != 0x2e &&
+        st.color[0]->format != 0x3f && st.color[0]->format != 0x37 &&
+        st.color[0]->format != 0x38 && st.color[0]->format != 0x6d &&
+        st.color[0]->format != 0x71 && st.color[0]->format != 0x76) {
+        rejection[R_TARGET]++; return false;
     }
     GLenum prim=primitive((uint32_t)r->x[0]);
     if (!prim) { rejection[R_TOPOLOGY]++; return false; }
@@ -438,14 +588,10 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
     Program *p=program_for_draw();
     if (!p || !p->gl_program) return false;
     int w=0,h=0;
-    if (!gles_draw_framebuffer(st.color[0], &w,&h)) { rejection[R_TARGET]++; return false; }
+    if (!gles_draw_framebuffer(st.color[0], st.depth, &w,&h)) { rejection[R_TARGET]++; return false; }
     glViewport((GLint)st.viewport[0][0],(GLint)st.viewport[0][1],
                (GLsizei)st.viewport[0][2],(GLsizei)st.viewport[0][3]);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_STENCIL_TEST);
-    glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
+    if (!bind_fixed_state()) { rejection[R_DEPTH_BLEND]++; return false; }
     glUseProgram(p->gl_program);
     if (!bind_uniforms(p) || !attributes(p,maxindex,first,instances)) return false;
     if (indexed) {
@@ -458,6 +604,7 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
         if (instances==1) glDrawArrays(prim,(GLint)first,(GLsizei)count);
         else glDrawArraysInstanced(prim,(GLint)first,(GLsizei)count,(GLsizei)instances);
     }
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     native_draws++;
     if (native_draws <= 12) fprintf(stderr, "[gles-nvn] real NVN draw ok: primitive=%u count=%u program=%u\n",
                   (unsigned)r->x[0],count,p->gl_program);
@@ -466,6 +613,12 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
 bool gles_draw_state(const CmdRec *r) {
     switch(r->op) {
         case CMD_BIND_PROGRAM: st.program=(NvnProgram *)(uintptr_t)r->x[0]; return true;
+        case CMD_BIND_BLEND: {
+            const uint8_t *b = r->extra;
+            memcpy(st.blend[b[0] & 7], b, 8);
+            return true;
+        }
+        case CMD_BIND_MULTISAMPLE: memcpy(st.ms, r->extra, 0x18); return true;
         case CMD_BIND_CHANNEL_MASK: memcpy(&st.channel_mask,r->extra,4); return true;
         case CMD_BIND_COLOR: memcpy(st.color_state,r->extra,4); return true;
         case CMD_BIND_DEPTH_STENCIL: memcpy(st.ds,r->extra,8); return true;
@@ -503,6 +656,20 @@ bool gles_draw_state(const CmdRec *r) {
         case CMD_SET_SCISSORS:
             for(uint64_t i=0;i<r->x[1]&&i+r->x[0]<16;i++)
                 memcpy(st.scissor[r->x[0]+i],r->extra+i*16,16);
+            return true;
+        case CMD_SET_DEPTH_RANGES:
+            for(uint64_t i=0;i<r->x[1]&&i+r->x[0]<16;i++)
+                memcpy(st.depth_range[r->x[0]+i],r->extra+i*8,8);
+            return true;
+        case CMD_SET_BLEND_COLOR:
+            memcpy(st.blend_color, r->extra, 16);
+            return true;
+        case CMD_SET_STENCIL:
+            for (int i = 0; i < 2; ++i) if (r->x[0] & (1u << i)) {
+                if (r->x[6] == 0) st.stencil_ref[i] = (uint32_t)r->x[1];
+                else if (r->x[6] == 1) st.stencil_mask[i] = (uint32_t)r->x[1];
+                else st.stencil_vmask[i] = (uint32_t)r->x[1];
+            }
             return true;
         case CMD_BIND_TEXTURES: case CMD_SET_TEXTURE_POOL: case CMD_SET_SAMPLER_POOL:
             // Recorded by NVN, but not consumed by the non-textured subset.

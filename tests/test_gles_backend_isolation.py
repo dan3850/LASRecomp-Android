@@ -45,3 +45,13 @@ assert "stream_bytes[stream]" in draw
 for forbidden in ("vkCmdDraw", "PixelCopy", "gl_FragCoord = vec4(", "fake Maxwell"):
     assert forbidden not in draw
 print("GLES native separation and limited Maxwell GLSL ES draw path: source assertions passed")
+
+fixed = source("runtime/nvn/gles/draw.c")
+for token in ("glDepthFunc(", "glBlendFuncSeparate(", "glStencilOpSeparate(",
+              "glCullFace(", "glScissor(", "gles_draw_rejection_summary("):
+    assert token in fixed, f"Missing NVN fixed-function GLES support: {token}"
+for token in ("GL_DEPTH24_STENCIL8", "GL_R11F_G11F_B10F", "GL_RGBA16F",
+              "gles_clear_depth(", "glFramebufferTexture2D("):
+    assert token in gl, f"Missing native attachment handling: {token}"
+assert "gles_draw_framebuffer(st.color[0], st.depth" in fixed
+print("GLES depth, blend and native framebuffer source assertions passed")

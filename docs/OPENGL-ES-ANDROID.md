@@ -86,3 +86,30 @@ blending, render target formats/aliases, compute, synchronization,
 advanced primitive variants, accurate cbuf driver constants, resource
 lifetime and optimized vertex transfers. The strict subset refuses draws
 needing these instead of inventing their results.
+
+## Milestone 3: depth, color attachments, and fixed-function draw state
+
+After 2040 GLES frames in the user's Adreno 840 test, the log still showed
+`nativeNVN=0 programs=0 failed=0` and hundreds of thousands of skipped
+draws. In the previous version, `gles_draw_execute` explicitly rejected any
+depth attachment, depth testing, blend enable, non-full channel mask, or
+culling **before calling the Maxwell shader translator**. This meant the
+backend could never reach the shader stage for normal Zelda scenes.
+
+This update:
+- Creates GLES images using the actual supported NVN format instead of
+  pretending all render targets (including depth-stencil!) are `GL_RGBA8`.
+  Handles key RGB11F, RGBA16F, RGBA8, and depth-stencil formats, with an
+  explicit unsupported return rather than a silent approximation.
+- Attaches native depth/depth-stencil textures to the color framebuffer.
+- Executes NVN depth/stencil clears and applies depth/stencil testing, cull
+  mode, front face, scissor, channel mask, and blend equations/factors during
+  the supported GLES draw path.
+- Logs precise rejection reasons in the periodic `[gles]` status output and
+  in `graphics/gles.txt`, so a new test can distinguish a framebuffer failure
+  from an incompatible shader or vertex layout.
+
+This does **not** imply the game is graphically correct or playable.
+Texture sampling, deswizzling, GMEM, compute and synchronization still need
+implementation. Keep the safe Vulkan branch intact and test only in the
+experimental GLES branch.

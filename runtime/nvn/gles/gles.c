@@ -15,17 +15,20 @@
 typedef struct {
     GLuint color, framebuffer;
     GLsizei width, height;
+    GLenum attachment;
+    GLuint depth_bound;
 } GlesTexture;
 
 static SDL_Window *g_window;
 static SDL_GLContext g_context;
 static GLuint g_present_program, g_vertex_array;
 static GLint g_present_sampler;
-static NvnTexture *g_color[8];
+static NvnTexture *g_color[8], *g_depth;
+static GLint g_clear_scissor[4] = {0, 0, 16384, 16384};
 static bool g_draw_needs_reset;
 static uint64_t g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported, g_unsupported;
 static int g_last_unsupported = -1;
-static char g_stats[256];
+static char g_stats[512];
 
 bool gles_selected(void) {
     const char *name = getenv("LARECOMP_RENDERER");
@@ -56,9 +59,10 @@ static void report(void) {
 const char *gles_stats(void) {
     snprintf(g_stats, sizeof g_stats, "GLES frames=%" PRIu64 " clears=%" PRIu64
              " nativeNVN=%" PRIu64 " programs=%" PRIu64 " failed=%" PRIu64
-             " skipped_draws=%" PRIu64 " skipped_compute=%" PRIu64,
+             " skipped_draws=%" PRIu64 " skipped_compute=%" PRIu64 " [%s]",
              g_frames, g_clears, gles_draw_native_count(), gles_draw_program_count(),
-             gles_draw_shader_failure_count(), g_draws_unsupported, g_dispatch_unsupported);
+             gles_draw_shader_failure_count(), g_draws_unsupported, g_dispatch_unsupported,
+             gles_draw_rejection_summary());
     return g_stats;
 }
 uint64_t gles_frame_count(void) { return g_frames; }
@@ -117,27 +121,76 @@ void gles_init(SDL_Window *window) {
     report();
 }
 
+// A real NVN image must keep its data format. A depth/stencil texture is
+// not interchangeable with RGBA8, even when only used as an attachment.
+typedef struct {
+    GLenum internal, format, type, attachment;
+} FormatGL;
+static FormatGL gpu_format(uint32_t format) {
+    switch (format) {
+    case 0x01: return (FormatGL){GL_R8, GL_RED, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x0D: return (FormatGL){GL_RG8, GL_RG, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x19: case 0x25: case 0x6D:
+        return (FormatGL){GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x29: case 0x71:
+        return (FormatGL){GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, GL_COLOR_ATTACHMENT0};
+    case 0x2E: case 0x76:
+        return (FormatGL){GL_RGBA32F, GL_RGBA, GL_FLOAT, GL_COLOR_ATTACHMENT0};
+    case 0x37: case 0x38:
+        return (FormatGL){GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x3F:
+        return (FormatGL){GL_R11F_G11F_B10F, GL_RGB, GL_UNSIGNED_INT_10F_11F_11F_REV, GL_COLOR_ATTACHMENT0};
+    case 0x32:
+        return (FormatGL){GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, GL_DEPTH_ATTACHMENT};
+    case 0x33: case 0x34:
+        return (FormatGL){GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT, GL_DEPTH_ATTACHMENT};
+    case 0x35:
+        return (FormatGL){GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, GL_DEPTH_STENCIL_ATTACHMENT};
+    case 0x36:
+        return (FormatGL){GL_DEPTH32F_STENCIL8, GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV,
+                          GL_DEPTH_STENCIL_ATTACHMENT};
+    default: return (FormatGL){0};
+    }
+}
 static GlesTexture *texture(NvnTexture *tex) {
-    if (!tex || !tex->width || !tex->height || tex->width > 8192 || tex->height > 8192)
+    if (!tex || !tex->width || !tex->height || tex->width > 8192 || tex->height > 8192 ||
+        tex->depth > 1 || tex->samples > 1)
         return NULL;
     if (tex->backend) return tex->backend;
+    FormatGL f = gpu_format(tex->format);
+    if (!f.internal) {
+        static uint32_t warned[256];
+        if (tex->format < 256 && warned[tex->format]++ < 3)
+            LOG("[gles] unsupported native texture format %#x (no RGBA fallback)\n", tex->format);
+        return NULL;
+    }
     GlesTexture *t = calloc(1, sizeof *t);
     if (!t) return NULL;
     t->width = (GLsizei)tex->width;
     t->height = (GLsizei)tex->height;
+    t->attachment = f.attachment;
     glGenTextures(1, &t->color);
     glBindTexture(GL_TEXTURE_2D, t->color);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, t->width, t->height,
-                 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, (GLint)f.internal, t->width, t->height,
+                 0, f.format, f.type, NULL);
     glGenFramebuffers(1, &t->framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->color, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        LOG("[gles] framebuffer incomplete for texture %#x %ux%u\n", tex->format, tex->width, tex->height);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, f.attachment, GL_TEXTURE_2D, t->color, 0);
+    if (f.attachment != GL_COLOR_ATTACHMENT0) {
+        GLenum none = GL_NONE;
+        glDrawBuffers(1, &none);
+        glReadBuffer(GL_NONE);
+    }
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        static int warned;
+        if (warned++ < 15)
+            LOG("[gles] native framebuffer unsupported: fmt=%#x size=%ux%u status=%#x\n",
+                tex->format, tex->width, tex->height, status);
         glDeleteFramebuffers(1, &t->framebuffer);
         glDeleteTextures(1, &t->color);
         free(t);
@@ -147,13 +200,65 @@ static GlesTexture *texture(NvnTexture *tex) {
     return t;
 }
 
-bool gles_draw_framebuffer(NvnTexture *tex, int *w, int *h) {
-    GlesTexture *t = texture(tex);
-    if (!t) return false;
+bool gles_draw_framebuffer(NvnTexture *color, NvnTexture *depth, int *w, int *h) {
+    GlesTexture *t = texture(color);
+    if (!color && depth) {
+        // Depth-only pre-passes do not have a color attachment.
+        GlesTexture *z = texture(depth);
+        if (!z || z->attachment == GL_COLOR_ATTACHMENT0) return false;
+        glBindFramebuffer(GL_FRAMEBUFFER, z->framebuffer);
+        if (w) *w = z->width;
+        if (h) *h = z->height;
+        return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    }
+    if (!t || t->attachment != GL_COLOR_ATTACHMENT0) return false;
     glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
+    if (depth) {
+        GlesTexture *z = texture(depth);
+        if (!z || z->attachment == GL_COLOR_ATTACHMENT0 ||
+            z->width != t->width || z->height != t->height) return false;
+        if (t->depth_bound != z->color) {
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                                   GL_TEXTURE_2D, 0, 0);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, z->attachment,
+                                   GL_TEXTURE_2D, z->color, 0);
+            t->depth_bound = z->color;
+        }
+    } else if (t->depth_bound) {
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                               GL_TEXTURE_2D, 0, 0);
+        t->depth_bound = 0;
+    }
     if (w) *w = t->width;
     if (h) *h = t->height;
     return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+}
+
+// NVN ClearDepthStencil targets its own depth attachment, even when the
+// currently bound color image has a different size or format.
+bool gles_clear_depth(NvnTexture *depth, bool clear_depth, float value,
+                      bool clear_stencil, uint32_t stencil, uint32_t mask) {
+    GlesTexture *z = texture(depth);
+    if (!z || z->attachment == GL_COLOR_ATTACHMENT0) return false;
+    glBindFramebuffer(GL_FRAMEBUFFER, z->framebuffer);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(g_clear_scissor[0], g_clear_scissor[1],
+              g_clear_scissor[2], g_clear_scissor[3]);
+    GLbitfield bits = 0;
+    if (clear_depth) {
+        glDepthMask(GL_TRUE);
+        glClearDepthf(value);
+        bits |= GL_DEPTH_BUFFER_BIT;
+    }
+    if (clear_stencil && z->attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
+        glStencilMask(mask);
+        glClearStencil((GLint)stencil);
+        bits |= GL_STENCIL_BUFFER_BIT;
+    }
+    if (bits) glClear(bits);
+    glStencilMask(0xFF);
+    glDepthMask(GL_TRUE);
+    return bits != 0;
 }
 
 void gles_texture_destroyed(NvnTexture *tex) {
@@ -176,12 +281,18 @@ void gles_upload_rgba(NvnTexture *t, const void *src, uint32_t w, uint32_t h, ui
     g_unsupported++;
 }
 
-static void clear_texture(NvnTexture *tex, const float *rgba, uint32_t mask) {
+static void clear_texture(NvnTexture *tex, const float *rgba, uint32_t mask,
+                          const int32_t region[6]) {
     GlesTexture *t = texture(tex);
-    if (!t) return;
+    if (!t || t->attachment != GL_COLOR_ATTACHMENT0) return;
     glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
     glViewport(0, 0, t->width, t->height);
-    glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_SCISSOR_TEST);
+    if (region && region[3] > 0 && region[4] > 0)
+        glScissor(region[0], region[1], region[3], region[4]);
+    else
+        glScissor(g_clear_scissor[0], g_clear_scissor[1],
+                  g_clear_scissor[2], g_clear_scissor[3]);
     glColorMask(!!(mask & 1), !!(mask & 2), !!(mask & 4), !!(mask & 8));
     glClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -221,16 +332,28 @@ static void execute_list(uint64_t handle, int depth) {
             } *rt = (void *)r->extra;
             for (int i = 0; i < 8; ++i)
                 g_color[i] = i < (int)r->x[0] ? (NvnTexture *)(uintptr_t)rt->tex[i] : NULL;
+            g_depth = (NvnTexture *)(uintptr_t)rt->depth;
             gles_draw_state(r);
             break;
         }
+        case CMD_SET_SCISSORS:
+            if (r->x[0] == 0 && r->x[1] && r->size >= sizeof(CmdRec) + 16)
+                memcpy(g_clear_scissor, r->extra, 16);
+            gles_draw_state(r);
+            break;
         case CMD_CLEAR_COLOR: {
             int index = (int)r->x[0];
             if (index >= 0 && index < 8 && g_color[index] && r->x[5] == 0)
-                clear_texture(g_color[index], (const float *)r->extra, (uint32_t)r->x[2]);
+                clear_texture(g_color[index], (const float *)r->extra, (uint32_t)r->x[2], NULL);
             else g_unsupported++;
             break;
         }
+        case CMD_CLEAR_DEPTH_STENCIL:
+            if (g_depth && gles_clear_depth(g_depth, r->x[0] != 0, r->f[0],
+                                            r->x[2] != 0, (uint32_t)r->x[1],
+                                            (uint32_t)r->x[2])) g_clears++;
+            else g_unsupported++;
+            break;
         case CMD_CLEAR_TEXTURE: {
             struct {
                 uint64_t tex;
@@ -241,7 +364,7 @@ static void execute_list(uint64_t handle, int depth) {
             } *ct = (void *)r->extra;
             if (ct->tex && !r->x[6])
                 clear_texture((NvnTexture *)(uintptr_t)ct->tex, ct->color,
-                              r->x[4] ? (uint32_t)r->x[4] : 15);
+                              r->x[4] ? (uint32_t)r->x[4] : 15, ct->region);
             else g_unsupported++;
             break;
         }
@@ -330,6 +453,9 @@ void gles_clear_window(void) {
 }
 void gles_reset(void) {
     memset(g_color, 0, sizeof g_color);
+    g_depth = NULL;
+    g_clear_scissor[0] = g_clear_scissor[1] = 0;
+    g_clear_scissor[2] = g_clear_scissor[3] = 16384;
     // Only a thread with the current GL context can delete shader objects.
     // The next NVN executor call resets them after an in-place game reboot.
     g_draw_needs_reset = true;

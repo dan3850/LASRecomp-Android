@@ -11,3 +11,4 @@ uint64_t gles_draw_native_count(void);
 uint64_t gles_draw_program_count(void);
 uint64_t gles_draw_shader_failure_count(void);
 const char *gles_draw_rejection_stats(void);
+const char *gles_draw_rejection_summary(void);
