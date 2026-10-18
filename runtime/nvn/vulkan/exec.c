@@ -3061,7 +3061,9 @@ static bool gmem_used_only_preflight(void) {
         LOG("[vk-gmem] used-only CPU preflight %s (LARECOMP_VK_PREFLIGHT_USED_ONLY=%s)\n",
             enabled ? "enabled" : "disabled", env ? env : "unset");
     }
-    return enabled != 0 && getenv("LARECOMP_DEBUG_DATA") == NULL;
+    static int debug_data = -1;
+    if (debug_data < 0) debug_data = getenv("LARECOMP_DEBUG_DATA") != NULL;
+    return enabled != 0 && !debug_data;
 }
 
 static void gmem_read_stage(int stage, ShaderInfo *si) {
