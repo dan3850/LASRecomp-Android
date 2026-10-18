@@ -328,3 +328,37 @@ rejections, 10,875 index rejections, 100 failed shader programs,
 2,705 skipped compute operations and later EGL_BAD_SURFACE events.
 A complete playable render has **not** been proven; no Android device
 build was run by the assistant.
+
+## Milestone 10: close real GLES NVN draw-state gaps
+The user-supplied `LASRecomp-grafico-20261018-111356.zip` confirms
+milestone 9 running on Adreno 840. Observations:
+- 85,520 Maxwell draws submitted, 202,899 unsupported, but only 15,086
+  render-target rejections, 48,699 fixed-function rejections and 5,940
+  index rejections identified in the draw path. Program failures,
+  unhandled compute (3,803) and other commands remain.
+- 17,435 GPU texture copies succeed; 4,106 do not.
+- No true `GL` driver draw errors were recorded in sampled validation.
+- The ZIP also includes historical Vulkan/PixelCopy logs; the GLES snapshot
+  specifically identifies `backend=opengles`, `Vulkan_initialized=0`.
+  A copy marked as written is not proof of correct onscreen pixels.
+
+Code changes in this milestone:
+- `gles_draw_framebuffer` supports up to 8 real GLES color attachments,
+  validates same-size native textures, uses `glDrawBuffers`, removes
+  stale attachments on reuse, and attaches the existing depth buffer.
+  All output targets are marked as written after a native draw.
+- Enables/disables native `GL_SAMPLE_ALPHA_TO_COVERAGE` rather than
+  rejecting NVN alpha-to-coverage. Other unsupported NVN coverage
+  modulation settings still fail closed.
+- Supports indexed `base_vertex` via CPU rebasing of validated NVN
+  index data to 32-bit OpenGL indices, with range checks and a temporary
+  upload buffer. Unsupported nonzero base-instance remains rejected.
+- Breaks down future fixed-function rejections into multisample,
+  polygon, blend, depth, stencil and scissor, and render-target rejects
+  into layout, format and FBO, instead of a single opaque counter.
+- Exposes `mrt_draws`, `rebased_index_draws`, and
+  `rejected_base_instance` in graphics/gles.txt.
+
+This subset does **not** implement every Maxwell stage, compute shaders,
+global memory or complete NVN render semantics. No game APK has been
+compiled on the user's Termux or gameplay validated here.

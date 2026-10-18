@@ -53,7 +53,7 @@ for token in ("glDepthFunc(", "glBlendFuncSeparate(", "glStencilOpSeparate(",
 for token in ("GL_DEPTH24_STENCIL8", "GL_R11F_G11F_B10F", "GL_RGBA16F",
               "gles_clear_depth(", "glFramebufferTexture2D("):
     assert token in gl, f"Missing native attachment handling: {token}"
-assert "gles_draw_framebuffer(st.color[0], st.depth" in fixed
+assert "gles_draw_framebuffer(st.color, st.ncolor, st.depth" in fixed
 print("GLES depth, blend and native framebuffer source assertions passed")
 
 assert "glDisable(GL_CULL_FACE);" in gl
@@ -177,7 +177,7 @@ assert ("extern bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sample
 assert ("bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,\n"
         "                         int unit, bool shadow, uint8_t target,\n"
         "                         const uint8_t swizzle[4])") in gl
-assert "static char buffer[2048];" in draw
+assert "static char buffer[3072];" in draw
 print("GLES texture-swizzle ABI and diagnostic buffer source assertions passed")
 
 # Android GLES 3.2 provides separate swizzle selectors, not desktop GL's
@@ -207,3 +207,27 @@ for token in ("for (GLint level=0; level<t->levels; ++level)",
               "mip_levels_uploaded=", "backend_milestone=nvn-gles-full-mips-v3"):
     assert token in gles, f"Missing NVN native full mip-chain support: {token}"
 print("GLES complete Tegra mip chain and full-view source assertions passed")
+
+# Native NVN path must not throw away MRT draws or base-vertex indices.
+# The Adreno 840 11:13 log contained 15086 target-layout failures,
+# 5940 index failures and 48699 fixed-state rejections. These are
+# real GLES operations and verified guest index rebasing, not fake draws.
+gles=source("runtime/nvn/gles/gles.c")
+draws=source("runtime/nvn/gles/draw.c")
+for token in ("glDrawBuffers(ncolor,attachments);",
+              "glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+i",
+              "t->attached_colors[i]", "glReadBuffer(GL_COLOR_ATTACHMENT0);"):
+    assert token in gles, f"Missing real GLES multi-render-target path: {token}"
+for token in ("gles_draw_framebuffer(st.color, st.ncolor, st.depth",
+              "for(int i=0;i<st.ncolor;i++) gles_mark_texture_written",
+              "glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE)",
+              "glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE)",
+              "int32_t base_vertex = indexed ? (int32_t)r->x[4] : 0",
+              "index_value(src,ty,i)+base_vertex",
+              "GL_UNSIGNED_INT", "rebased_index_draws++",
+              "rejected_target_fbo=", "rejected_fixed_multisample=",
+              "rejected_fixed_polygon=", "rejected_fixed_depth=",
+              "rejected_fixed_stencil=", "rejected_base_instance="):
+    assert token in draws, f"Missing GLES MRT / A2C / base vertex support: {token}"
+assert "r->x[4] || r->x[5]" not in draws
+print("GLES MRT, alpha-to-coverage and indexed base-vertex paths: source assertions passed")

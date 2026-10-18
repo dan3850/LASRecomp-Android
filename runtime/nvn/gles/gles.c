@@ -22,6 +22,7 @@ typedef struct {
     GLsizei width, height, layers, levels;
     GLenum target, attachment;
     GLuint depth_bound;
+    GLuint attached_colors[8]; // FBO attachment identity; avoid rebinding on every draw
     bool cpu_uploaded, gpu_written, swizzle_valid;
     uint8_t current_swizzle[4];
     uint64_t cpu_hash, last_cpu_check_frame;
@@ -290,6 +291,7 @@ static GlesTexture *texture(NvnTexture *tex) {
     }
     glGenFramebuffers(1, &t->framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
+    if (f.attachment == GL_COLOR_ATTACHMENT0) t->attached_colors[0]=t->color;
     if (t->target == GL_TEXTURE_2D_ARRAY)
         glFramebufferTextureLayer(GL_FRAMEBUFFER,f.attachment,t->color,0,0);
     else
@@ -316,41 +318,75 @@ static GlesTexture *texture(NvnTexture *tex) {
 
 // Defined below. Called by depth clearing before its implementation.
 void gles_mark_texture_written(NvnTexture *tex);
-bool gles_draw_framebuffer(NvnTexture *color, NvnTexture *depth, int *w, int *h) {
-    GlesTexture *t = color ? texture(color) : NULL;
-    if (!color && depth) {
-        // Depth-only pre-passes do not have a color attachment.
-        GlesTexture *z = texture(depth);
+bool gles_draw_framebuffer(NvnTexture *const colors[8], int ncolor,
+                           NvnTexture *depth, int *w, int *h) {
+    if (ncolor < 0 || ncolor > 8) return false;
+    if (!ncolor) {
+        // Depth-only passes: retain the correct standalone depth FBO.
+        GlesTexture *z = depth ? texture(depth) : NULL;
         if (!z || !z->framebuffer || z->attachment == GL_COLOR_ATTACHMENT0) return false;
         glBindFramebuffer(GL_FRAMEBUFFER, z->framebuffer);
-        if (w) *w = z->width;
-        if (h) *h = z->height;
-        return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        if (w) *w=z->width;
+        if (h) *h=z->height;
+        return glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE;
     }
-    if (!t || !t->framebuffer || t->attachment != GL_COLOR_ATTACHMENT0) return false;
-    glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
-    if (depth) {
-        GlesTexture *z = texture(depth);
-        if (!z || z->attachment == GL_COLOR_ATTACHMENT0 ||
-            z->width != t->width || z->height != t->height) return false;
-        // Creating depth textures binds their own framebuffer; restore
-        // the color framebuffer before modifying its attachments.
-        glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
-        if (t->depth_bound != z->color) {
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
-                                   GL_TEXTURE_2D, 0, 0);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, z->attachment,
-                                   GL_TEXTURE_2D, z->color, 0);
-            t->depth_bound = z->color;
+    static GLint max_color=0;
+    if (!max_color) {
+        GLint draw_buffers=0, color_attachments=0;
+        glGetIntegerv(GL_MAX_DRAW_BUFFERS,&draw_buffers);
+        glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&color_attachments);
+        max_color=draw_buffers<color_attachments?draw_buffers:color_attachments;
+    }
+    if (ncolor > max_color || !colors || !colors[0]) return false;
+    GlesTexture *t=texture(colors[0]);
+    if (!t || !t->framebuffer || t->attachment!=GL_COLOR_ATTACHMENT0 ||
+        t->target!=GL_TEXTURE_2D) return false;
+    // NVN can bind multiple color targets; the old GLES implementation
+    // rejected them all before any shader or fixed-function validation.
+    for(int i=1;i<ncolor;i++){
+        if (!colors[i]) return false;
+        GlesTexture *other=texture(colors[i]);
+        if (!other || !other->color || other->attachment!=GL_COLOR_ATTACHMENT0 ||
+            other->target!=GL_TEXTURE_2D ||
+            other->width!=t->width || other->height!=t->height) return false;
+        // texture() can bind a different FBO; always restore the base one.
+        glBindFramebuffer(GL_FRAMEBUFFER,t->framebuffer);
+        if (t->attached_colors[i]!=other->color) {
+            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+i,
+                                   GL_TEXTURE_2D,other->color,0);
+            t->attached_colors[i]=other->color;
         }
-    } else if (t->depth_bound) {
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
-                               GL_TEXTURE_2D, 0, 0);
-        t->depth_bound = 0;
     }
-    if (w) *w = t->width;
-    if (h) *h = t->height;
-    return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER,t->framebuffer);
+    for(int i=ncolor;i<8;i++) if(t->attached_colors[i]) {
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0+i,
+                               GL_TEXTURE_2D,0,0);
+        t->attached_colors[i]=0;
+    }
+    GLenum attachments[8];
+    for(int i=0;i<ncolor;i++) attachments[i]=GL_COLOR_ATTACHMENT0+i;
+    glDrawBuffers(ncolor,attachments);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    if (depth) {
+        GlesTexture *z=texture(depth);
+        if(!z || z->attachment==GL_COLOR_ATTACHMENT0 ||
+           z->width!=t->width || z->height!=t->height) return false;
+        glBindFramebuffer(GL_FRAMEBUFFER,t->framebuffer);
+        if(t->depth_bound!=z->color){
+            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,
+                                   GL_TEXTURE_2D,0,0);
+            glFramebufferTexture2D(GL_FRAMEBUFFER,z->attachment,
+                                   GL_TEXTURE_2D,z->color,0);
+            t->depth_bound=z->color;
+        }
+    } else if(t->depth_bound){
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,
+                               GL_TEXTURE_2D,0,0);
+        t->depth_bound=0;
+    }
+    if(w) *w=t->width;
+    if(h) *h=t->height;
+    return glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE;
 }
 
 // NVN ClearDepthStencil targets its own depth attachment, even when the
