@@ -176,3 +176,33 @@ creating a depth texture changes the current GL framebuffer; the color
 framebuffer is now explicitly rebound before attaching it. Unsupported
 texture formats may remain valid for sampling even when they cannot be
 used as render targets. OpenGL state and the safe Vulkan branch stay separate.
+
+## Milestone 5: real NVN image-copy render graph and presentation tracing
+The user's latest engine log contains many successful Maxwell GLSL ES
+**program links** and reports of `glDrawArrays/glDrawElements` being
+issued. That proves program creation and the draw path were reached, not
+that the final screen received valid pixels. The previous GLES executor
+ignored `CMD_COPY_TEXTURE_TO_TEXTURE` and `CMD_DOWNSAMPLE` entirely.
+Vulkan handles both and Zelda uses intermediate render targets.
+
+Implemented:
+- Decode the same `TexRef` command payload already recorded by NVN.
+- Perform real GPU-side FBO `glBlitFramebuffer` copies and downsample
+  operations, respecting source/destination regions and validating supported
+  formats, base-level views, nonmultisampled textures and FBO completeness.
+- Upload real CPU-backed source pixels first when appropriate; never copy
+  uninitialized source contents or invent image data.
+- Track `copy_attempted`, `copy_succeeded`, `copy_failed` in
+  `graphics/gles.txt` and the periodic log.
+- Track whether the window texture presented had an actual GPU/CPU write,
+  its format, native GL object and presentation GL error.
+- Reset sampler binding 0 for the fullscreen presentation, so NVN shader
+  samplers do not override the final blit's sampling state.
+- Check GLES draw errors for early/periodic Maxwell draws instead of
+  labeling every submitted draw as a success without driver verification.
+
+This does not complete the renderer. In particular, GPU buffer->texture
+transfers, complex array/cube views, GMEM, compute, and the full Zelda
+postprocessing pipeline remain to be implemented. No actual Android build
+or device gameplay validation has been performed for this milestone.
+The restored Vulkan reference branch remains untouched.

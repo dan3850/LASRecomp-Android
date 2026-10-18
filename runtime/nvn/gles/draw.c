@@ -37,6 +37,8 @@ typedef struct {
 static DrawState st;
 static GLuint uniform_buffers[36], vertex_buffers[16], index_buffer, vao;
 static uint64_t native_draws, shaders_ok, shaders_failed, rejection[13];
+static uint64_t checked_draws, gl_draw_errors;
+static GLenum last_gl_draw_error;
 enum { R_NO_PROGRAM, R_TARGET, R_SHADER_FEATURE, R_TRANSLATE, R_COMPILE, R_TOPOLOGY,
        R_INDICES, R_VERTEX_FORMAT, R_VERTEX_RANGE, R_UBO, R_DEPTH_BLEND, R_CACHE, R_TEXTURE };
 #define PROGRAM_SLOTS 512
@@ -95,13 +97,16 @@ const char *gles_draw_rejection_stats(void) {
         "\nrejected_indices=%" PRIu64 "\nrejected_vertex_format=%" PRIu64
         "\nrejected_vertex_range=%" PRIu64 "\nrejected_ubo=%" PRIu64
         "\nrejected_depth_blend=%" PRIu64 "\nrejected_cache=%" PRIu64
-        "\nrejected_texture_binding=%" PRIu64 "\n",
+        "\nrejected_texture_binding=%" PRIu64
+        "\ngl_draw_checked=%" PRIu64 "\ngl_draw_errors=%" PRIu64
+        "\ngl_last_draw_error=%u\n",
         attempts, rejection[R_NO_PROGRAM], rejection[R_TARGET],
         rejection[R_SHADER_FEATURE], rejection[R_TRANSLATE],
         rejection[R_COMPILE], rejection[R_TOPOLOGY], rejection[R_INDICES],
         rejection[R_VERTEX_FORMAT], rejection[R_VERTEX_RANGE],
         rejection[R_UBO], rejection[R_DEPTH_BLEND], rejection[R_CACHE],
-        rejection[R_TEXTURE]);
+        rejection[R_TEXTURE], checked_draws, gl_draw_errors,
+        (unsigned)last_gl_draw_error);
     return buffer;
 }
 
@@ -706,11 +711,29 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
         if (instances==1) glDrawArrays(prim,(GLint)first,(GLsizei)count);
         else glDrawArraysInstanced(prim,(GLint)first,(GLsizei)count,(GLsizei)instances);
     }
+    // Earlier logs called every glDraw "ok" without checking the driver.
+    // Sample GL errors at startup and periodically so a rejected draw is
+    // not mistaken for correctly rendered pixels. No per-draw readbacks.
+    const bool check_driver = attempts <= 128 || (attempts % 256 == 0);
+    if (check_driver) {
+        checked_draws++;
+        last_gl_draw_error = glGetError();
+        if (last_gl_draw_error != GL_NO_ERROR) {
+            gl_draw_errors++;
+            if (gl_draw_errors <= 16)
+                fprintf(stderr,
+                        "[gles-nvn] draw rejected by GL driver: error=%#x"
+                        " program=%u rt_fmt=%#x count=%u\n",
+                        last_gl_draw_error, p->gl_program,
+                        st.color[0] ? st.color[0]->format : 0, count);
+            return false;
+        }
+    }
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     gles_mark_texture_written(st.color[0]);
     if (st.ds[0] || st.ds[3]) gles_mark_texture_written(st.depth);
     native_draws++;
-    if (native_draws <= 12) fprintf(stderr, "[gles-nvn] real NVN draw ok: primitive=%u count=%u program=%u\n",
+    if (native_draws <= 12) fprintf(stderr, "[gles-nvn] GLES NVN draw issued: primitive=%u count=%u program=%u\n",
                   (unsigned)r->x[0],count,p->gl_program);
     return true;
 }

@@ -95,3 +95,20 @@ assert gles.count("gles_flush_video_queue();") >= 2
 assert "void gles_mark_texture_written(NvnTexture *tex);" in gles
 assert "glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);" in gles
 print("Native GLES video upload ownership and GL-thread queue: source checks passed")
+
+# The real Switch NVN graph copies intermediate render targets into
+# the window texture; GL draws alone cannot replace those copy commands.
+gles = source("runtime/nvn/gles/gles.c")
+draws = source("runtime/nvn/gles/draw.c")
+for token in ("case CMD_COPY_TEXTURE_TO_TEXTURE:", "case CMD_DOWNSAMPLE:",
+              "glBlitFramebuffer(", "GL_READ_FRAMEBUFFER",
+              "GL_DRAW_FRAMEBUFFER", "copy_succeeded=",
+              "copy_failed=", "present_missing=", "present_written=",
+              "glBindSampler(0, 0);", "[gles-present] frame=",
+              "copy_view_base_only(", "g_present_gl_errors++"):
+    assert token in gles, f"Native GLES render graph / presentation missing: {token}"
+for token in ("gl_draw_errors=", "glGetError()", "draw rejected by GL driver"):
+    assert token in draws, f"NVN GL error validation missing: {token}"
+assert "if (!src || !dst || src == dst" in gles
+assert "if (!s->gpu_written && !s->cpu_uploaded)" in gles
+print("GLES FBO render graph and real presentation diagnostics: source checks passed")

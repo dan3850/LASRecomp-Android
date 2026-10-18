@@ -1,7 +1,7 @@
-// LASRecomp OpenGL ES backend, independent of Vulkan. Initial NVN subset:
-// render targets, colour clears, buffer copies, timestamp reports, presentation.
-// Graphics/compute draws are intentionally counted as UNSUPPORTED until the
-// Maxwell->GLSL ES translator, buffers and samplers are implemented.
+// Independent LASRecomp GLES backend. Supports a strict Maxwell graphics
+// subset with native GLSL ES draws, Tegra texture upload, FBO render targets,
+// colour/depth clears and GPU texture blits. Unsupported operations remain
+// explicitly rejected; no PixelCopy or Vulkan execution in GLES mode.
 #include "gles.h"
 #include "draw.h"
 #include "../astc.h"
@@ -36,6 +36,9 @@ static bool g_draw_needs_reset;
 static uint64_t g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported, g_unsupported;
 static int g_last_unsupported = -1;
 static uint64_t g_sample_ok, g_sample_fail, g_sample_uploaded_bytes, g_sample_cached;
+static uint64_t g_copies_attempted, g_copies_succeeded, g_copies_failed;
+static uint64_t g_present_missing, g_present_written, g_present_unwritten, g_present_gl_errors;
+static uint32_t g_last_present_id, g_last_present_format, g_last_present_gl_error;
 static GLuint g_texture_samplers[32];
 enum { GLES_VIDEO_QUEUE = 8 };
 typedef struct {
@@ -46,7 +49,7 @@ typedef struct {
 static PendingVideo video_queue[GLES_VIDEO_QUEUE];
 static pthread_mutex_t video_mutex=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t video_queued, video_uploaded, video_dropped;
-static char g_stats[512];
+static char g_stats[640];
 static uint64_t g_executed_lists, g_last_checkpoint;
 
 bool gles_selected(void) {
@@ -67,6 +70,15 @@ static void report(void) {
     fprintf(f, "video_frames_queued=%" PRIu64 "\nvideo_frames_uploaded=%" PRIu64
                "\nvideo_frames_dropped=%" PRIu64 "\n",
             video_queued, video_uploaded, video_dropped);
+    fprintf(f, "copy_attempted=%" PRIu64 "\ncopy_succeeded=%" PRIu64
+               "\ncopy_failed=%" PRIu64 "\n", g_copies_attempted,
+            g_copies_succeeded, g_copies_failed);
+    fprintf(f, "present_missing=%" PRIu64 "\npresent_written=%" PRIu64
+               "\npresent_unwritten=%" PRIu64 "\npresent_gl_errors=%" PRIu64
+               "\nlast_present_id=%u\nlast_present_format=%#x\nlast_present_gl_error=%#x\n",
+            g_present_missing, g_present_written, g_present_unwritten,
+            g_present_gl_errors, g_last_present_id, g_last_present_format,
+            g_last_present_gl_error);
     fprintf(f, "sample_ok=%" PRIu64 "\nsample_failed=%" PRIu64
                "\nsample_cached=%" PRIu64 "\nsample_uploaded_bytes=%" PRIu64 "\n",
             g_sample_ok, g_sample_fail, g_sample_cached, g_sample_uploaded_bytes);
@@ -87,12 +99,14 @@ const char *gles_stats(void) {
              " nativeNVN=%" PRIu64 " programs=%" PRIu64 " failed=%" PRIu64
              " sample_ok=%" PRIu64 " sample_fail=%" PRIu64 " sample_MB=%.1f"
              " video_uploaded=%" PRIu64 " video_dropped=%" PRIu64
-             " skipped_draws=%" PRIu64 " skipped_compute=%" PRIu64 " [%s]",
+             " copies=%" PRIu64 "/%" PRIu64 " present_written=%" PRIu64
+             " present_missing=%" PRIu64 " skipped_draws=%" PRIu64 " skipped_compute=%" PRIu64 " [%s]",
              g_frames, g_clears, gles_draw_native_count(), gles_draw_program_count(),
              gles_draw_shader_failure_count(), g_sample_ok, g_sample_fail,
              (double)g_sample_uploaded_bytes / 1048576.0,
              (uint64_t)video_uploaded, (uint64_t)video_dropped,
-             g_draws_unsupported, g_dispatch_unsupported,
+             g_copies_succeeded, g_copies_attempted, g_present_written,
+             g_present_missing, g_draws_unsupported, g_dispatch_unsupported,
              gles_draw_rejection_summary());
     return g_stats;
 }
@@ -558,6 +572,96 @@ static void clear_texture(NvnTexture *tex, const float *rgba, uint32_t mask,
     g_clears++;
 }
 
+
+// NVN copy commands are essential for the render graph: scene passes often
+// write offscreen targets, then copy/downsample into the displayed window
+// texture. This is an actual GLES FBO blit, never a Vulkan/CPU placeholder.
+typedef struct {
+    uint64_t tex;
+    NvnTextureView view;
+    uint8_t has_view;
+    int32_t region[6];
+} GlesTexRef;
+static bool copy_view_base_only(const GlesTexRef *r, const NvnTexture *tex) {
+    if (!r->has_view) return true;
+    if ((r->view.setmask & 1) && r->view.base_level != 0) return false;
+    if ((r->view.setmask & 2) && r->view.min_layer != 0) return false;
+    if ((r->view.setmask & 4) && r->view.format &&
+        r->view.format != tex->format) return false;
+    // Color channel swizzles are a shader-view property, not a texel-copy
+    // conversion; Vulkan's raw copy path likewise ignores swizzle.
+    return true;
+}
+static bool gles_copy_texture(const GlesTexRef *from, const GlesTexRef *to,
+                              bool downsample, uint64_t flags) {
+    g_copies_attempted++;
+    NvnTexture *src=(NvnTexture *)(uintptr_t)from->tex;
+    NvnTexture *dst=(NvnTexture *)(uintptr_t)to->tex;
+    if (!src || !dst || src == dst || !copy_view_base_only(from,src) ||
+        !copy_view_base_only(to,dst) || src->target != 1 || dst->target != 1 ||
+        src->samples > 1 || dst->samples > 1) goto rejected;
+    GlesTexture *s=texture(src), *d=texture(dst);
+    if (!s || !d || !s->framebuffer || !d->framebuffer) goto rejected;
+    // If the source contains CPU texels rather than a rendered image,
+    // populate its native texture before starting the GPU->GPU copy.
+    if (!s->gpu_written && src->addr && !sample_cpu_upload(src,s)) goto rejected;
+    if (!s->gpu_written && !s->cpu_uploaded) goto rejected;
+    const bool src_depth=s->attachment!=GL_COLOR_ATTACHMENT0;
+    const bool dst_depth=d->attachment!=GL_COLOR_ATTACHMENT0;
+    if (src_depth!=dst_depth) goto rejected;
+    if (src_depth && src->format!=dst->format) goto rejected;
+    if (src_depth && from->region[3] && to->region[3] &&
+        (from->region[3]!=to->region[3] || from->region[4]!=to->region[4]))
+        goto rejected;
+    int sx=from->region[0], sy=from->region[1],
+        dx=to->region[0], dy=to->region[1];
+    int sw=from->region[3]?from->region[3]:s->width-sx;
+    int sh=from->region[4]?from->region[4]:s->height-sy;
+    int dw=to->region[3]?to->region[3]:d->width-dx;
+    int dh=to->region[4]?to->region[4]:d->height-dy;
+    if (sx<0 || sy<0 || dx<0 || dy<0 || sw<=0 || sh<=0 ||
+        dw<=0 || dh<=0 || (uint64_t)sx+sw>(unsigned)s->width ||
+        (uint64_t)sy+sh>(unsigned)s->height ||
+        (uint64_t)dx+dw>(unsigned)d->width ||
+        (uint64_t)dy+dh>(unsigned)d->height) goto rejected;
+    const GLbitfield mask=src_depth ? GL_DEPTH_BUFFER_BIT : GL_COLOR_BUFFER_BIT;
+    const GLenum filter=src_depth ? GL_NEAREST :
+        (downsample || (flags&1)) ? GL_LINEAR : GL_NEAREST;
+    // Only successful exact-size color blits or GLES-defined scaling:
+    // depth blits require equal dimensions.
+    if (src_depth && (sw!=dw || sh!=dh)) goto rejected;
+    // Clear inherited errors so the result is meaningful for this command.
+    for (int i=0; i<8 && glGetError()!=GL_NO_ERROR; ++i) {}
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,s->framebuffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,d->framebuffer);
+    if (!src_depth) {
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        const GLenum buf=GL_COLOR_ATTACHMENT0;
+        glDrawBuffers(1,&buf);
+    }
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+    glDepthMask(GL_TRUE);
+    glBlitFramebuffer(sx,sy,sx+sw,sy+sh,dx,dy,dx+dw,dy+dh,mask,filter);
+    GLenum error=glGetError();
+    if (error != GL_NO_ERROR) {
+        if (g_copies_failed < 12)
+            LOG("[gles-copy] GL error=%#x src=%#x %dx%d dst=%#x %dx%d\n",
+                error, src->format, sw, sh, dst->format, dw, dh);
+        goto rejected;
+    }
+    d->gpu_written=true;
+    g_copies_succeeded++;
+    if (g_copies_succeeded<=8)
+        LOG("[gles-copy] completed GPU blit src=%llu fmt=%#x %dx%d -> dst=%llu fmt=%#x %dx%d\n",
+            (unsigned long long)src->debug_id,src->format,sw,sh,
+            (unsigned long long)dst->debug_id,dst->format,dw,dh);
+    return true;
+rejected:
+    g_copies_failed++;
+    return false;
+}
+
 static void execute_list(uint64_t handle, int depth) {
     if (!handle || depth > 8) return;
     uint64_t addr = handle;
@@ -626,6 +730,14 @@ static void execute_list(uint64_t handle, int depth) {
             else g_unsupported++;
             break;
         }
+        case CMD_COPY_TEXTURE_TO_TEXTURE:
+        case CMD_DOWNSAMPLE: {
+            if (r->size >= sizeof(CmdRec)+2*sizeof(GlesTexRef)) {
+                const GlesTexRef *refs=(const GlesTexRef *)(const void *)r->extra;
+                gles_copy_texture(&refs[0],&refs[1],r->op==CMD_DOWNSAMPLE,r->x[6]);
+            } else g_copies_failed++;
+            break;
+        }
         case CMD_COPY_BUFFER_TO_BUFFER:
             memmove((void *)(uintptr_t)r->x[1], (const void *)(uintptr_t)r->x[0], (size_t)r->x[2]);
             break;
@@ -685,6 +797,15 @@ void gles_execute(uint64_t handle) {
 void gles_present(NvnTexture *tex) {
     if (!g_context) return;
     gles_flush_video_queue();
+    // Presentation textures can be written by NVN copies or supplied by
+    // the guest window directly. Resolve them through the native GLES cache.
+    GlesTexture *t = tex ? texture(tex) : NULL;
+    g_last_present_gl_error=GL_NO_ERROR;
+    g_last_present_id = tex ? (uint32_t)tex->debug_id : 0;
+    g_last_present_format = tex ? tex->format : 0;
+    if (!t) g_present_missing++;
+    else if (t->gpu_written || t->cpu_uploaded) g_present_written++;
+    else g_present_unwritten++;
     int w = 1, h = 1;
     SDL_GetWindowSizeInPixels(g_window, &w, &h);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -700,17 +821,38 @@ void gles_present(NvnTexture *tex) {
     glDepthMask(GL_FALSE);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    GlesTexture *t = tex ? tex->backend : NULL;
     if (t) {
+        // A game sampler can still occupy unit 0. Do not reuse its wrap,
+        // compare or mipmap state for the presentation texture.
+        glBindSampler(0, 0);
         glUseProgram(g_present_program);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, t->color);
         glUniform1i(g_present_sampler, 0);
         glBindVertexArray(g_vertex_array);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+        g_last_present_gl_error = glGetError();
+        if (g_last_present_gl_error != GL_NO_ERROR) {
+            g_present_gl_errors++;
+            if (g_present_gl_errors <= 10)
+                LOG("[gles-present] GLES draw error=%#x tex=%llu fmt=%#x\n",
+                    g_last_present_gl_error,
+                    (unsigned long long)tex->debug_id, tex->format);
+        }
     }
-    SDL_GL_SwapWindow(g_window);
+    if (!SDL_GL_SwapWindow(g_window) && g_present_gl_errors++ < 10)
+        LOG("[gles-present] swap failed: %s\n", SDL_GetError());
     g_frames++;
+    if (g_frames == 1 || g_frames == 16 || g_frames == 64 ||
+        g_frames % 120 == 0) {
+        LOG("[gles-present] frame=%" PRIu64 " tex=%llu fmt=%#x object=%u"
+            " gpu_written=%d cpu_uploaded=%d present_err=%#x copy_ok=%" PRIu64
+            "/%" PRIu64 "\n", g_frames,
+            (unsigned long long)(tex ? tex->debug_id : 0),
+            tex ? tex->format : 0, t ? t->color : 0,
+            t ? t->gpu_written : 0, t ? t->cpu_uploaded : 0,
+            g_last_present_gl_error, g_copies_succeeded, g_copies_attempted);
+    }
     if (g_frames == 1 || g_frames == 16 || g_frames == 64 ||
         g_frames % 120 == 0) {
         LOG("[gles] %s\n", gles_stats());
