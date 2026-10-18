@@ -500,10 +500,9 @@ static uint8_t *blob_read(const IdxEnt *e, ShaderBlob *b, FILE **files) {
 #ifndef SHADER_TRANSLATOR_ID
 #define SHADER_TRANSLATOR_ID "dev"
 #endif
-const char *larecomp_version(void);  // runtime/ui/launcher.mm
 
 void shader_cache_tag(char *out, size_t n, const char *gpu) {
-    snprintf(out, n, "%s translator %s cache %d | %s", larecomp_version(), SHADER_TRANSLATOR_ID, SHADER_CACHE_VERSION, gpu);
+    snprintf(out, n, "%s translator %s cache %d | %s", "LASRecomp Android", SHADER_TRANSLATOR_ID, SHADER_CACHE_VERSION, gpu);
 }
 
 bool shader_cache_tag_ok(const char *tag_path, const char *tag) {
