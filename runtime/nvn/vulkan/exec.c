@@ -28,6 +28,7 @@
 #include "rt_graph.h"
 #include "rt_alias_policy.h"
 #include "replay.h"
+#include "worker_budget.h"
 #include "cache_identity.h"
 #include "../bcn_decode.h"
 #include "../renderer.h"
@@ -1167,9 +1168,14 @@ static void start_translator(void) {
     if (pthread_create(&t, NULL, translator, NULL) == 0) { pthread_detach(t); translator_started = true; }
 }
 static void start_workers(void) {
-    int n = SDL_GetNumLogicalCPUCores() - 4;
-    if (n < 4) n = 4;
-    if (n > 16) n = 16;
+#ifdef __ANDROID__
+    const bool android = true;
+#else
+    const bool android = false;
+#endif
+    int n = las_vk_worker_count(SDL_GetNumLogicalCPUCores(), android, getenv("LARECOMP_VK_JOBS"));
+    LOG("[vk] shader/pipeline compilation workers=%d (android=%d, override=%s)\n",
+        n, android, getenv("LARECOMP_VK_JOBS") ? getenv("LARECOMP_VK_JOBS") : "unset");
     for (int i = 0; i < n; ++i) {
         pthread_t t;
         if (pthread_create(&t, NULL, worker, NULL) == 0) { pthread_detach(t); workers_started++; }
