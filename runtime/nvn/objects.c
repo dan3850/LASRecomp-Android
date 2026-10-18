@@ -43,8 +43,10 @@ NVN(nvnDeviceInitialize) {
         // Prepare shader variants on the game's native NVN initialization:
         // Vulkan and the pipeline replay are ready, but no game draw has run.
         // Read the user's SAF archives directly; nothing is bundled or copied.
+#ifdef __ANDROID__
         extern const char *g_romfs_dir;
         if (g_romfs_dir) shader_prep_boot(g_romfs_dir);
+#endif
     }
     LOG("[nvn] device initialized\n");
     RET(1);
