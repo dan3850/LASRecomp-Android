@@ -52,3 +52,10 @@ The new build script passes native ARM64 GLES libraries to SDL's linker,
 reconfigures its **existing** CMake/Ninja cache, checks the SDL GLES option and
 recompiles only changed SDL objects. Do not delete the SDL cache or Gradle
 artifacts.
+
+## SDL3 iconv / Termux compilation
+For `SDL_iconv.c` undeclared iconv_open/iconv_close/iconv when enabling
+GLES, the SDL3 CMake configuration sets `SDL_SYSTEM_ICONV=OFF` and
+uses its bundled iconv converter. NDK EGL/GLES header lookup uses
+`-idirafter` so Termux libc headers keep precedence. SDL3 gets
+incrementally reconfigured and compiled with the existing CMake/Ninja cache.

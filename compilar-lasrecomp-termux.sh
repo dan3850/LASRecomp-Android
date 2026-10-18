@@ -122,8 +122,10 @@ step "SDL3 — compila do fonte"
 if [[ -f "$WORK/sdl3/CMakeCache.txt" ]]; then
  sed -i '/^ANDROID:UNINITIALIZED=/d; /^ANDROID:BOOL=/d; /^SDL_ANDROID:UNINITIALIZED=/d' "$WORK/sdl3/CMakeCache.txt"
 fi
-# O backend GLES nativo requer EGL + GLES dentro do SDL3. SDL_OPENGL=OFF
-# desabilita apenas desktop GL; SDL_OPENGLES=ON habilita EGL/ES no Android.
+# SDL_OPENGL=OFF desabilita apenas desktop GL; SDL_OPENGLES=ON ativa
+# EGL/OpenGL ES no Android. SDL_SYSTEM_ICONV=OFF usa o conversor interno
+# do SDL: no Termux, iconv.h de origens diferentes pode declarar iconv_t
+# sem expor iconv_open/iconv_close/iconv, causando erros de compilacao.
 # Resolve os headers/import libs ARM64 sem executar toolchain x86 do NDK.
 SDL_GLES_SYSROOT="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
 SDL_GLES_INCLUDE=""
@@ -145,14 +147,20 @@ done
 echo "SDL3 EGL/GLES: headers=$SDL_GLES_INCLUDE libs=$SDL_GLES_LINKDIR"
 SDL_CMAKE_OPTS=("${CMAKE_OPTS[@]}")
 SDL_CMAKE_OPTS+=(
- "-DCMAKE_C_FLAGS=-fPIC -I$SDL_GLES_INCLUDE"
+ # -idirafter preserva os headers Termux/Bionic. Os headers adicionais
+ # NDK so sao considerados para EGL/GLES, sem substituir iconv.h.
+ "-DCMAKE_C_FLAGS=-fPIC -idirafter $SDL_GLES_INCLUDE"
  "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -L$SDL_GLES_LINKDIR"
 )
 cmake -S "$DEPS/sdl3" -B "$WORK/sdl3" "${SDL_CMAKE_OPTS[@]}" \
  -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF \
- -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_OPENGLES=ON -DSDL_OPENGL=OFF
+ -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
+ -DSDL_OPENGLES=ON -DSDL_OPENGL=OFF -DSDL_SYSTEM_ICONV=OFF
 if ! grep -Eq '^SDL_OPENGLES:BOOL=ON$' "$WORK/sdl3/CMakeCache.txt"; then
  fail "SDL3 CMake nao ativou SDL_OPENGLES (nao prosseguir com APK)"
+fi
+if ! grep -Eq '^SDL_SYSTEM_ICONV:BOOL=OFF$' "$WORK/sdl3/CMakeCache.txt"; then
+ fail "SDL3 ainda tenta usar iconv externo em vez do conversor interno"
 fi
 cmake --build "$WORK/sdl3" --parallel "$JOBS"
 SDL_SO="$(find "$WORK/sdl3" -name libSDL3.so -type f -print -quit)"
