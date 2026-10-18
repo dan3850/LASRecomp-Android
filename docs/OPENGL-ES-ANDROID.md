@@ -234,3 +234,35 @@ Two more differences from the Vulkan command executor were corrected:
 The native GLES backend is **still incomplete** (GMEM, compute, array
 views, further formats and GPU readback paths). Static checks do not
 replace an actual Termux APK build or Adreno 840 gameplay validation.
+
+## Milestone 7: texture-view rejection and Tegra 2D arrays
+Source: user-supplied `LASRecomp-grafico-20261018-101550.zip`, with
+`backend_milestone=nvn-uniform-buffer2texture-rgb8`:
+`native_maxwell_draws=299001`, `unsupported_draws=588491`,
+`rejected_texture_binding=141251`, but **`sample_ok=0` and
+`sample_failed=0`**. This proves texture-bound draws are rejected
+**before calling** the actual GLES sampler function; successfully linking
+47 shader programs and copying 16285 image regions does not solve that.
+
+The texture binding path formerly rejected *every* descriptor with
+`NvnTexEntry.has_view`, even identity `NVNtextureView` registrations.
+It also rejected all `sampler2DArray` shader bindings. This milestone:
+- Accepts NVN texture views that preserve the original format, complete
+  mip/layer range, and identity/original channel swizzle. Partial views
+  requiring `glTextureView`, incompatible formats and feedback loops remain
+  rejected to avoid incorrect images.
+- Creates real GLES `GL_TEXTURE_2D_ARRAY` resources for NVN target 4,
+  uploads each Tegra block-linear array layer (using the correct per-layer
+  offset and existing ASTC/BCn decoders) and binds native 2D array samplers.
+  Existing one-layer 2D sampling is preserved.
+- Splits rejected texture counts into: shader kind, texture pool,
+  invalid handle, target/descriptor, incompatible view, framebuffer
+  feedback, and actual GLES upload/sampler failure.
+- Identifies this APK via `backend_milestone=nvn-gles-array-identityviews-v1`
+  in `graphics/gles.txt`.
+
+This is a narrowly supported path. Non-identity texture views, cube/3D
+sampling, compute, GMEM, and shader program link failures remain separate
+work. The user log also contains `EGL_BAD_SURFACE` later in the session;
+it does not account for persistent black from first frame. No Adreno
+device build or visual confirmation has been performed by the assistant.

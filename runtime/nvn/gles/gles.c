@@ -19,8 +19,8 @@
 
 typedef struct {
     GLuint color, framebuffer;
-    GLsizei width, height;
-    GLenum attachment;
+    GLsizei width, height, layers;
+    GLenum target, attachment;
     GLuint depth_bound;
     bool cpu_uploaded, gpu_written;
     uint64_t cpu_hash, last_cpu_check_frame;
@@ -64,7 +64,7 @@ static void report(void) {
     mkdir("graphics", 0755);
     FILE *f = fopen("graphics/gles.txt", "w");
     if (!f) return;
-    fprintf(f, "backend=opengles\nbackend_milestone=nvn-uniform-buffer2texture-rgb8\n"
+    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-array-identityviews-v1\n"
                "NVN_renderer=OpenGL_ES\nVulkan_initialized=0\n");
     fprintf(f, "native_maxwell_draws=%" PRIu64 "\ngles_programs_linked=%" PRIu64
                "\ngles_programs_failed=%" PRIu64 "\n",
@@ -171,7 +171,7 @@ void gles_init(SDL_Window *window) {
     glGenVertexArrays(1, &g_vertex_array);
     glGenSamplers(32, g_texture_samplers);
     gles_draw_init();
-    LOG("[gles] native backend milestone=nvn-uniform-buffer2texture-rgb8\n");
+    LOG("[gles] native backend milestone=nvn-gles-array-identityviews-v1\n");
     LOG("[gles] genuine GLES backend: %s / %s, version %s\n",
         glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION));
     report();
@@ -228,7 +228,9 @@ static FormatGL gpu_format(uint32_t format) {
 }
 static GlesTexture *texture(NvnTexture *tex) {
     if (!tex || !tex->width || !tex->height || tex->width > 8192 || tex->height > 8192 ||
-        tex->depth > 1 || tex->samples > 1)
+        tex->depth > 1 || tex->samples > 1 ||
+        (tex->target != 1 && tex->target != 4) ||
+        tex->layout.layers < 1 || tex->layout.layers > 256)
         return NULL;
     if (tex->backend) return tex->backend;
     FormatGL f = gpu_format(tex->format);
@@ -242,18 +244,27 @@ static GlesTexture *texture(NvnTexture *tex) {
     if (!t) return NULL;
     t->width = (GLsizei)tex->width;
     t->height = (GLsizei)tex->height;
+    t->layers = tex->target == 4 ? (GLsizei)tex->layout.layers : 1;
+    t->target = tex->target == 4 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
     t->attachment = f.attachment;
     glGenTextures(1, &t->color);
-    glBindTexture(GL_TEXTURE_2D, t->color);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, (GLint)f.internal, t->width, t->height,
-                 0, f.format, f.type, NULL);
+    glBindTexture(t->target, t->color);
+    glTexParameteri(t->target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(t->target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(t->target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(t->target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (t->target == GL_TEXTURE_2D_ARRAY)
+        glTexImage3D(t->target, 0, (GLint)f.internal, t->width, t->height,
+                     t->layers, 0, f.format, f.type, NULL);
+    else
+        glTexImage2D(t->target, 0, (GLint)f.internal, t->width, t->height,
+                     0, f.format, f.type, NULL);
     glGenFramebuffers(1, &t->framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, f.attachment, GL_TEXTURE_2D, t->color, 0);
+    if (t->target == GL_TEXTURE_2D_ARRAY)
+        glFramebufferTextureLayer(GL_FRAMEBUFFER,f.attachment,t->color,0,0);
+    else
+        glFramebufferTexture2D(GL_FRAMEBUFFER,f.attachment,t->target,t->color,0);
     if (f.attachment != GL_COLOR_ATTACHMENT0) {
         GLenum none = GL_NONE;
         glDrawBuffers(1, &none);
@@ -362,14 +373,20 @@ static unsigned bcn_type(uint32_t fmt) {
 static bool sample_cpu_upload(NvnTexture *tex, GlesTexture *host) {
     if (host->gpu_written) return true;  // preserve real GPU render-target content
     if (!tex->addr) return host->cpu_uploaded;
-    if (tex->target != 1 || tex->layout.layers != 1 ||
-        tex->layout.depth > 1 || !tex->layout.fmt) return false;
+    if ((tex->target != 1 && tex->target != 4) ||
+        (tex->target == 1 && tex->layout.layers != 1) ||
+        tex->layout.layers > 256 || tex->layout.depth > 1 ||
+        !tex->layout.fmt) return false;
     const FormatInfo *fi=tex->layout.fmt;
     const LevelLayout l=tegra_level(&tex->layout,0);
     if (!fi->bpb || !l.wb || !l.hb || !l.w || !l.h || l.d != 1) return false;
     uint64_t size=tegra_total_size(&tex->layout);
     uint64_t raw=(uint64_t)l.wb*l.hb*fi->bpb;
-    if (!size || l.offset >= size || raw > size - l.offset ||
+    uint64_t layer_size = tegra_layer_size(&tex->layout);
+    uint64_t layers = (uint64_t)tex->layout.layers;
+    if (!size || !layer_size || l.offset >= layer_size ||
+        raw > layer_size - l.offset || layer_size > UINT64_MAX/layers ||
+        layer_size*layers > size ||
         size > (64ull<<20) || !raw || raw > (32ull<<20) ||
         tex->addr < 0x7000000000ull || tex->addr >= 0x7320000000ull ||
         size > 0x7320000000ull-tex->addr) return false;
@@ -388,53 +405,71 @@ static bool sample_cpu_upload(NvnTexture *tex, GlesTexture *host) {
     if (host->cpu_uploaded && host->cpu_hash == h) {
         g_sample_cached++; return true;
     }
-    uint8_t *linear=malloc((size_t)raw);
-    if (!linear) return false;
-    const uint8_t *src=memory+l.offset;
-    const bool linear_storage=(tex->flags & 0x10)!=0;
-    if (linear_storage) {
-        uint64_t stride=tex->stride ? tex->stride : (uint64_t)l.wb*fi->bpb;
-        if (stride < (uint64_t)l.wb*fi->bpb || stride > (64ull<<20) ||
-            (uint64_t)(l.hb-1)*stride+(uint64_t)l.wb*fi->bpb > size-l.offset) {
-            free(linear); return false;
-        }
-        for(uint32_t y=0;y<l.hb;y++)
-            memcpy(linear+(uint64_t)y*l.wb*fi->bpb,
-                   src+(uint64_t)y*stride,(uint64_t)l.wb*fi->bpb);
-    } else {
-        tegra_deswizzle(src,linear,l.wb,l.hb,1,fi->bpb,
-                        l.block_height_log2,l.block_depth_log2);
-    }
+    // Upload every layer. NVN 2D arrays hold independent block-linear
+    // slices; uploading only layer zero makes the sprites disappear whenever
+    // Maxwell samples a different layer.
     FormatGL f=gpu_format(tex->format);
-    if (!f.internal || f.attachment != GL_COLOR_ATTACHMENT0) {free(linear);return false;}
-    uint8_t *pixels=linear;
-    uint64_t bytes=raw;
-    unsigned bc=bcn_type(tex->format);
+    if (!f.internal || f.attachment != GL_COLOR_ATTACHMENT0) return false;
+    const bool linear_storage=(tex->flags & 0x10)!=0;
+    const unsigned bc=bcn_type(tex->format);
     const bool astc=tex->format >= 0x79 && tex->format <= 0x94;
-    if (bc || astc) {
-        unsigned px=bc?las_bcn_pixel_bytes(bc):4;
-        bytes=(uint64_t)l.w*l.h*px;
-        if (!px || bytes > (64ull<<20)) {free(linear);return false;}
-        pixels=malloc((size_t)bytes);
-        if (!pixels) {free(linear);return false;}
-        bool ok=bc ? las_bcn_decode(bc,linear,(size_t)raw,l.w,l.h,1,pixels,(size_t)bytes) : true;
-        if (astc) astc_decode_ldr(linear,l.w,l.h,fi->bw,fi->bh,
-                                  tex->format >= 0x87,pixels);
-        free(linear);
-        if (!ok) {free(pixels);return false;}
+    const unsigned px=bc ? las_bcn_pixel_bytes(bc) : 4;
+    const uint64_t decoded=(uint64_t)l.w*l.h*px;
+    if ((bc || astc) && (!px || decoded > (64ull<<20))) return false;
+    uint8_t *linear=malloc((size_t)raw);
+    uint8_t *converted=(bc || astc) ? malloc((size_t)decoded) : NULL;
+    if (!linear || ((bc || astc) && !converted)) {
+        free(linear); free(converted); return false;
     }
-    glBindTexture(GL_TEXTURE_2D,host->color);
+    glBindTexture(host->target,host->color);
     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
-    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,(GLsizei)l.w,(GLsizei)l.h,
-                    f.format,f.type,pixels);
-    GLenum status=glGetError();
+    GLenum status=GL_NO_ERROR;
+    for (uint32_t layer=0; layer<tex->layout.layers; ++layer) {
+        uint64_t pos=(uint64_t)layer*layer_size + l.offset;
+        if (pos > size || raw > size-pos) { status=GL_INVALID_VALUE; break; }
+        const uint8_t *source=memory+pos;
+        if (linear_storage) {
+            uint64_t stride=tex->stride ? tex->stride : (uint64_t)l.wb*fi->bpb;
+            if (stride < (uint64_t)l.wb*fi->bpb || stride > (64ull<<20) ||
+                (uint64_t)(l.hb-1)*stride+(uint64_t)l.wb*fi->bpb > size-pos) {
+                status=GL_INVALID_VALUE; break;
+            }
+            for(uint32_t y=0;y<l.hb;y++)
+                memcpy(linear+(uint64_t)y*l.wb*fi->bpb,
+                       source+(uint64_t)y*stride,(uint64_t)l.wb*fi->bpb);
+        } else {
+            tegra_deswizzle(source,linear,l.wb,l.hb,1,fi->bpb,
+                            l.block_height_log2,l.block_depth_log2);
+        }
+        const void *pixels=linear;
+        if (bc) {
+            if (!las_bcn_decode(bc,linear,(size_t)raw,l.w,l.h,1,converted,(size_t)decoded)) {
+                status=GL_INVALID_VALUE; break;
+            }
+            pixels=converted;
+        } else if (astc) {
+            astc_decode_ldr(linear,l.w,l.h,fi->bw,fi->bh,
+                            tex->format >= 0x87,converted);
+            pixels=converted;
+        }
+        if (host->target == GL_TEXTURE_2D_ARRAY)
+            glTexSubImage3D(host->target,0,0,0,(GLint)layer,
+                            (GLsizei)l.w,(GLsizei)l.h,1,f.format,f.type,pixels);
+        else
+            glTexSubImage2D(host->target,0,0,0,(GLsizei)l.w,(GLsizei)l.h,
+                            f.format,f.type,pixels);
+        status=glGetError();
+        if (status != GL_NO_ERROR) break;
+    }
     glPixelStorei(GL_UNPACK_ALIGNMENT,4);
-    if (pixels) free(pixels);
+    free(linear); free(converted);
     if(status!=GL_NO_ERROR) {
         static unsigned warn;
-        if(warn++<10) LOG("[gles] CPU texture upload error: format=%#x gl=%#x\n",tex->format,status);
+        if(warn++<10) LOG("[gles] CPU texel upload failed: fmt=%#x layers=%u gl=%#x\n",
+                           tex->format,tex->layout.layers,status);
         return false;
     }
+    uint64_t bytes=(bc || astc) ? decoded*layers : raw*layers;
     host->cpu_hash=h;
     host->cpu_uploaded=true;
     g_sample_uploaded_bytes+=bytes;
@@ -451,11 +486,14 @@ static GLint sampler_wrap(uint32_t wrap) {
 }
 bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
                          int unit, bool shadow, uint8_t target) {
-    if (!tex || unit < 0 || unit >= 32 || target != 1) {
+    if (!tex || unit < 0 || unit >= 32 ||
+        (target != 1 && target != 4)) {
         g_sample_fail++; return false;
     }
     GlesTexture *host=texture(tex);
-    if (!host || !sample_cpu_upload(tex,host)) {g_sample_fail++;return false;}
+    GLenum want=target == 4 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
+    if (!host || host->target != want ||
+        !sample_cpu_upload(tex,host)) {g_sample_fail++;return false;}
     if (shadow && host->attachment != GL_DEPTH_ATTACHMENT &&
         host->attachment != GL_DEPTH_STENCIL_ATTACHMENT) {
         g_sample_fail++; return false;
@@ -475,7 +513,7 @@ bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
     if (shadow) glSamplerParameteri(sm,GL_TEXTURE_COMPARE_FUNC,GL_LEQUAL);
     glBindSampler((GLuint)unit,sm);
     glActiveTexture(GL_TEXTURE0+(GLenum)unit);
-    glBindTexture(GL_TEXTURE_2D,host->color);
+    glBindTexture(host->target,host->color);
     g_sample_ok++;
     return true;
 }

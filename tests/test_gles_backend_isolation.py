@@ -126,3 +126,24 @@ for token in ("case CMD_UPDATE_UNIFORM_BUFFER:", "gles_update_uniform(",
 assert "case 0x19: case 0x25:" not in gles
 assert "q->tex->format==0x25 || q->tex->format==0x19" not in gles
 print("GLES NVN uniform-update, buffer-texture copy, RGB8 mapping source checks passed")
+
+# User's Adreno GLES diagnostic: 141251 binds rejected without even
+# entering gles_sample_texture (sample_ok=0, sample_failed=0). Remove the
+# blanket NVNtextureView exclusion and accept only same-resource views.
+draws=source("runtime/nvn/gles/draw.c")
+gles=source("runtime/nvn/gles/gles.c")
+for token in ("compatible_texture_view(", "texture_reject_kind=",
+              "texture_reject_pool=", "texture_reject_handle=",
+              "texture_reject_descriptor=", "texture_reject_view=",
+              "texture_reject_feedback=", "texture_reject_upload=",
+              "texture_views_accepted=", "texture_array_attempts=",
+              "texture_array_bound="):
+    assert token in draws, f"NVN GLES texture-view diagnostics missing: {token}"
+assert "entry->has_view || tex->target!=1" not in draws
+assert "if (!compatible_texture_view(entry))" in draws
+for token in ("GL_TEXTURE_2D_ARRAY", "glTexImage3D(", "glTexSubImage3D(",
+              "tegra_layer_size(", "layer_size*layers > size",
+              "host->target != want", "backend_milestone=nvn-gles-array-identityviews-v1"):
+    assert token in gles, f"Native GLES 2D array support missing: {token}"
+assert "g_sample_ok++;" in gles
+print("Native NVN identity views and GLES 2D array layer decoding: source checks passed")

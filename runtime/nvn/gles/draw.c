@@ -38,6 +38,10 @@ static DrawState st;
 static GLuint uniform_buffers[36], vertex_buffers[16], index_buffer, vao;
 static uint64_t native_draws, shaders_ok, shaders_failed, rejection[13];
 static uint64_t checked_draws, gl_draw_errors;
+enum { T_KIND, T_POOL, T_HANDLE, T_DESCRIPTOR, T_VIEW, T_FEEDBACK, T_UPLOAD, T_REASON_COUNT };
+static uint64_t texture_rejection[T_REASON_COUNT];
+static uint64_t texture_views_accepted;
+static uint64_t texture_array_attempts, texture_array_bound;
 static GLenum last_gl_draw_error;
 enum { R_NO_PROGRAM, R_TARGET, R_SHADER_FEATURE, R_TRANSLATE, R_COMPILE, R_TOPOLOGY,
        R_INDICES, R_VERTEX_FORMAT, R_VERTEX_RANGE, R_UBO, R_DEPTH_BLEND, R_CACHE, R_TEXTURE };
@@ -80,11 +84,13 @@ const char *gles_draw_rejection_summary(void) {
     snprintf(line, sizeof line,
         "reject target=%" PRIu64 " fixed=%" PRIu64 " no-prog=%" PRIu64
         " features=%" PRIu64 " translation=%" PRIu64 " compile=%" PRIu64
-        " vertex=%" PRIu64 " indices=%" PRIu64 " texture=%" PRIu64,
+        " vertex=%" PRIu64 " indices=%" PRIu64 " texture=%" PRIu64
+        " tex_kind=%" PRIu64 " tex_view=%" PRIu64 " tex_handle=%" PRIu64,
         rejection[R_TARGET], rejection[R_DEPTH_BLEND], rejection[R_NO_PROGRAM],
         rejection[R_SHADER_FEATURE], rejection[R_TRANSLATE], rejection[R_COMPILE],
         rejection[R_VERTEX_FORMAT] + rejection[R_VERTEX_RANGE], rejection[R_INDICES],
-        rejection[R_TEXTURE]);
+        rejection[R_TEXTURE], texture_rejection[T_KIND], texture_rejection[T_VIEW],
+        texture_rejection[T_HANDLE]);
     return line;
 }
 const char *gles_draw_rejection_stats(void) {
@@ -98,6 +104,16 @@ const char *gles_draw_rejection_stats(void) {
         "\nrejected_vertex_range=%" PRIu64 "\nrejected_ubo=%" PRIu64
         "\nrejected_depth_blend=%" PRIu64 "\nrejected_cache=%" PRIu64
         "\nrejected_texture_binding=%" PRIu64
+        "\ntexture_reject_kind=%" PRIu64
+        "\ntexture_reject_pool=%" PRIu64
+        "\ntexture_reject_handle=%" PRIu64
+        "\ntexture_reject_descriptor=%" PRIu64
+        "\ntexture_reject_view=%" PRIu64
+        "\ntexture_reject_feedback=%" PRIu64
+        "\ntexture_reject_upload=%" PRIu64
+        "\ntexture_views_accepted=%" PRIu64
+        "\ntexture_array_attempts=%" PRIu64
+        "\ntexture_array_bound=%" PRIu64
         "\ngl_draw_checked=%" PRIu64 "\ngl_draw_errors=%" PRIu64
         "\ngl_last_draw_error=%u\n",
         attempts, rejection[R_NO_PROGRAM], rejection[R_TARGET],
@@ -105,8 +121,12 @@ const char *gles_draw_rejection_stats(void) {
         rejection[R_COMPILE], rejection[R_TOPOLOGY], rejection[R_INDICES],
         rejection[R_VERTEX_FORMAT], rejection[R_VERTEX_RANGE],
         rejection[R_UBO], rejection[R_DEPTH_BLEND], rejection[R_CACHE],
-        rejection[R_TEXTURE], checked_draws, gl_draw_errors,
-        (unsigned)last_gl_draw_error);
+        rejection[R_TEXTURE], texture_rejection[T_KIND], texture_rejection[T_POOL],
+        texture_rejection[T_HANDLE], texture_rejection[T_DESCRIPTOR],
+        texture_rejection[T_VIEW], texture_rejection[T_FEEDBACK],
+        texture_rejection[T_UPLOAD], texture_views_accepted,
+        texture_array_attempts, texture_array_bound,
+        checked_draws, gl_draw_errors, (unsigned)last_gl_draw_error);
     return buffer;
 }
 
@@ -417,41 +437,75 @@ static bool bind_uniforms(Program *p) {
     return true;
 }
 
+static bool compatible_texture_view(const NvnTexEntry *entry) {
+    if (!entry->has_view) return true;
+    const NvnTextureView *v=&entry->view;
+    const NvnTexture *tex=entry->tex;
+    // A view of the complete same image changes no sampled texels. This
+    // covers common NVNtextureView registrations that were always rejected.
+    // Complex mips/layers, reinterpretations and per-view swizzles still
+    // need real GL texture-view objects and must not be guessed.
+    if (!tex || (v->setmask & ~15u)) return false;
+    if ((v->setmask & 1u) &&
+        (v->base_level != 0 || (v->num_levels && v->num_levels != tex->levels)))
+        return false;
+    if ((v->setmask & 2u) &&
+        (v->min_layer != 0 || (v->num_layers && v->num_layers != tex->layout.layers)))
+        return false;
+    if ((v->setmask & 4u) && v->format && v->format != tex->format) return false;
+    if ((v->setmask & 8u) &&
+        memcmp(v->swizzle,tex->swizzle,4)!=0 &&
+        memcmp(v->swizzle,"\0\1\2\3",4)!=0)
+        return false;
+    return true;
+}
 static bool bind_textures(Program *p) {
     if (!p->fs || p->fs->ntex == 0) return true;
     GLint max_units = 0;
     glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &max_units);
     if (p->fs->ntex > max_units || p->fs->ntex > 32) {
-        rejection[R_TEXTURE]++; return false;
+        rejection[R_TEXTURE]++; texture_rejection[T_KIND]++; return false;
     }
     for (int i=0; i<p->fs->ntex; i++) {
         const ShaderTexture *ref=&p->fs->tex[i];
-        if (ref->is_image || ref->bindless || ref->type != TEXTYPE_2D) {
-            rejection[R_TEXTURE]++; return false;
+        bool array=ref->type == TEXTYPE_2D_ARRAY;
+        if (array) texture_array_attempts++;
+        if (ref->is_image || ref->bindless ||
+            (ref->type != TEXTYPE_2D && !array)) {
+            rejection[R_TEXTURE]++; texture_rejection[T_KIND]++; return false;
         }
         int slot=((int)ref->handle_offset-0x20)/8;
-        if (slot<0 || slot>=32 || !st.tpool || !st.tpool->entries) {
-            rejection[R_TEXTURE]++; return false;
+        if (slot<0 || slot>=32) {
+            rejection[R_TEXTURE]++; texture_rejection[T_HANDLE]++; return false;
+        }
+        if (!st.tpool || !st.tpool->entries) {
+            rejection[R_TEXTURE]++; texture_rejection[T_POOL]++; return false;
         }
         uint64_t handle=st.tex[STAGE_FRAGMENT][slot];
         uint32_t tic=(uint32_t)handle&0xfffffu;
         uint32_t tsc=(uint32_t)(handle>>20)&0xfffu;
         if (!handle || tic>=(uint32_t)st.tpool->count) {
-            rejection[R_TEXTURE]++; return false;
+            rejection[R_TEXTURE]++; texture_rejection[T_HANDLE]++; return false;
         }
         const NvnTexEntry *entry=&((const NvnTexEntry*)st.tpool->entries)[tic];
         NvnTexture *tex=entry->tex;
-        // Array/mip/format reinterpretation requires real GLES texture views.
-        if (!tex || entry->has_view || tex->target!=1 ||
-            tex==st.color[0] || tex==st.depth) {
-            rejection[R_TEXTURE]++; return false;
+        if (!tex || (array ? tex->target!=4 : tex->target!=1)) {
+            rejection[R_TEXTURE]++; texture_rejection[T_DESCRIPTOR]++; return false;
+        }
+        if (!compatible_texture_view(entry)) {
+            rejection[R_TEXTURE]++; texture_rejection[T_VIEW]++; return false;
+        }
+        if (tex==st.color[0] || tex==st.depth) {
+            rejection[R_TEXTURE]++; texture_rejection[T_FEEDBACK]++; return false;
         }
         NvnSamplerDesc *sampler=NULL;
         if (st.spool && st.spool->entries && tsc<(uint32_t)st.spool->count)
             sampler=&((NvnSamplerDesc*)st.spool->entries)[tsc];
         if (!gles_sample_texture(tex,sampler,i,ref->shadow,ref->type)) {
-            rejection[R_TEXTURE]++; return false;
+            rejection[R_TEXTURE]++; texture_rejection[T_UPLOAD]++; return false;
         }
+        if (entry->has_view) texture_views_accepted++;
+        if (array) texture_array_bound++;
         char name[16];
         snprintf(name,sizeof name,"t%d",i);
         GLint loc=glGetUniformLocation(p->gl_program,name);
