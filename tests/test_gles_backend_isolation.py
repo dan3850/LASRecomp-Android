@@ -163,9 +163,13 @@ assert "(v->setmask & 32u)" in draws
 assert "(v->setmask & 16u)" in draws
 for token in ("GL_TEXTURE_SWIZZLE_R", "GL_TEXTURE_SWIZZLE_G",
               "GL_TEXTURE_SWIZZLE_B", "GL_TEXTURE_SWIZZLE_A",
-              "glTexParameteri(host->target,swizzle_pnames[c],rgba[c])"):
+              "glTexParameteri(want,swizzle_pnames[c],rgba[c])"):
     assert token in gles, f"Missing GLES 3.2 component swizzle: {token}"
 assert "glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA" not in gles
+assert "GLenum want=target == 4 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;" in gles
+assert "glBindTexture(want,sample_texture);" in gles
+assert "glTexParameteri(want,swizzle_pnames[c],rgba[c]);" in gles
+assert "host->alias_swizzle_valid=true;" in gles
 assert "normalize_swizzle(" in draws
 assert "view_reject_target=" in draws
 assert "view_reject_swizzle_conflict=" in draws
