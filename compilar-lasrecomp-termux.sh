@@ -252,6 +252,23 @@ INC=(-idirafter "$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Ithird_party/imgui \
  -Ithird_party/imgui/backends -Ithird_party/smaa/Textures \
  -I"$SDL_HEADERS" -I"$DEPS/shaderc/libshaderc/include" \
  -I"$DEPS/vma/include" -I"$DEPS/volk" -I"$OBJ/inc")
+# GLES uses Android/NDK ARM64 import libraries. Never execute x86 NDK tools.
+NDK_GLES_ROOT="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/28.2.13676358}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+GLES_INCLUDE=""
+for dir in "$PREFIX/include" "$NDK_GLES_ROOT/usr/include"; do
+ [[ -s "$dir/GLES3/gl3.h" ]] && { GLES_INCLUDE="$dir"; break; }
+done
+[[ -n "$GLES_INCLUDE" ]] || fail "GLES3/gl3.h missing (Termux or Android NDK r28c)"
+GLES_STUB=""
+for candidate in "$NDK_GLES_ROOT/usr/lib/aarch64-linux-android/26/libGLESv3.so" \
+ "$NDK_GLES_ROOT/usr/lib/aarch64-linux-android/28/libGLESv3.so" \
+ "$PREFIX/lib/libGLESv3.so"; do
+ [[ -s "$candidate" ]] && { GLES_STUB="$candidate"; break; }
+done
+[[ -n "$GLES_STUB" ]] || fail "Android ARM64 libGLESv3.so link stub not found"
+echo "GLES headers: $GLES_INCLUDE"
+echo "GLES linking: $GLES_STUB"
+INC+=(-idirafter "$GLES_INCLUDE")
 RENDER=()
 while IFS= read -r src; do
  obj="$OBJ/renderer/${src#"$ROOT"/}.o"
@@ -262,6 +279,7 @@ while IFS= read -r src; do
   -DIMGUI_IMPL_VULKAN_USE_VOLK -D_FILE_OFFSET_BITS=64 "${INC[@]}"
  RENDER+=("$obj")
 done < <(
+ find "$ROOT/runtime/nvn/gles" -maxdepth 1 -type f -name '*.c' | sort
  find "$ROOT/runtime/nvn/vulkan" -maxdepth 1 -type f \
   \( -name '*.c' -o -name '*.cpp' \) | sort
  for p in imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp; do
@@ -295,7 +313,7 @@ clang++ -shared -Wl,-z,max-page-size=16384 -Wl,--no-undefined \
  -Wl,--whole-archive "$LIB/liblasrecomp-core.a" \
  "$LIB/liblasrecomp-renderer.a" -Wl,--no-whole-archive \
  -L"$(dirname "$SDL_SO")" -L"$(dirname "$SHADERC_SO")" \
- -lSDL3 -lshaderc_shared -Wl,--start-group \
+ -lSDL3 -lshaderc_shared "$GLES_STUB" -Wl,--start-group \
  "$FFDEST/lib/libavformat.a" "$FFDEST/lib/libavcodec.a" \
  "$FFDEST/lib/libavutil.a" "$FFDEST/lib/libswscale.a" \
  "$FFDEST/lib/libswresample.a" -Wl,--end-group -llog -landroid -ldl -lz -lm

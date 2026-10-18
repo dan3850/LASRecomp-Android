@@ -139,41 +139,30 @@ public final class GameImportActivity extends Activity {
         return getPreferences(MODE_PRIVATE).getString(RENDERER_PREF, "vulkan");
     }
 
-    private boolean openglTestSelected() {
-        return "gles-test".equals(selectedRenderer());
-    }
-
-    private boolean openglGameOverlaySelected() {
-        return "gles-game".equals(selectedRenderer());
+    private boolean openglGameNativeSelected() {
+        return "gles-native".equals(selectedRenderer());
     }
 
     private void showRendererChoice() {
-        // Never present the GLES smoke test as a Zelda renderer.
+        // The GLES choice never starts Vulkan, PixelCopy or the overlay.
         final String[] names = {
             "Vulkan — jogar Zelda (padrão)",
-            "OpenGL ES 3.0 — apresentar a imagem do Zelda (híbrido experimental)",
-            "OpenGL ES 3.0 — teste gráfico independente"
+            "OpenGL ES 3.0 — backend NVN nativo (experimental)"
         };
         new AlertDialog.Builder(this).setTitle("Escolher renderizador")
-            .setSingleChoiceItems(names, openglTestSelected() ? 2 : openglGameOverlaySelected() ? 1 : 0, (dialog, choice) -> {
+            .setSingleChoiceItems(names, openglGameNativeSelected() ? 1 : 0, (dialog, choice) -> {
                 getPreferences(MODE_PRIVATE).edit()
-                    .putString(RENDERER_PREF, choice == 2 ? "gles-test" :
-                        choice == 1 ? "gles-game" : "vulkan").apply();
+                    .putString(RENDERER_PREF, choice == 1 ? "gles-native" : "vulkan").apply();
                 dialog.dismiss();
                 showGameFilesState();
                 if (choice == 1) {
-                    new AlertDialog.Builder(this).setTitle("Teste OpenGL dentro do jogo")
-                        .setMessage("Teste diretamente com a imagem do Zelda: o Vulkan continua " +
-                            "processando os comandos NVN do jogo; o Android copia seus frames " +
-                            "para uma textura e o OpenGL ES os apresenta em tela cheia. " +
-                            "É uma integração híbrida e pode reduzir o FPS. Ainda não " +
-                            "substitui os shaders e comandos NVN por OpenGL. " +
-                            "O ZIP gráfico registra as cópias e os frames apresentados.")
-                        .setPositiveButton("Entendi", null).show();
-                } else if (choice == 2) {
-                    new AlertDialog.Builder(this).setTitle("OpenGL independente")
-                        .setMessage("Este modo executa somente o teste de shaders OpenGL ES 3.0, " +
-                            "sem carregar Zelda.")
+                    new AlertDialog.Builder(this).setTitle("OpenGL ES nativo — em desenvolvimento")
+                        .setMessage("O OpenGL ES agora executa um backend NVN independente " +
+                            "do Vulkan. A etapa inicial já implementa o contexto GLES, " +
+                            "limpeza de alvos RGBA8 e apresentação. " +
+                            "Os desenhos e shaders Maxwell ainda NÃO estão implementados: " +
+                            "é esperado que o jogo apareça preto ou incompleto. " +
+                            "O registro graphics/gles.txt mostra os comandos pendentes.")
                         .setPositiveButton("Entendi", null).show();
                 }
             }).setNegativeButton("Cancelar", null).show();
@@ -308,16 +297,12 @@ public final class GameImportActivity extends Activity {
         playButton = new Button(this);
         playButton.setText("JOGAR");
         playButton.setOnClickListener(v -> {
-            if (!importing && openglTestSelected()) {
-                startActivity(new Intent(this, OpenGLTestActivity.class));
-                return;
-            }
             if (!importing && hasGameFiles(extractedDir()) && hasGameCode()) {
                 Intent game = new Intent();
                 game.setClassName(this, "com.retroaura.lasrecomp.GameSDLActivity");
                 Uri tree = rememberedGameFolder();
                 if (tree != null) game.putExtra("game_tree_uri", tree.toString());
-                game.putExtra("opengl_overlay_test", openglGameOverlaySelected());
+                game.putExtra("use_native_gles", openglGameNativeSelected());
                 startActivity(game);
             }
         });
@@ -739,15 +724,12 @@ public final class GameImportActivity extends Activity {
         boolean files = hasGameFiles(extractedDir());
         boolean code = hasGameCode();
         playButton.setVisibility(View.VISIBLE);
-        boolean gles = openglTestSelected();
-        boolean combined = openglGameOverlaySelected();
-        // Standalone GL requires no game files; combined mode needs the real game.
-        playButton.setEnabled(!importing && (gles || (files && code)));
-        playButton.setText(gles ? "TESTAR OPENGL ES 3.0 (SEM JOGO)" :
-            files && code ? combined ? "JOGAR — IMAGEM POR OPENGL ES (HÍBRIDO)" : "JOGAR — VULKAN" :
+        boolean gles = openglGameNativeSelected();
+        playButton.setEnabled(files && code && !importing);
+        playButton.setText(files && code ?
+            gles ? "JOGAR — OPENGL ES NATIVO (INCOMPLETO)" : "JOGAR — VULKAN" :
             "JOGAR — AGUARDANDO ARQUIVOS E BIBLIOTECA");
-        rendererButton.setText(gles ? "GRÁFICO: OPENGL ES (TESTE ISOLADO)" :
-            combined ? "GRÁFICO: OPENGL ES — IMAGEM DO ZELDA (HÍBRIDO)" :
+        rendererButton.setText(gles ? "GRÁFICO: OPENGL ES NATIVO (EXPERIMENTAL)" :
             "GRÁFICO: VULKAN (JOGO)");
         verifyButton.setVisibility(privateGameCodeFile().isFile() ? View.VISIBLE : View.GONE);
         verifyButton.setEnabled(!importing);

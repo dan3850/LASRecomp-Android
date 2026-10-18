@@ -14,6 +14,7 @@
 #include "diagnostics.h"
 #include "texture_native.h"
 #include "../renderer.h"
+#include "../gles/gles.h"
 #include "../texpatch.h"
 
 // ================================================================== formats
@@ -152,7 +153,11 @@ bool renderer_format_is_depth(uint32_t f) { return f >= 0x31 && f <= 0x36; }
 bool renderer_format_has_stencil(uint32_t f) { return f == 0x31 || f == 0x35 || f == 0x36; }
 VkFormat vk_format(uint32_t f) { return fmt_of(f).vf; }
 bool vk_format_alpha_one(uint32_t f) { return fmt_of(f).alpha_one; }
-bool renderer_format_alpha_one(uint32_t f) { return fmt_of(f).alpha_one; }
+bool renderer_format_alpha_one(uint32_t f) {
+    if (gles_selected()) return f == 0x19 || f == 0x6D || f == 0x71 ||
+                                f == 0x76 || f == 0x98 || f == 0x9A;
+    return fmt_of(f).alpha_one;
+}
 
 static VkImageAspectFlags aspect_of(uint32_t f) {
     if (f == 0x31) return VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -258,6 +263,7 @@ bool renderer_texture_presented(NvnTexture *t) {
 }
 
 void renderer_texture_scale(NvnTexture *t, float *sx, float *sy) {
+    if (gles_selected()) { (void)t; *sx = *sy = 1.0f; return; }
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
     if (b && b->scalable) { *sx = b->sx; *sy = b->sy; }
     else { *sx = 1; *sy = 1; }
@@ -462,6 +468,7 @@ static TexBackend *tex_backend(NvnTexture *t) {
 }
 
 void backend_texture_destroyed(NvnTexture *t) {
+    if (gles_selected()) { gles_texture_destroyed(t); return; }
     TexBackend *b = t->backend;
     if (b) {
         extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
@@ -789,21 +796,27 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
 }
 
 void renderer_mark_gpu_owned(NvnTexture *t) {
+    if (gles_selected()) return;
     TexBackend *b = tex_backend(t);
     if (!b->gpu_owned) vk_native_texture_discard(b);
     b->gpu_owned = true;
 }
-bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
+bool renderer_is_gpu_owned(NvnTexture *t) {
+    if (gles_selected()) return t && t->backend != NULL;
+    return tex_backend(t)->gpu_owned;
+}
 // NVN explicitly flushes CPU-rasterized glyphs. The texture/view memo must not
 // suppress that update merely because another string used the atlas this frame.
 static _Atomic uint64_t cpu_write_generation;
 uint64_t vk_cpu_write_generation(void) { return atomic_load(&cpu_write_generation); }
 void backend_pool_written(uint64_t addr, uint64_t size) {
+    if (gles_selected()) return; // GLES CPU texture invalidation not implemented yet.
     if (addr && size) atomic_fetch_add(&cpu_write_generation, 1);
 }
 
 // Host-produced texel data (decoded video, any thread): applied on the render thread at the texture's next use.
 void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {
+    if (gles_selected()) { gles_upload_rgba(t, rgba, w, h, stride); return; }
     TexBackend *b = t->backend;
     if (!b) return;  // the game binds the texture before decoding into it; first frames may arrive earlier
     void *copy = malloc((size_t)stride * h);

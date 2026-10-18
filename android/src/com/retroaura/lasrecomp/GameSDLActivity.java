@@ -6,7 +6,6 @@ import android.content.pm.ActivityInfo;
 import android.os.Build;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.SurfaceView;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
@@ -35,8 +34,10 @@ public final class GameSDLActivity extends SDLActivity {
     private android.widget.Button captureButton;
     private final android.os.Handler captureHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private GameTouchControls touchControls;
-    // Opt-in GLES context alongside Vulkan; Zelda's NVN graphics remain Vulkan.
-    private OpenGLGameOverlay glGameOverlay;
+    /** Vulkan and GLES use separate native SDL backends, never an overlay. */
+    public String getNativeRenderer() {
+        return getIntent().getBooleanExtra("use_native_gles", false) ? "gles" : "vulkan";
+    }
     private android.net.Uri selectedGameTree;
     private GameDocumentBridge.RomfsIndex romfsIndex;
 
@@ -115,21 +116,6 @@ public final class GameSDLActivity extends SDLActivity {
         }
     }
 
-    // SDL3 owns the native Vulkan SurfaceView; capture its Surface directly, not
-    // the composited Activity window (which would include the GLES output).
-    private static SurfaceView findGameSurface(View root) {
-        if (root instanceof SurfaceView && !(root instanceof android.opengl.GLSurfaceView))
-            return (SurfaceView) root;
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int index = 0; index < group.getChildCount(); index++) {
-                SurfaceView result = findGameSurface(group.getChildAt(index));
-                if (result != null) return result;
-            }
-        }
-        return null;
-    }
-
     @Override
     public void onCreate(Bundle state) {
         markActivity("onCreate");
@@ -146,21 +132,6 @@ public final class GameSDLActivity extends SDLActivity {
         super.onCreate(state);
         enforceLandscapeFullscreen();
         if (mLayout != null) {
-            if (getIntent().getBooleanExtra("opengl_overlay_test", false)) {
-                try {
-                    SurfaceView source = findGameSurface(mLayout);
-                    if (source == null) throw new IllegalStateException("SDL Vulkan SurfaceView not found");
-                    glGameOverlay = new OpenGLGameOverlay(this, source);
-                    mLayout.addView(glGameOverlay, new ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT));
-                    markActivity("OpenGL ES presents PixelCopy frames from SDL Vulkan SurfaceView; NVN remains Vulkan");
-                } catch (RuntimeException error) {
-                    glGameOverlay = null;
-                    markActivity("OpenGL ES overlay setup failed: " + error);
-                    android.util.Log.e("LASRecomp/GLES", "Overlay init failure", error);
-                }
-            }
             touchControls = new GameTouchControls(this);
             mLayout.addView(touchControls, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -227,18 +198,11 @@ public final class GameSDLActivity extends SDLActivity {
     @Override
     protected void onPause() {
         if (touchControls != null) touchControls.releaseAll();
-        if (glGameOverlay != null) glGameOverlay.onPause();
         super.onPause();
-    }
-    @Override
-    protected void onResume() {
-        super.onResume();
-        if (glGameOverlay != null) glGameOverlay.onResume();
     }
     @Override
     protected void onDestroy() {
         captureHandler.removeCallbacksAndMessages(null);
-        if (glGameOverlay != null) glGameOverlay.shutdown();
         if (touchControls != null) touchControls.releaseAll();
         markActivity("onDestroy");
         super.onDestroy();

@@ -28,6 +28,7 @@
 #include "replay.h"
 #include "../output_scale.h"
 #include "../renderer.h"
+#include "../gles/gles.h"
 
 VkG g_vk;
 static SDL_Window *window;
@@ -854,6 +855,10 @@ static void stable60_mod_pace(void) {
 #endif
 
 void backend_present(NvnTexture *t) {
+    if (gles_selected()) {
+        gles_present(t);
+        return;
+    }
 #ifdef __ANDROID__
     stable60_mod_pace();
 #endif
@@ -1065,7 +1070,15 @@ void ui_window_init(void) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     int win_w = 1280, win_h = 720;
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
-    SDL_WindowFlags wflags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    bool use_gles = gles_selected();
+    if (use_gles) {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    }
+    SDL_WindowFlags wflags = (use_gles ? SDL_WINDOW_OPENGL : SDL_WINDOW_VULKAN)
+        | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (getenv("LARECOMP_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
     {   // scripted test runs (user input ignored: runtime/hle/input.c input_user_blocked) open without taking the
         // keyboard focus from whatever the player is doing
@@ -1079,6 +1092,10 @@ void ui_window_init(void) {
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
     if (g_settings.fullscreen && !getenv("LARECOMP_WINDOW") && !getenv("LARECOMP_HIDDEN")) SDL_SetWindowFullscreen(window, true);
+    if (use_gles) {
+        LOG("[gles] SDL OpenGL ES window created; no Vulkan instance/device/swapchain\n");
+        return;
+    }
     create_instance();
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();
@@ -1093,11 +1110,16 @@ SDL_Window *ui_window(void) { return window; }
 
 void backend_init(void) {
     while (!atomic_load(&ui_ready)) SDL_Delay(1);
+    if (gles_selected()) {
+        gles_init(window);
+        return;
+    }
     LOG("[vk] %s, swapchain %ux%u\n", g_vk.props.deviceName, g_vk.sc_extent.width, g_vk.sc_extent.height);
 }
 
 // ---- in-place reboot (runtime/main.c teardown; main thread, guest threads stopped)
 void backend_reset(void) {
+    if (gles_selected()) { gles_reset(); return; }
     if (!g_vk.dev) return;
     vkDeviceWaitIdle(g_vk.dev);
     extern void vk_textures_reset(void);
@@ -1108,6 +1130,7 @@ void backend_reset(void) {
 }
 void backend_guest_memory_reset(void) {}  // (exec.c re-imports the heap on first use)
 void backend_clear_window(void) {
+    if (gles_selected()) { gles_clear_window(); return; }
     static const float black[4] = {0, 0, 0, 1};
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }

@@ -199,6 +199,21 @@ int SDL_main(int argc, char **argv) {
     jobject vkactivity = SDL_GetAndroidActivity();
     if (vkenv && vkactivity) {
         jclass vkcls = (*vkenv)->GetObjectClass(vkenv, vkactivity);
+        jmethodID renderer_method = vkcls ? (*vkenv)->GetMethodID(vkenv, vkcls,
+            "getNativeRenderer", "()Ljava/lang/String;") : NULL;
+        if (renderer_method) {
+            jstring choice = (jstring)(*vkenv)->CallObjectMethod(vkenv, vkactivity, renderer_method);
+            if (choice && !(*vkenv)->ExceptionCheck(vkenv)) {
+                const char *value = (*vkenv)->GetStringUTFChars(vkenv, choice, NULL);
+                if (value) {
+                    // Strict whitelist. Never turn an unexpected string into a renderer.
+                    setenv("LARECOMP_RENDERER", strcmp(value, "gles") == 0 ? "gles" : "vulkan", 1);
+                    (*vkenv)->ReleaseStringUTFChars(vkenv, choice, value);
+                }
+                (*vkenv)->DeleteLocalRef(vkenv, choice);
+            }
+            if ((*vkenv)->ExceptionCheck(vkenv)) (*vkenv)->ExceptionClear(vkenv);
+        } else if ((*vkenv)->ExceptionCheck(vkenv)) (*vkenv)->ExceptionClear(vkenv);
         jmethodID filesmethod = vkcls ? (*vkenv)->GetMethodID(vkenv, vkcls,
             "getVulkanDriverFilesDirectory", "()Ljava/lang/String;") : NULL;
         if (filesmethod) {

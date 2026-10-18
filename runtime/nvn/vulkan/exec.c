@@ -31,6 +31,7 @@
 #include "cache_identity.h"
 #include "../bcn_decode.h"
 #include "../renderer.h"
+#include "../gles/gles.h"
 #include "../../settings.h"
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
@@ -703,15 +704,20 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     vk_collect_dead();
 }
 
-void renderer_submit(void) { vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE); }
+void renderer_submit(void) {
+    if (gles_selected()) return;
+    vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+}
 
 void renderer_flush(void) {
+    if (gles_selected()) { gles_finish(); return; }
     renderer_submit();
     if (!wait_why) wait_why = "flush";
     vk_wait_seq(submit_seq);
 }
 
 void renderer_sync(void) {
+    if (gles_selected()) { gles_finish(); return; }
     pthread_mutex_lock(&seq_lock);
     uint64_t s = submit_seq;
     pthread_mutex_unlock(&seq_lock);
@@ -720,6 +726,7 @@ void renderer_sync(void) {
 }
 
 uint64_t renderer_fence_seq(void) {
+    if (gles_selected()) return gles_frame_count();
     cq_resolve_ready();
     pthread_mutex_lock(&seq_lock);
     uint64_t q = submit_seq + (subs[cur_sub].main_begun || subs[cur_sub].upload_begun ? 1 : 0);
@@ -728,6 +735,7 @@ uint64_t renderer_fence_seq(void) {
 }
 
 void renderer_wait_seq(uint64_t seq) {
+    if (gles_selected()) { gles_finish(); return; }
     if (!seq) return;
     pthread_mutex_lock(&seq_lock);
     uint64_t s = submit_seq;
@@ -1260,6 +1268,7 @@ void vk_prof_frame(uint64_t frame, uint64_t present_ns) {
 }
 
 const char *renderer_stats(void) {
+    if (gles_selected()) return gles_stats();
     static int dumps;
     if (dumps++ < 3) {
         LOG("[vk] command counts:");
@@ -5291,6 +5300,7 @@ static void exec_list(uint64_t handle, int depth) {
 }
 
 void backend_execute(uint64_t handle) {
+    if (gles_selected()) { gles_execute(handle); return; }
     PROF_T0();
     exec_list(handle, 0);
     PROF_ADD(prof_exec);
