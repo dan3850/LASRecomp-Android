@@ -29,6 +29,7 @@
 #include "rt_alias_policy.h"
 #include "replay.h"
 #include "worker_budget.h"
+#include "guest_copy_policy.h"
 #include "cache_identity.h"
 #include "../bcn_decode.h"
 #include "../renderer.h"
@@ -928,19 +929,53 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
     return s;
 }
 
-// Guest memory copied once per submission: a larger snapshot also serves shorter
-// prefixes at the same address. Submission/inline-update invalidation is unchanged.
+// Guest memory uploads are immutable snapshots within a submission. Android's
+// four-way cache keeps interleaved, colliding guest addresses without recopying.
+// Inline writes and compute completion still bump gcopy_gen; only metadata is
+// evicted, never in-flight ring buffers. Disable with LARECOMP_VK_GCOPY_4WAY=0.
 #define GCOPY_TAB 4096
-static struct { uint64_t addr, size, seq; VkSpan span; } gcopy[GCOPY_TAB];
+#define GCOPY_BUCKETS (GCOPY_TAB / LAS_GCOPY_WAYS)
+static LasGuestCopyKey gcopy_key[GCOPY_TAB];
+static VkSpan gcopy_span[GCOPY_TAB];
+static uint8_t gcopy_next[GCOPY_BUCKETS];
+static uint64_t stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_saved;
 static _Atomic uint64_t gcopy_gen;  // also invalidated by compute completion on a waiting CPU thread
 static void guest_copy_flush(void) { gcopy_gen++; }
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
-    uint64_t seq = vk_pending_seq() + (gcopy_gen << 40), h = addr * 0x9E3779B97F4A7C15ull;
-    uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
-    if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && gcopy[slot].size >= size) return gcopy[slot].span;
-    VkSpan s = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
-    gcopy[slot].addr = addr; gcopy[slot].size = size; gcopy[slot].seq = seq; gcopy[slot].span = s;
-    return s;
+    static int four_way = -1;
+    if (four_way < 0) {
+        const char *opt = getenv("LARECOMP_VK_GCOPY_4WAY");
+#ifdef __ANDROID__
+        four_way = !opt || atoi(opt) != 0;
+#else
+        four_way = opt && atoi(opt) != 0;
+#endif
+        LOG("[vk] guest-copy cache: %s (LARECOMP_VK_GCOPY_4WAY=%s)\n",
+            four_way ? "4-way" : "original direct-map", opt ? opt : "unset");
+    }
+    uint64_t seq = vk_pending_seq() + (atomic_load(&gcopy_gen) << 40);
+    unsigned base, ways;
+    if (four_way) {
+        base = las_gcopy_bucket(addr, GCOPY_BUCKETS) * LAS_GCOPY_WAYS;
+        ways = LAS_GCOPY_WAYS;
+    } else {
+        base = las_gcopy_bucket(addr, GCOPY_TAB);
+        ways = 1;
+    }
+    int hit = las_gcopy_find(&gcopy_key[base], ways, seq, addr, size);
+    if (hit >= 0) {
+        stat_gcopy_hit++;
+        stat_gcopy_saved += size;
+        return gcopy_span[base + (unsigned)hit];
+    }
+    stat_gcopy_miss++;
+    unsigned victim = las_gcopy_victim(&gcopy_key[base], ways, seq,
+        four_way ? gcopy_next[base / LAS_GCOPY_WAYS]++ : 0);
+    unsigned slot = base + victim;
+    VkSpan span = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
+    gcopy_key[slot] = (LasGuestCopyKey){.addr = addr, .size = size, .seq = seq};
+    gcopy_span[slot] = span;
+    return span;
 }
 
 // On Android the Adreno driver does not expose VK_EXT_external_memory_host, and
@@ -1279,6 +1314,15 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
+    if (stat_gcopy_hit || stat_gcopy_miss) {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+            " | guest-copy hit %llu miss %llu avoided %.1fMB",
+            (unsigned long long)stat_gcopy_hit,
+            (unsigned long long)stat_gcopy_miss,
+            (double)stat_gcopy_saved / 1048576.0);
+        stat_gcopy_hit = stat_gcopy_miss = stat_gcopy_saved = 0;
+    }
     if (vtx_snapshot_reuses || vtx_snapshot_refreshes || vtx_snapshot_busy) {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, ", vtx reused %llu refreshed %llu busy %llu",
