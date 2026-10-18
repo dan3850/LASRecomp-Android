@@ -22,6 +22,7 @@
 #include "../../mods.h"
 #include "../../platform.h"
 #include "mod60_pacer.h"
+#include "present_wait_stats.h"
 #include "../../ui/menu.h"
 #include "vk.h"
 #include "diagnostics.h"
@@ -37,6 +38,8 @@ static VkDebugUtilsMessengerEXT messenger;
 // A lost VkSurfaceKHR needs a new SDL/Vulkan surface, not just a new swapchain.
 static bool surface_rebuild_needed;
 static Uint64 last_surface_rebuild_attempt_ns;
+// Actual swapchain mode; set only after successful Vulkan creation.
+static VkPresentModeKHR active_present_mode = VK_PRESENT_MODE_FIFO_KHR;
 #ifdef __ANDROID__
 static ANativeWindow *surface_window; // owned reference for the recovered VkSurfaceKHR's lifetime
 #endif
@@ -496,6 +499,7 @@ static void create_swapchain(void) {
     VkResult create_r = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &next);
     if (create_r == VK_ERROR_SURFACE_LOST_KHR) { mark_surface_lost("swapchain create"); return; }
     VK_CHECK(create_r);
+    active_present_mode = ci.presentMode;
 #ifdef __ANDROID__
     // Diagnostic only: record the presentation mode actually selected by the
     // Android Vulkan surface, including MAILBOX -> FIFO fallback.
@@ -517,6 +521,12 @@ static void create_swapchain(void) {
     g_vk.sc_extent = ext;
     g_vk.sc_count = 8;
     vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
+#ifdef __ANDROID__
+    LOG("[vk-present] selected=%s actual_images=%u requested_images=%u surface_min=%u surface_max=%u\n",
+        active_present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" :
+        active_present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "FIFO",
+        g_vk.sc_count, count, caps.minImageCount, caps.maxImageCount);
+#endif
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = g_vk.sc_images[i],
                                     .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sf.format,
@@ -620,6 +630,10 @@ static bool recover_lost_surface(void) {
 static VkSemaphore acquire_sem[FRAMES], done_sem[8];
 static uint64_t slot_seq[FRAMES];
 static int slot;
+#ifdef __ANDROID__
+// Account without extra barriers, sleeps, fence queries or guest timing changes.
+static LasPresentWaitStats present_wait_stats;
+#endif
 
 static VkSemaphore binary_semaphore(void) {
     VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -663,7 +677,13 @@ bool vk_frame_begin(const float clear[4]) {
     if (trace) LOG("[vk] frame begin %dx%d (swapchain %ux%u)\n", w, h, g_vk.sc_extent.width, g_vk.sc_extent.height);
     slot = (slot + 1) % FRAMES;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
+#ifdef __ANDROID__
+    const uint64_t before_slot = SDL_GetTicksNS();
+#endif
     vk_wait_seq(slot_seq[slot]);
+#ifdef __ANDROID__
+    const uint64_t before_acquire = SDL_GetTicksNS();
+#endif
     VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
@@ -672,6 +692,26 @@ bool vk_frame_begin(const float clear[4]) {
     }
     if (r == VK_ERROR_SURFACE_LOST_KHR) { mark_surface_lost("acquire"); return false; }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { LOG("[vk] acquire failed: %d\n", r); return false; }
+#ifdef __ANDROID__
+    const uint64_t after_acquire = SDL_GetTicksNS();
+    las_present_wait_record(&present_wait_stats, after_acquire,
+        before_acquire - before_slot, after_acquire - before_acquire);
+    if (las_present_wait_due(&present_wait_stats, after_acquire)) {
+        const LasPresentWaitStats *s = &present_wait_stats;
+        LOG("[vk-present-wait] frames=%llu slot-total=%.1fms slot-avg=%.2fms slot-peak=%.1fms slot-over16=%llu "
+            "acquire-total=%.1fms acquire-avg=%.2fms acquire-peak=%.1fms acquire-over16=%llu mode=%s images=%u\n",
+            (unsigned long long)s->frames, s->slot_total_ns / 1e6,
+            s->slot_total_ns / (1e6 * s->frames), s->slot_peak_ns / 1e6,
+            (unsigned long long)s->slot_over_16ms,
+            s->acquire_total_ns / 1e6,
+            s->acquire_total_ns / (1e6 * s->frames), s->acquire_peak_ns / 1e6,
+            (unsigned long long)s->acquire_over_16ms,
+            active_present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" :
+            active_present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "FIFO",
+            g_vk.sc_count);
+        present_wait_stats = (LasPresentWaitStats){0};
+    }
+#endif
     cur_frame.acquired = acquire_sem[slot];
     slot_seq[slot] = vk_pending_seq();
     VkCommandBuffer cb = vk_cmd();
@@ -869,7 +909,7 @@ void backend_present(NvnTexture *t) {
     uint64_t nd = SDL_GetTicksNS() - t0;
     if (nd > 30000000) {
         static int warned;
-        if (warned++ < 20) LOG("[vk] acquire blocked %llums\n", (unsigned long long)(nd / 1000000));
+        if (warned++ < 20) LOG("[vk] frame begin blocked %llums (slot + acquire + recreation)\n", (unsigned long long)(nd / 1000000));
     }
     if (have) {
         double dw = g_vk.sc_extent.width, dh = g_vk.sc_extent.height;
