@@ -157,7 +157,11 @@ draws = source("runtime/nvn/gles/draw.c")
 assert "(v->setmask & ~63u)" in draws
 assert "(v->setmask & 32u)" in draws
 assert "(v->setmask & 16u)" in draws
-assert "GL_TEXTURE_SWIZZLE_RGBA" in gles
+for token in ("GL_TEXTURE_SWIZZLE_R", "GL_TEXTURE_SWIZZLE_G",
+              "GL_TEXTURE_SWIZZLE_B", "GL_TEXTURE_SWIZZLE_A",
+              "glTexParameteri(host->target,swizzle_pnames[c],rgba[c])"):
+    assert token in gles, f"Missing GLES 3.2 component swizzle: {token}"
+assert "glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA" not in gles
 assert "normalize_swizzle(" in draws
 assert "view_reject_target=" in draws
 assert "view_reject_swizzle_conflict=" in draws
@@ -175,3 +179,11 @@ assert ("bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,\n"
         "                         const uint8_t swizzle[4])") in gl
 assert "static char buffer[2048];" in draw
 print("GLES texture-swizzle ABI and diagnostic buffer source assertions passed")
+
+# Android GLES 3.2 provides separate swizzle selectors, not desktop GL's
+# aggregate GL_TEXTURE_SWIZZLE_RGBA selector.
+for token in ("GL_TEXTURE_SWIZZLE_R", "GL_TEXTURE_SWIZZLE_G",
+              "GL_TEXTURE_SWIZZLE_B", "GL_TEXTURE_SWIZZLE_A"):
+    assert token in gl
+assert "glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA" not in gl
+print("Native GLES3 per-component swizzle API regression checks passed")

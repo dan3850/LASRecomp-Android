@@ -526,7 +526,15 @@ bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
         // Vulkan's vk_view applies the NVN component swizzle. GLES needs
         // the equivalent texture parameter; otherwise shader outputs read
         // the wrong channels (or zeros) despite a successful bind.
-        glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA,rgba);
+        // GLES 3.2 exposes four component-specific texture-swizzle pnames.
+        // GL_TEXTURE_SWIZZLE_RGBA is a desktop GL convenience enum and is
+        // deliberately not present in Android's GLES3 headers.
+        static const GLenum swizzle_pnames[4]={
+            GL_TEXTURE_SWIZZLE_R, GL_TEXTURE_SWIZZLE_G,
+            GL_TEXTURE_SWIZZLE_B, GL_TEXTURE_SWIZZLE_A
+        };
+        for (int c=0;c<4;c++)
+            glTexParameteri(host->target,swizzle_pnames[c],rgba[c]);
         GLenum error=glGetError();
         if (error!=GL_NO_ERROR) {
             static int warn;

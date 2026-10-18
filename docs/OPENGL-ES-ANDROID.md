@@ -285,7 +285,8 @@ NVN view descriptors *before* attempting to use their sampled data.
   when matching the actual GL storage class, and honor depth-mode
   overrides only when they do not change the sampled depth/stencil aspect.
 - Translate the actual NVN channel swizzles (ZERO, ONE, RED, GREEN, BLUE,
-  ALPHA) into OpenGL ES 3.2 `GL_TEXTURE_SWIZZLE_RGBA`, with an explicit
+  ALPHA) into the four GLES 3.2 per-component parameters
+  `GL_TEXTURE_SWIZZLE_R/G/B/A`, with an explicit
   identity swizzle when NVN leaves all channels unset.
 - Detect conflicting simultaneous swizzles for the same underlying GL
   texture within one shader and reject rather than draw incorrect pixels.
