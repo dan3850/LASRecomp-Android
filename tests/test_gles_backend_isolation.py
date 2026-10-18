@@ -143,7 +143,23 @@ assert "entry->has_view || tex->target!=1" not in draws
 assert "if (!compatible_texture_view(entry))" in draws
 for token in ("GL_TEXTURE_2D_ARRAY", "glTexImage3D(", "glTexSubImage3D(",
               "tegra_layer_size(", "layer_size*layers > size",
-              "host->target != want", "backend_milestone=nvn-gles-array-identityviews-v1"):
+              "host->target != want"):
     assert token in gles, f"Native GLES 2D array support missing: {token}"
 assert "g_sample_ok++;" in gles
 print("Native NVN identity views and GLES 2D array layer decoding: source checks passed")
+
+# NVNtextureView has six explicitly supported setmask flags, including
+# depth/stencil (16) and target (32). Rejecting these as unknown previously
+# dropped every sampled draw, with sample_ok=0 and 45551 view rejections.
+gles = source("runtime/nvn/gles/gles.c")
+draws = source("runtime/nvn/gles/draw.c")
+assert "(v->setmask & ~63u)" in draws
+assert "(v->setmask & 32u)" in draws
+assert "(v->setmask & 16u)" in draws
+assert "GL_TEXTURE_SWIZZLE_RGBA" in gles
+assert "normalize_swizzle(" in draws
+assert "view_reject_target=" in draws
+assert "view_reject_swizzle_conflict=" in draws
+assert "backend_milestone=nvn-gles-viewflags-swizzle-v2" in gles
+assert "backend_milestone=nvn-gles-array-identityviews-v1" not in gles
+print("GLES NVN six view flags and native swizzle translation: source assertions passed")

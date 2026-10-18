@@ -22,7 +22,8 @@ typedef struct {
     GLsizei width, height, layers;
     GLenum target, attachment;
     GLuint depth_bound;
-    bool cpu_uploaded, gpu_written;
+    bool cpu_uploaded, gpu_written, swizzle_valid;
+    uint8_t current_swizzle[4];
     uint64_t cpu_hash, last_cpu_check_frame;
 } GlesTexture;
 
@@ -64,7 +65,7 @@ static void report(void) {
     mkdir("graphics", 0755);
     FILE *f = fopen("graphics/gles.txt", "w");
     if (!f) return;
-    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-array-identityviews-v1\n"
+    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-viewflags-swizzle-v2\n"
                "NVN_renderer=OpenGL_ES\nVulkan_initialized=0\n");
     fprintf(f, "native_maxwell_draws=%" PRIu64 "\ngles_programs_linked=%" PRIu64
                "\ngles_programs_failed=%" PRIu64 "\n",
@@ -171,7 +172,7 @@ void gles_init(SDL_Window *window) {
     glGenVertexArrays(1, &g_vertex_array);
     glGenSamplers(32, g_texture_samplers);
     gles_draw_init();
-    LOG("[gles] native backend milestone=nvn-gles-array-identityviews-v1\n");
+    LOG("[gles] native backend milestone=nvn-gles-viewflags-swizzle-v2\n");
     LOG("[gles] genuine GLES backend: %s / %s, version %s\n",
         glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION));
     report();
@@ -485,7 +486,8 @@ static GLint sampler_wrap(uint32_t wrap) {
     }
 }
 bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
-                         int unit, bool shadow, uint8_t target) {
+                         int unit, bool shadow, uint8_t target,
+                         const uint8_t swizzle[4]) {
     if (!tex || unit < 0 || unit >= 32 ||
         (target != 1 && target != 4)) {
         g_sample_fail++; return false;
@@ -514,6 +516,26 @@ bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
     glBindSampler((GLuint)unit,sm);
     glActiveTexture(GL_TEXTURE0+(GLenum)unit);
     glBindTexture(host->target,host->color);
+    if (!host->swizzle_valid || memcmp(host->current_swizzle,swizzle,4)!=0) {
+        static const GLint channels[6]={GL_ZERO,GL_ONE,GL_RED,GL_GREEN,GL_BLUE,GL_ALPHA};
+        GLint rgba[4];
+        for (int c=0;c<4;c++) {
+            if (swizzle[c]>5u) {g_sample_fail++;return false;}
+            rgba[c]=channels[swizzle[c]];
+        }
+        // Vulkan's vk_view applies the NVN component swizzle. GLES needs
+        // the equivalent texture parameter; otherwise shader outputs read
+        // the wrong channels (or zeros) despite a successful bind.
+        glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA,rgba);
+        GLenum error=glGetError();
+        if (error!=GL_NO_ERROR) {
+            static int warn;
+            if(warn++<8) LOG("[gles] texture swizzle GL error=%#x fmt=%#x\n",error,tex->format);
+            g_sample_fail++; return false;
+        }
+        memcpy(host->current_swizzle,swizzle,4);
+        host->swizzle_valid=true;
+    }
     g_sample_ok++;
     return true;
 }

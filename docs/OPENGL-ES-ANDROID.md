@@ -266,3 +266,36 @@ sampling, compute, GMEM, and shader program link failures remain separate
 work. The user log also contains `EGL_BAD_SURFACE` later in the session;
 it does not account for persistent black from first frame. No Adreno
 device build or visual confirmation has been performed by the assistant.
+
+## Milestone 8: full NVNtextureView flag recognition and GLES channel swizzles
+The user's `LASRecomp-grafico-20261018-102916.zip` confirms milestone 7
+running on an Adreno 840. Counts: 74768 native Maxwell draw calls,
+45551 rejections attributed to `texture_reject_view`, **0 sampled
+textures**, 8197 actual NVN texture copies, and zero sampled draw
+driver errors. The 332 decoded RGBA video frames were uploaded; this
+does not mean the game scene was correctly rendered.
+
+Root cause verified against `objects.c`: the view API defines six
+setmask bits (levels 1, layers 2, format 4, swizzle 8,
+depth/stencil 16 and target 32), but the GLES validation rejected
+any bit outside the first four (mask ~15). This rejects valid
+NVN view descriptors *before* attempting to use their sampled data.
+
+- Recognize all six defined bits (mask ~63), honor target overrides only
+  when matching the actual GL storage class, and honor depth-mode
+  overrides only when they do not change the sampled depth/stencil aspect.
+- Translate the actual NVN channel swizzles (ZERO, ONE, RED, GREEN, BLUE,
+  ALPHA) into OpenGL ES 3.2 `GL_TEXTURE_SWIZZLE_RGBA`, with an explicit
+  identity swizzle when NVN leaves all channels unset.
+- Detect conflicting simultaneous swizzles for the same underlying GL
+  texture within one shader and reject rather than draw incorrect pixels.
+- Distinguish remaining incompatible view levels, layers, format, target,
+  depth mode, unknown flags and per-draw swizzle conflicts. Emit up to 24
+  distinct rejected view shapes to the runtime log with their flag values.
+- Write `backend_milestone=nvn-gles-viewflags-swizzle-v2` into the
+  `graphics/gles.txt` snapshot.
+
+This removes an identified blanket rejection but does not implement
+non-base mipmap sampling, 2D views of selected array layers, GLSL ES
+unsupported global memory/compute, or full render correctness. It has
+not been built or tested on the Android GPU by the assistant.

@@ -41,6 +41,8 @@ static uint64_t checked_draws, gl_draw_errors;
 enum { T_KIND, T_POOL, T_HANDLE, T_DESCRIPTOR, T_VIEW, T_FEEDBACK, T_UPLOAD, T_REASON_COUNT };
 static uint64_t texture_rejection[T_REASON_COUNT];
 static uint64_t texture_views_accepted;
+enum { V_UNKNOWN, V_LEVEL, V_LAYER, V_FORMAT, V_TARGET, V_DEPTH, V_SWIZZLE_CONFLICT, V_REASON_COUNT };
+static uint64_t view_rejection_reason[V_REASON_COUNT];
 static uint64_t texture_array_attempts, texture_array_bound;
 static GLenum last_gl_draw_error;
 enum { R_NO_PROGRAM, R_TARGET, R_SHADER_FEATURE, R_TRANSLATE, R_COMPILE, R_TOPOLOGY,
@@ -112,6 +114,13 @@ const char *gles_draw_rejection_stats(void) {
         "\ntexture_reject_feedback=%" PRIu64
         "\ntexture_reject_upload=%" PRIu64
         "\ntexture_views_accepted=%" PRIu64
+        "\nview_reject_unknown=%" PRIu64
+        "\nview_reject_level=%" PRIu64
+        "\nview_reject_layer=%" PRIu64
+        "\nview_reject_format=%" PRIu64
+        "\nview_reject_target=%" PRIu64
+        "\nview_reject_depth=%" PRIu64
+        "\nview_reject_swizzle_conflict=%" PRIu64
         "\ntexture_array_attempts=%" PRIu64
         "\ntexture_array_bound=%" PRIu64
         "\ngl_draw_checked=%" PRIu64 "\ngl_draw_errors=%" PRIu64
@@ -125,6 +134,10 @@ const char *gles_draw_rejection_stats(void) {
         texture_rejection[T_HANDLE], texture_rejection[T_DESCRIPTOR],
         texture_rejection[T_VIEW], texture_rejection[T_FEEDBACK],
         texture_rejection[T_UPLOAD], texture_views_accepted,
+        view_rejection_reason[V_UNKNOWN], view_rejection_reason[V_LEVEL],
+        view_rejection_reason[V_LAYER], view_rejection_reason[V_FORMAT],
+        view_rejection_reason[V_TARGET], view_rejection_reason[V_DEPTH],
+        view_rejection_reason[V_SWIZZLE_CONFLICT],
         texture_array_attempts, texture_array_bound,
         checked_draws, gl_draw_errors, (unsigned)last_gl_draw_error);
     return buffer;
@@ -437,27 +450,73 @@ static bool bind_uniforms(Program *p) {
     return true;
 }
 
-static bool compatible_texture_view(const NvnTexEntry *entry) {
-    if (!entry->has_view) return true;
-    const NvnTextureView *v=&entry->view;
+static void normalize_swizzle(const uint8_t *src, uint8_t out[4]) {
+    if (!src || !(src[0] | src[1] | src[2] | src[3])) {
+        out[0]=2; out[1]=3; out[2]=4; out[3]=5;
+    } else memcpy(out,src,4);
+}
+static bool compatible_texture_view(const NvnTexEntry *entry, uint8_t swizzle[4],
+                                    int *reason) {
     const NvnTexture *tex=entry->tex;
-    // A view of the complete same image changes no sampled texels. This
-    // covers common NVNtextureView registrations that were always rejected.
-    // Complex mips/layers, reinterpretations and per-view swizzles still
-    // need real GL texture-view objects and must not be guessed.
-    if (!tex || (v->setmask & ~15u)) return false;
-    if ((v->setmask & 1u) &&
-        (v->base_level != 0 || (v->num_levels && v->num_levels != tex->levels)))
-        return false;
+    if (!tex) { *reason=V_UNKNOWN; return false; }
+    const NvnTextureView *v=&entry->view;
+    normalize_swizzle(tex->swizzle,swizzle);
+    if (!entry->has_view) return true;
+    // Do not reject the NVN depth-mode/target flags by treating them as
+    // unrecognized bits: these bits are defined by objects.c (16 and 32).
+    if (v->setmask & ~63u) { *reason=V_UNKNOWN; return false; }
+    if ((v->setmask & 1u) && (v->base_level != 0 || v->num_levels > 1)) {
+        // The native GLES prototype currently allocates mip level zero only.
+        *reason=V_LEVEL; return false;
+    }
     if ((v->setmask & 2u) &&
-        (v->min_layer != 0 || (v->num_layers && v->num_layers != tex->layout.layers)))
-        return false;
-    if ((v->setmask & 4u) && v->format && v->format != tex->format) return false;
-    if ((v->setmask & 8u) &&
-        memcmp(v->swizzle,tex->swizzle,4)!=0 &&
-        memcmp(v->swizzle,"\0\1\2\3",4)!=0)
-        return false;
+        (v->min_layer != 0 ||
+         (v->num_layers && v->num_layers != tex->layout.layers))) {
+        *reason=V_LAYER; return false;
+    }
+    if ((v->setmask & 4u) && v->format != tex->format) {
+        *reason=V_FORMAT; return false;
+    }
+    if ((v->setmask & 32u) && v->target != tex->target) {
+        // A 2D slice of an array needs an actual GL texture-view object.
+        *reason=V_TARGET; return false;
+    }
+    if ((v->setmask & 16u) && tex->format >= 0x32 &&
+        tex->format <= 0x36 && v->ds_mode != tex->ds_mode) {
+        *reason=V_DEPTH; return false;
+    }
+    if (v->setmask & 8u) normalize_swizzle(v->swizzle,swizzle);
+    for (int c=0;c<4;c++) if (swizzle[c] > 5u) {
+        *reason=V_UNKNOWN; return false;
+    }
+    // The actual channel selection will be installed with GLES3 native
+    // GL_TEXTURE_SWIZZLE_RGBA, not discarded or treated as identity.
     return true;
+}
+static void rejected_view(const NvnTexEntry *entry, int reason) {
+    if (reason < 0 || reason >= V_REASON_COUNT) reason=V_UNKNOWN;
+    view_rejection_reason[reason]++;
+    // Persist distinct cases in the existing runtime log, not thousands
+    // of identical lines. This captures the exact blocker if more remains.
+    static struct {uint32_t mask,fmt,target; int reason;} seen[24];
+    static int nseen=0;
+    if (!entry || !entry->has_view || !entry->tex) return;
+    const NvnTextureView *v=&entry->view;
+    for (int i=0;i<nseen;i++)
+        if (seen[i].mask==v->setmask && seen[i].fmt==v->format &&
+            seen[i].target==v->target && seen[i].reason==reason) return;
+    if (nseen>=24) return;
+    seen[nseen].mask=v->setmask; seen[nseen].fmt=v->format;
+    seen[nseen].target=v->target; seen[nseen].reason=reason;
+    nseen++;
+    fprintf(stderr,"[gles-view] rejected reason=%d mask=%#x tex=%#x/"
+                   "%u levels=%u layers=%u view=%#x/%u"
+                   " lv=%u+%u layer=%u+%u ds=%u/%u sw=%u,%u,%u,%u\n",
+            reason,v->setmask,entry->tex->format,entry->tex->target,
+            entry->tex->levels,entry->tex->layout.layers,v->format,v->target,
+            v->base_level,v->num_levels,v->min_layer,v->num_layers,
+            v->ds_mode,entry->tex->ds_mode,
+            v->swizzle[0],v->swizzle[1],v->swizzle[2],v->swizzle[3]);
 }
 static bool bind_textures(Program *p) {
     if (!p->fs || p->fs->ntex == 0) return true;
@@ -466,6 +525,9 @@ static bool bind_textures(Program *p) {
     if (p->fs->ntex > max_units || p->fs->ntex > 32) {
         rejection[R_TEXTURE]++; texture_rejection[T_KIND]++; return false;
     }
+    NvnTexture *seen_tex[32]={0};
+    uint8_t seen_swizzle[32][4]={{0}};
+    int bound=0;
     for (int i=0; i<p->fs->ntex; i++) {
         const ShaderTexture *ref=&p->fs->tex[i];
         bool array=ref->type == TEXTYPE_2D_ARRAY;
@@ -492,16 +554,31 @@ static bool bind_textures(Program *p) {
         if (!tex || (array ? tex->target!=4 : tex->target!=1)) {
             rejection[R_TEXTURE]++; texture_rejection[T_DESCRIPTOR]++; return false;
         }
-        if (!compatible_texture_view(entry)) {
+        uint8_t swizzle[4];
+        int why=V_UNKNOWN;
+        if (!compatible_texture_view(entry,swizzle,&why)) {
+            rejected_view(entry,why);
             rejection[R_TEXTURE]++; texture_rejection[T_VIEW]++; return false;
         }
+        // A mutable GLES texture has one swizzle state for every unit.
+        // If a shader samples the same NVN image with conflicting views,
+        // reject rather than silently rendering the wrong channel mapping.
+        bool conflict=false;
+        for (int b=0;b<bound;b++)
+            if (seen_tex[b]==tex && memcmp(seen_swizzle[b],swizzle,4)!=0)
+                conflict=true;
+        if (conflict) {
+            rejected_view(entry,V_SWIZZLE_CONFLICT);
+            rejection[R_TEXTURE]++; texture_rejection[T_VIEW]++; return false;
+        }
+        seen_tex[bound]=tex; memcpy(seen_swizzle[bound],swizzle,4); bound++;
         if (tex==st.color[0] || tex==st.depth) {
             rejection[R_TEXTURE]++; texture_rejection[T_FEEDBACK]++; return false;
         }
         NvnSamplerDesc *sampler=NULL;
         if (st.spool && st.spool->entries && tsc<(uint32_t)st.spool->count)
             sampler=&((NvnSamplerDesc*)st.spool->entries)[tsc];
-        if (!gles_sample_texture(tex,sampler,i,ref->shadow,ref->type)) {
+        if (!gles_sample_texture(tex,sampler,i,ref->shadow,ref->type,swizzle)) {
             rejection[R_TEXTURE]++; texture_rejection[T_UPLOAD]++; return false;
         }
         if (entry->has_view) texture_views_accepted++;
