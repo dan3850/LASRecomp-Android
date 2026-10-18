@@ -612,7 +612,8 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
         else failed++;
         free(dv);
         free(df);
-        if (progress && (++done & 7) == 0) progress(done - renderer_prepare_pending(), total + 1);
+        ++done;
+        if (progress && (done & 7) == 0) progress(done - renderer_prepare_pending(), total + 1);
     }
     while (!(cancel && *cancel) && renderer_prepare_pending()) {  // (the last builds)
         if (progress) progress(done - renderer_prepare_pending(), total + 1);
