@@ -156,6 +156,12 @@ static void run(const char *dir, unsigned test) {
     if (test == 11) st.ubuf[5][0] = (Range){HEAP_BASE + 0x40300, 16};
     uint32_t tab[(GMAP_MAX + 1) * 4];
     VkDescriptorBufferInfo packed = portable_gmem_map(5, true, tab);
+    if (test < 12) {
+        assert(gmem_current_compute_write && gmem_current_compute_write->device_local);
+        assert(gmem_current_compute_write->buf == packed.buffer);
+        assert(gmem_current_compute_write->read_buf != VK_NULL_HANDLE);
+        assert(gmem_current_compute_write->read_mem != NULL);
+    }
     assert(gmem_overlaps(HEAP_BASE + 0x20000, 1));
     assert(!gmem_overlaps(HEAP_BASE + 0x20020, 1));
     if (test == 12) {
@@ -216,7 +222,7 @@ static void run(const char *dir, unsigned test) {
     vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_COMPUTE,pipe);
     vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_COMPUTE,pl,0,1,&ds,0,NULL);
     vkCmdDispatch(cb,1,1,1);
-    gmem_host_barrier(cb);
+    gmem_compute_writeback(cb);
     // Exercise the actual dependency path: submit, timeline wait, invalidate,
     // copyback, then allow the CPU snapshot. No manual completion shortcut.
     gmem_read_range(HEAP_BASE + 0x20000,32);
@@ -598,13 +604,13 @@ static void vertex_collisions_and_budget(void) {
 
 static void write_pool_limits(void) {
     GmemWrite *w[10];
-    for (unsigned i = 0; i < 10; ++i) w[i] = gmem_write_acquire(64);
+    for (unsigned i = 0; i < 10; ++i) w[i] = gmem_write_acquire(64, false);
     pthread_mutex_lock(&gmem_lock);
     for (unsigned i = 0; i < 10; ++i) gmem_write_recycle(w[i]);
     pthread_mutex_unlock(&gmem_lock);
     assert(gmem_free_count == 8 && gmem_free_bytes == 8 * 64);
     gmem_write_pool_clear();
-    GmemWrite *large = gmem_write_acquire((16 << 20) + 64);
+    GmemWrite *large = gmem_write_acquire((16 << 20) + 64, false);
     pthread_mutex_lock(&gmem_lock); gmem_write_recycle(large); pthread_mutex_unlock(&gmem_lock);
     assert(!gmem_free && !gmem_free_bytes && !gmem_free_count);
     puts("GMEM compute pool: buffer-count and byte-capacity limits PASS");
@@ -712,7 +718,14 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 #endif
-    for (unsigned i = 0; i < 13; ++i) run(argv[1],i);
+    // Run real Maxwell LDG/STG over device-preferred storage, not only
+    // the legacy mapped-host storage. Case 12 intentionally queues two
+    // artificial writers but dispatches just one, so it uses the baseline.
+    for (unsigned i = 0; i < 13; ++i) {
+        setenv("LARECOMP_VK_GMEM_DEVICE_WRITES", i < 12 ? "1" : "0", 1);
+        run(argv[1],i);
+    }
+    setenv("LARECOMP_VK_GMEM_DEVICE_WRITES", "0", 1);
     snapshots();
     split_counter_pairs();
     persistent_snapshots();

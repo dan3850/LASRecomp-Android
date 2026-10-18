@@ -37,6 +37,8 @@ static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wai
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
 static uint64_t stat_gmem_stream_bytes, stat_gmem_stream_maps;
 static uint64_t stat_gmem_covered, stat_gmem_covered_bytes;
+static uint64_t stat_gmem_device_dispatches, stat_gmem_device_up;
+static uint64_t stat_gmem_device_back, stat_gmem_device_fallback;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -1289,6 +1291,16 @@ const char *renderer_stats(void) {
             stat_gmem_covered_bytes / 1048576.0);
         stat_gmem_stream_bytes = stat_gmem_stream_maps = 0;
         stat_gmem_covered = stat_gmem_covered_bytes = 0;
+    }
+    {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+            " | GMEM native cs %llu upload %.1fMB readback %.1fMB fallback %llu",
+            (unsigned long long)stat_gmem_device_dispatches,
+            stat_gmem_device_up / 1048576.0, stat_gmem_device_back / 1048576.0,
+            (unsigned long long)stat_gmem_device_fallback);
+        stat_gmem_device_dispatches = stat_gmem_device_up = 0;
+        stat_gmem_device_back = stat_gmem_device_fallback = 0;
     }
     {
         size_t n = strlen(stats_text);
@@ -2773,6 +2785,9 @@ typedef struct GmemWrite {
     GmemPlan plan;
     VkBuffer buf;
     VmaAllocation mem;
+    VkBuffer read_buf;    // device-local compute output -> host-visible result
+    VmaAllocation read_mem;
+    bool device_local;
     uint8_t *before, *after;
 } GmemWrite;
 static GmemWrite *gmem_writes, **gmem_tail = &gmem_writes;
@@ -2781,11 +2796,25 @@ static uint64_t gmem_free_bytes;
 static unsigned gmem_free_count;
 static pthread_mutex_t gmem_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic bool gmem_pending;
+static GmemWrite *gmem_current_compute_write;
 
 static void gmem_write_destroy(GmemWrite *w) {
     if (w->buf) vmaDestroyBuffer(g_vk.vma, w->buf, w->mem);
+    if (w->read_buf) vmaDestroyBuffer(g_vk.vma, w->read_buf, w->read_mem);
     free(w->before);
     free(w);
+}
+
+// No import of the entire guest heap is required; use only bound GMEM ranges.
+// Off switch provides an unchanged, host-visible reference for A/B tests.
+static bool gmem_device_writes_enabled(uint64_t bytes) {
+    if (!bytes || bytes > (8ull << 20)) return false;
+    const char *v = getenv("LARECOMP_VK_GMEM_DEVICE_WRITES");
+#ifdef __ANDROID__
+    return !v || atoi(v) != 0;
+#else
+    return v && atoi(v) != 0;
+#endif
 }
 
 // Only completed, invalidated and copied-back allocations enter this pool.
@@ -2799,11 +2828,13 @@ static void gmem_write_recycle(GmemWrite *w) { // gmem_lock held
     } else gmem_write_destroy(w);
 }
 
-static GmemWrite *gmem_write_acquire(uint64_t size) {
+static GmemWrite *gmem_write_acquire(uint64_t size, bool compute) {
+    bool native = compute && gmem_device_writes_enabled(size);
     pthread_mutex_lock(&gmem_lock);
     GmemWrite **best = NULL;
     for (GmemWrite **p = &gmem_free; *p; p = &(*p)->next)
-        if ((*p)->capacity >= size && (!best || (*p)->capacity < (*best)->capacity)) best = p;
+        if ((*p)->capacity >= size && (*p)->device_local == native &&
+            (!best || (*p)->capacity < (*best)->capacity)) best = p;
     GmemWrite *w = best ? *best : NULL;
     if (w) {
         *best = w->next;
@@ -2816,6 +2847,34 @@ static GmemWrite *gmem_write_acquire(uint64_t size) {
     w = calloc(1, sizeof *w);
     if (!w || !(w->before = malloc(size))) FATAL("portable GMEM allocation failed\n");
     w->capacity = size;
+    if (native) {
+        VkBufferCreateInfo gpu = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = size, .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+        VmaAllocationCreateInfo gpu_info = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateBuffer(g_vk.vma, &gpu, &gpu_info, &w->buf, &w->mem, NULL) == VK_SUCCESS) {
+            VkBufferCreateInfo read = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+            VmaAllocationCreateInfo host_info = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT};
+            VmaAllocationInfo mapped = {0};
+            if (vmaCreateBuffer(g_vk.vma, &read, &host_info,
+                                &w->read_buf, &w->read_mem, &mapped) == VK_SUCCESS &&
+                mapped.pMappedData) {
+                w->device_local = true;
+                w->after = mapped.pMappedData;
+                return w;
+            }
+            if (w->read_buf) vmaDestroyBuffer(g_vk.vma, w->read_buf, w->read_mem);
+            w->read_buf = VK_NULL_HANDLE; w->read_mem = NULL;
+        }
+        if (w->buf) vmaDestroyBuffer(g_vk.vma, w->buf, w->mem);
+        w->buf = VK_NULL_HANDLE; w->mem = NULL;
+        stat_gmem_device_fallback++;
+        if (stat_gmem_device_fallback <= 4)
+            LOG("[vk-gmem] writable device allocation unavailable; using host buffer\n");
+    }
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
@@ -2827,6 +2886,7 @@ static GmemWrite *gmem_write_acquire(uint64_t size) {
 }
 
 static void gmem_write_pool_clear(void) {
+    gmem_current_compute_write = NULL;
     pthread_mutex_lock(&gmem_lock);
     while (gmem_free) {
         GmemWrite *w = gmem_free;
@@ -2842,7 +2902,8 @@ static void gmem_resolve_done(uint64_t done) {
     while (gmem_writes && gmem_writes->seq <= done) {
         GmemWrite *w = gmem_writes;
         bool changed = false;
-        VK_CHECK(vmaInvalidateAllocation(g_vk.vma, w->mem, 0, w->plan.size));
+        VK_CHECK(vmaInvalidateAllocation(g_vk.vma,
+                w->device_local ? w->read_mem : w->mem, 0, w->plan.size));
         for (unsigned i = 0; i < w->plan.tab[GMAP_MAX * 4]; ++i) {
             uint64_t off = (uint64_t)w->plan.tab[i * 4 + 2] * 4;
             if (gmem_apply((uint8_t *)(uintptr_t)(HEAP_BASE + w->plan.tab[i * 4]),
@@ -3160,7 +3221,7 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
     VkSpan span;
     GmemWrite *w = NULL;
     if (store) {
-        w = gmem_write_acquire(plan.size);
+        w = gmem_write_acquire(plan.size, stage == 5);
         w->plan = plan;
         w->seq = seq;
         span = (VkSpan){w->buf, 0, w->after};
@@ -3180,7 +3241,19 @@ static VkDescriptorBufferInfo portable_gmem_map(int stage, bool store, uint32_t 
     }
     if (w) {
         memcpy(w->before, span.ptr, plan.size);
-        VK_CHECK(vmaFlushAllocation(g_vk.vma, w->mem, 0, plan.size));
+        if (w->device_local) {
+            // Put this input copy immediately before its compute draw;
+            // an earlier dispatch may have modified other guest ranges.
+            VkSpan input = vk_transient_copy(w->before, plan.size, 256);
+            VkBufferCopy copy = {input.off, 0, plan.size};
+            VkCommandBuffer cb = vk_cmd();
+            vkCmdCopyBuffer(cb, input.buf, w->buf, 1, &copy);
+            vk_sched_barrier(cb, VKSCHED_TRANSFER_TO_COMPUTE);
+            gmem_current_compute_write = w;
+            stat_gmem_device_up += plan.size;
+        } else {
+            VK_CHECK(vmaFlushAllocation(g_vk.vma, w->mem, 0, plan.size));
+        }
         pthread_mutex_lock(&gmem_lock);
         *gmem_tail = w;
         gmem_tail = &w->next;
@@ -3205,6 +3278,30 @@ static void gmem_host_barrier(VkCommandBuffer cb) {
         .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     vkCmdPipelineBarrier2(cb, &di);
+}
+
+// Submit the writeback after the matching compute, with no GPU idle/wait.
+// Host invalidation happens only when its submission timeline completes.
+static void gmem_compute_writeback(VkCommandBuffer cb) {
+    GmemWrite *w = gmem_current_compute_write;
+    gmem_current_compute_write = NULL;
+    if (!w || !w->device_local) {
+        gmem_host_barrier(cb);
+        return;
+    }
+    vk_sched_barrier(cb, VKSCHED_COMPUTE_TO_TRANSFER);
+    VkBufferCopy copy = {0, 0, w->plan.size};
+    vkCmdCopyBuffer(cb, w->buf, w->read_buf, 1, &copy);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+        .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &dep);
+    stat_gmem_device_dispatches++;
+    stat_gmem_device_back += w->plan.size;
 }
 
 // ---- vertex / index cache
@@ -3898,6 +3995,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
         }
         LOG("\n");
     }
+    gmem_current_compute_write = NULL;
     if (cp->si->uses_gmem_map) gfast_prepare(cb);
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
@@ -3905,7 +4003,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     vkCmdDispatch(cb, gx, gy, gz);
     if (cp->si->uses_gmem_map && cp->si->uses_gmem_store) {
         if (gmem_buf) gfast_finish(cb);
-        else gmem_host_barrier(cb);
+        else gmem_compute_writeback(cb);
     }
     if (cp->si->uses_gmem_store) vc_mark_sbufs(5);
     stat_dispatches++;
