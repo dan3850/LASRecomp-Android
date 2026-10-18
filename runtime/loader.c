@@ -38,6 +38,11 @@ static size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, si
     return d - dst;
 }
 
+// Read-only shader headstart shares the loader's NSO LZ4 implementation.
+size_t rt_lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, size_t dstlen) {
+    return lz4_decompress(src, srclen, dst, dstlen);
+}
+
 static uint8_t *read_file(const char *path, size_t *len) {
     FILE *f = fopen(path, "rb");
 #ifdef __ANDROID__
