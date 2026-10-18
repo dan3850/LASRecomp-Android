@@ -5,7 +5,7 @@ Branch: `android/native-opengles-backend`. Safe Vulkan starting point:
 `android/native-vulkan-rnd`.
 
 ## Actual current implementation
-- Android settings select `Vulkan` or `OpenGL ES 3.0 — backend NVN nativo (experimental)`.
+- Android settings select `Vulkan` or `OpenGL ES 3.2 — backend NVN nativo (experimental)`.
 - The Activity passes the selected API to the C entry point, before loading the
   game engine. `LARECOMP_RENDERER=gles` selects the GLES path.
 - SDL creates a **GL window and GLES context**, not a Vulkan surface/device.
@@ -18,10 +18,12 @@ Branch: `android/native-opengles-backend`. Safe Vulkan starting point:
   operation counts. The existing graphics ZIP includes this file.
 
 ## Not implemented — important
-**This is not a playable Zelda renderer yet.** Maxwell shader translation to
-GLSL ES, vertex/index buffers, texture uploads and formats, samplers,
-draws/compute, blending, depth/stencil, copies and render-target aliasing
-remain unimplemented or incomplete. Draw calls are counted and skipped;
+**This is not a playable Zelda renderer yet.** There is now a strictly
+limited Maxwell GLSL ES 3.2 translation path with vertex/index draws for
+supported non-textured, single-colour, no-depth/no-blend commands.
+Texture uploads/formats, samplers, GMEM, compute, blending, depth/stencil,
+copies and render-target aliasing remain unimplemented or incomplete.
+Unsupported draw calls are counted and skipped;
 expect a dark/incomplete image. The engine may also encounter unsupported
 commands before reaching gameplay. No fallback silently starts Vulkan.
 
@@ -59,3 +61,28 @@ GLES, the SDL3 CMake configuration sets `SDL_SYSTEM_ICONV=OFF` and
 uses its bundled iconv converter. NDK EGL/GLES header lookup uses
 `-idirafter` so Termux libc headers keep precedence. SDL3 gets
 incrementally reconfigured and compiled with the existing CMake/Ninja cache.
+
+## Milestone 2: real, limited Maxwell graphics path (not yet verified on Adreno)
+- Added `ShaderKey.glsl_es` to emit `#version 320 es` and share existing
+  Maxwell arithmetic translation without Vulkan-only descriptor sets.
+  Vulkan GLSL 460 remains the default when this bit is unset.
+- Added a GLES-only NVN draw executor in `runtime/nvn/gles/draw.c`.
+  It processes program, vertex attribute/stream/buffer, cbuf, viewport
+  and render-target commands. For a supported non-textured, single-color,
+  no-depth/no-blend draw, it compiles the **actual translated Maxwell shaders**
+  and issues `glDrawArrays` / `glDrawElements` on host GL VBOs.
+- Program caching avoids recompiling the same guest program repeatedly;
+  unsupported features and compilation errors are cached as failures.
+- `graphics/gles.txt` now reports `native_maxwell_draws`,
+  `gles_programs_linked`, `gles_programs_failed` and `unsupported_draws`.
+  These counters distinguish real translated draws from skipped commands.
+- This path has only source-level checks so far. No Termux build or device
+  validation was performed by the assistant. It may fail GLSL compilation
+  or show no real draws: read the driver log before claiming success.
+
+**Pending for a playable Zelda**: robust texture formats/deswizzle,
+samplers, GMEM/SSBO and shaderInt64 emulation, depth and stencil,
+blending, render target formats/aliases, compute, synchronization,
+advanced primitive variants, accurate cbuf driver constants, resource
+lifetime and optimized vertex transfers. The strict subset refuses draws
+needing these instead of inventing their results.

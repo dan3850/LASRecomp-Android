@@ -1799,38 +1799,68 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (c->fail) { free(body.buf); free(c->body.buf); free(c); return info; }
     int set = stage == STAGE_FRAGMENT ? 1 : 0;
     Str s = {0};
-    sp(&s, "%s", glsl_prelude);
+    const bool es = key && key->glsl_es;
+    if (es) {
+        // Share the Maxwell arithmetic helpers, but NOT Vulkan-only extensions
+        // or SPIR-V version/profile declarations. Missing ES capabilities are
+        // compile failures, never silently replaced with different operations.
+        sp(&s, "#version 320 es\nprecision highp float;\nprecision highp int;\n"
+               "#define gl_VertexIndex gl_VertexID\n"
+               "#define gl_InstanceIndex gl_InstanceID\n");
+        sp(&s, "%s", strstr(glsl_prelude, "#define cbr"));
+    } else {
+        sp(&s, "%s", glsl_prelude);
+    }
     for (int i = 0; i < 18; i++) {
         if (!(info->cbuf_mask & (1u << i))) continue;
         uint32_t n = info->cbuf_size[i] / 16;
         if (c->cbuf_need[i] > n) n = c->cbuf_need[i];
         if ((info->cbuf_dynamic & (1u << i)) && n < 4096) n = 4096;
         if (!n) n = 1;
-        sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
+        if (es)
+            sp(&s, "layout(std140) uniform %s_CB%d { uvec4 cb%d[%u]; };\n",
+               stage == STAGE_FRAGMENT ? "F" : "V", i, i, n);
+        else
+            sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
     }
-    if (info->uses_gmem)
-        sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
-           c->uses_gmem_store ? "" : "readonly ");
+    if (info->uses_gmem) {
+        if (es)
+            sp(&s, "layout(std430) %sbuffer GMem { uint w[]; } gmem_;\n",
+               c->uses_gmem_store ? "" : "readonly ");
+        else
+            sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
+               c->uses_gmem_store ? "" : "readonly ");
+    }
     if (info->uses_gmem_map) {  // (compute) the dispatch's storage buffers, device-local: gmap[i] = heap offset, size, word
-        sp(&s, "layout(std140, set = %d, binding = %d) uniform GMap { uvec4 gmap[%d]; };\n", set, GMAP_BUFFER_INDEX, GMAP_MAX + 1);
-        sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GFast { uint w[]; } gfast_;\n", set, GFAST_BUFFER_INDEX,
-           c->uses_gmem_store ? "" : "readonly ");
+        if (es) {
+            sp(&s, "layout(std140) uniform GMap { uvec4 gmap[%d]; };\n", GMAP_MAX + 1);
+            sp(&s, "layout(std430) %sbuffer GFast { uint w[]; } gfast_;\n", c->uses_gmem_store ? "" : "readonly ");
+        } else {
+            sp(&s, "layout(std140, set = %d, binding = %d) uniform GMap { uvec4 gmap[%d]; };\n", set, GMAP_BUFFER_INDEX, GMAP_MAX + 1);
+            sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GFast { uint w[]; } gfast_;\n", set, GFAST_BUFFER_INDEX,
+               c->uses_gmem_store ? "" : "readonly ");
+        }
         sp(&s, "uint gfind(uint g, uint bytes) { uint n = gmap[%d].x; for (uint i = 0u; i < n; i++) { uint o = g - gmap[i].x; "
                "if (g >= gmap[i].x && bytes <= gmap[i].y && o <= gmap[i].y - bytes) return gmap[i].z + (o >> 2); } return 0xFFFFFFFFu; }\n", GMAP_MAX);
     }
     if (c->uses_rscale && stage != STAGE_VERTEX) {
-        sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[%d]; };\n", set,
-           key && key->flip_x ? 66 : 65);  // ([65]: mirror mode's render target width)
+        if (es)
+            sp(&s, "layout(std140) uniform RScale { vec4 rscale[%d]; };\n", key && key->flip_x ? 66 : 65);
+        else
+            sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[%d]; };\n", set,
+               key && key->flip_x ? 66 : 65);  // ([65]: mirror mode's render target width)
         info->uses_rscale = true;
     }
     bool tint = stage == STAGE_FRAGMENT && !dbg && (c->omap_target & 0x7) == 0x7 && (!key || key->rt_kind[0] == 0);
     if (tint) {
-        sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[2]; };\n", set);
+        if (es) sp(&s, "layout(std140) uniform Tint { vec4 ltint[2]; };\n");
+        else sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[2]; };\n", set);
         info->uses_tint = true;
     }
     for (int i = 0; i < info->ntex; i++) {
         ShaderTexture *t = &info->tex[i];
-        sp(&s, "layout(set = %d, binding = %d) uniform %s t%d;\n", set, 32 + i, glsl_sampler_type(t), i);
+        if (es) sp(&s, "uniform %s t%d;\n", glsl_sampler_type(t), i);
+        else sp(&s, "layout(set = %d, binding = %d) uniform %s t%d;\n", set, 32 + i, glsl_sampler_type(t), i);
         // size of level l as (width, height, depth or layers)
         switch (t->type) {
         case TEXTYPE_1D: sp(&s, "ivec3 tsize%d(int l) { return ivec3(textureSize(t%d, l), 1, 1); }\n", i, i); break;
@@ -1865,7 +1895,8 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         }
         if (c->omap_depth) info->writes_depth = true;
     } else {
-        sp(&s, "layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;\n");
+        if (es) sp(&s, "layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;\n");
+        else sp(&s, "layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;\n");
     }
     sp(&s, "void main() {\n");
     if (stage == STAGE_VERTEX) {

@@ -299,7 +299,7 @@ INC=(-idirafter "$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Ithird_party/imgui \
 NDK_GLES_ROOT="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/28.2.13676358}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
 GLES_INCLUDE=""
 for dir in "$PREFIX/include" "$NDK_GLES_ROOT/usr/include"; do
- [[ -s "$dir/GLES3/gl3.h" ]] && { GLES_INCLUDE="$dir"; break; }
+ [[ -s "$dir/GLES3/gl3.h" && -s "$dir/GLES3/gl32.h" ]] && { GLES_INCLUDE="$dir"; break; }
 done
 [[ -n "$GLES_INCLUDE" ]] || fail "GLES3/gl3.h missing (Termux or Android NDK r28c)"
 GLES_STUB=""

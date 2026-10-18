@@ -3,6 +3,7 @@
 // Graphics/compute draws are intentionally counted as UNSUPPORTED until the
 // Maxwell->GLSL ES translator, buffers and samplers are implemented.
 #include "gles.h"
+#include "draw.h"
 #include <GLES3/gl3.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -21,6 +22,7 @@ static SDL_GLContext g_context;
 static GLuint g_present_program, g_vertex_array;
 static GLint g_present_sampler;
 static NvnTexture *g_color[8];
+static bool g_draw_needs_reset;
 static uint64_t g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported, g_unsupported;
 static int g_last_unsupported = -1;
 static char g_stats[256];
@@ -35,12 +37,16 @@ static void report(void) {
     FILE *f = fopen("graphics/gles.txt", "w");
     if (!f) return;
     fprintf(f, "backend=opengles\nNVN_renderer=OpenGL_ES\nVulkan_initialized=0\n");
+    fprintf(f, "native_maxwell_draws=%" PRIu64 "\ngles_programs_linked=%" PRIu64
+               "\ngles_programs_failed=%" PRIu64 "\n",
+            gles_draw_native_count(), gles_draw_program_count(), gles_draw_shader_failure_count());
+    fprintf(f, "%s", gles_draw_rejection_stats());
     fprintf(f, "frames=%" PRIu64 "\nclears=%" PRIu64 "\nunsupported_draws=%" PRIu64
                "\nunsupported_dispatches=%" PRIu64 "\nunsupported_commands=%" PRIu64
                "\nlast_unsupported_opcode=%d\n",
             g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported,
             g_unsupported, g_last_unsupported);
-    if (g_context) {
+    if (g_context && SDL_GL_GetCurrentContext() == g_context) {
         fprintf(f, "vendor=%s\nrenderer=%s\nversion=%s\n",
                 (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER),
                 (const char *)glGetString(GL_VERSION));
@@ -49,8 +55,10 @@ static void report(void) {
 }
 const char *gles_stats(void) {
     snprintf(g_stats, sizeof g_stats, "GLES frames=%" PRIu64 " clears=%" PRIu64
+             " nativeNVN=%" PRIu64 " programs=%" PRIu64 " failed=%" PRIu64
              " skipped_draws=%" PRIu64 " skipped_compute=%" PRIu64,
-             g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported);
+             g_frames, g_clears, gles_draw_native_count(), gles_draw_program_count(),
+             gles_draw_shader_failure_count(), g_draws_unsupported, g_dispatch_unsupported);
     return g_stats;
 }
 uint64_t gles_frame_count(void) { return g_frames; }
@@ -103,6 +111,7 @@ void gles_init(SDL_Window *window) {
     if (!linked) FATAL("[gles] presentation program link failed\n");
     g_present_sampler = glGetUniformLocation(g_present_program, "image0");
     glGenVertexArrays(1, &g_vertex_array);
+    gles_draw_init();
     LOG("[gles] genuine GLES backend: %s / %s, version %s\n",
         glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION));
     report();
@@ -136,6 +145,15 @@ static GlesTexture *texture(NvnTexture *tex) {
     }
     tex->backend = t;
     return t;
+}
+
+bool gles_draw_framebuffer(NvnTexture *tex, int *w, int *h) {
+    GlesTexture *t = texture(tex);
+    if (!t) return false;
+    glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
+    if (w) *w = t->width;
+    if (h) *h = t->height;
+    return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
 }
 
 void gles_texture_destroyed(NvnTexture *tex) {
@@ -203,6 +221,7 @@ static void execute_list(uint64_t handle, int depth) {
             } *rt = (void *)r->extra;
             for (int i = 0; i < 8; ++i)
                 g_color[i] = i < (int)r->x[0] ? (NvnTexture *)(uintptr_t)rt->tex[i] : NULL;
+            gles_draw_state(r);
             break;
         }
         case CMD_CLEAR_COLOR: {
@@ -234,7 +253,12 @@ static void execute_list(uint64_t handle, int depth) {
             if (out) { out[0] = 0; out[1] = (uint64_t)((unsigned __int128)plat_now_ns() * 384 / 625); }
             break;
         }
-        case CMD_DRAW_ARRAYS: case CMD_DRAW_ELEMENTS:
+        case CMD_DRAW_ARRAYS:
+            if (!gles_draw_execute(r, false)) g_draws_unsupported++;
+            break;
+        case CMD_DRAW_ELEMENTS:
+            if (!gles_draw_execute(r, true)) g_draws_unsupported++;
+            break;
         case CMD_DRAW_ARRAYS_INDIRECT: case CMD_DRAW_ELEMENTS_INDIRECT:
         case CMD_DRAW_TEXTURE:
             g_draws_unsupported++;
@@ -245,8 +269,10 @@ static void execute_list(uint64_t handle, int depth) {
         // Other state binds are recorded for future porting; they must NOT
         // accidentally be interpreted as Vulkan draw calls in GLES mode.
         default:
-            g_unsupported++;
-            g_last_unsupported = (int)r->op;
+            if (!gles_draw_state(r)) {
+                g_unsupported++;
+                g_last_unsupported = (int)r->op;
+            }
             break;
         }
         addr += r->size;
@@ -255,6 +281,10 @@ static void execute_list(uint64_t handle, int depth) {
 
 void gles_execute(uint64_t handle) {
     if (!g_context) return;
+    if (g_draw_needs_reset) {
+        gles_draw_reset();
+        g_draw_needs_reset = false;
+    }
     execute_list(handle, 0);
 }
 
@@ -300,6 +330,9 @@ void gles_clear_window(void) {
 }
 void gles_reset(void) {
     memset(g_color, 0, sizeof g_color);
+    // Only a thread with the current GL context can delete shader objects.
+    // The next NVN executor call resets them after an in-place game reboot.
+    g_draw_needs_reset = true;
     gles_finish();
     report();
 }

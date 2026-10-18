@@ -44,7 +44,8 @@ typedef struct {
     bool flip_x;            // mirror the image left to right (mirror mode's scene composite). (In the padding
                             // after flip_y: keys without it hash as before - shader caches stay valid.)
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
-    uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
+    uint8_t glsl;           // emit GLSL (see the Vulkan contract above) instead of MSL
+    uint8_t glsl_es;        // emit OpenGL ES 3.2 GLSL: no Vulkan descriptor sets/extensions
 } ShaderKey;
 
 typedef struct {

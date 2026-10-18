@@ -147,7 +147,7 @@ public final class GameImportActivity extends Activity {
         // The GLES choice never starts Vulkan, PixelCopy or the overlay.
         final String[] names = {
             "Vulkan — jogar Zelda (padrão)",
-            "OpenGL ES 3.0 — backend NVN nativo (experimental)"
+            "OpenGL ES 3.2 — backend NVN nativo (experimental)"
         };
         new AlertDialog.Builder(this).setTitle("Escolher renderizador")
             .setSingleChoiceItems(names, openglGameNativeSelected() ? 1 : 0, (dialog, choice) -> {
