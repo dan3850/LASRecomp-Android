@@ -151,7 +151,7 @@ public final class GameImportActivity extends Activity {
         // Never present the GLES smoke test as a Zelda renderer.
         final String[] names = {
             "Vulkan — jogar Zelda (padrão)",
-            "Vulkan + OpenGL ES 3.0 — teste dentro do Zelda",
+            "OpenGL ES 3.0 — apresentar a imagem do Zelda (híbrido experimental)",
             "OpenGL ES 3.0 — teste gráfico independente"
         };
         new AlertDialog.Builder(this).setTitle("Escolher renderizador")
@@ -163,11 +163,12 @@ public final class GameImportActivity extends Activity {
                 showGameFilesState();
                 if (choice == 1) {
                     new AlertDialog.Builder(this).setTitle("Teste OpenGL dentro do jogo")
-                        .setMessage("Nesta etapa, o Zelda continua sendo desenhado pelo Vulkan. " +
-                            "Uma superfície OpenGL ES real ficará ativa por cima do jogo " +
-                            "para testar os dois contextos gráficos juntos. " +
-                            "A medição da GPU OpenGL será incluída no ZIP gráfico. " +
-                            "Isto NÃO é um backend OpenGL para os comandos NVN do Zelda.")
+                        .setMessage("Teste diretamente com a imagem do Zelda: o Vulkan continua " +
+                            "processando os comandos NVN do jogo; o Android copia seus frames " +
+                            "para uma textura e o OpenGL ES os apresenta em tela cheia. " +
+                            "É uma integração híbrida e pode reduzir o FPS. Ainda não " +
+                            "substitui os shaders e comandos NVN por OpenGL. " +
+                            "O ZIP gráfico registra as cópias e os frames apresentados.")
                         .setPositiveButton("Entendi", null).show();
                 } else if (choice == 2) {
                     new AlertDialog.Builder(this).setTitle("OpenGL independente")
@@ -181,7 +182,7 @@ public final class GameImportActivity extends Activity {
     private void showVideoSettings() {
         final String[] sections = {"Resolução interna", "Proporção da tela", "Mostrar FPS", "Diagnóstico de desempenho (CPU/GPU)",
             "Upscaler (FSR 1 / Bilinear)", "Antisserrilhamento (SMAA)", "Remover desfoque", "Ocultar ícone Hero Mode",
-            "Renderizador: Vulkan / OpenGL ES (teste)"};
+            "Renderizador: Vulkan / OpenGL ES (experimental)"};
         new AlertDialog.Builder(this).setTitle("Configurações de vídeo")
             .setItems(sections, (dialog, which) -> {
                 if (which == 0) {
@@ -743,10 +744,10 @@ public final class GameImportActivity extends Activity {
         // Standalone GL requires no game files; combined mode needs the real game.
         playButton.setEnabled(!importing && (gles || (files && code)));
         playButton.setText(gles ? "TESTAR OPENGL ES 3.0 (SEM JOGO)" :
-            files && code ? combined ? "JOGAR — VULKAN + OPENGL (TESTE)" : "JOGAR — VULKAN" :
+            files && code ? combined ? "JOGAR — IMAGEM POR OPENGL ES (HÍBRIDO)" : "JOGAR — VULKAN" :
             "JOGAR — AGUARDANDO ARQUIVOS E BIBLIOTECA");
         rendererButton.setText(gles ? "GRÁFICO: OPENGL ES (TESTE ISOLADO)" :
-            combined ? "GRÁFICO: VULKAN + OPENGL (TESTE NO JOGO)" :
+            combined ? "GRÁFICO: OPENGL ES — IMAGEM DO ZELDA (HÍBRIDO)" :
             "GRÁFICO: VULKAN (JOGO)");
         verifyButton.setVisibility(privateGameCodeFile().isFile() ? View.VISIBLE : View.GONE);
         verifyButton.setEnabled(!importing);
