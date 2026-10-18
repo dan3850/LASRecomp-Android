@@ -12,6 +12,9 @@
 #include <sys/stat.h>
 
 extern bool gles_draw_framebuffer(NvnTexture *color, NvnTexture *depth, int *w, int *h);
+extern bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler, int unit,
+                                bool shadow, uint8_t type);
+extern void gles_mark_texture_written(NvnTexture *tex);
 extern uint32_t nvn_window_origin(void);
 extern uint32_t nvn_depth_mode(void);
 
@@ -22,6 +25,8 @@ typedef struct {
     int ncolor, nattrib, nstream;
     uint32_t attrib[16], stream[16][2];
     Range vbuf[16], ubuf[6][18], sbuf[6][16];
+    uint64_t tex[6][32];
+    NvnDescPool *tpool, *spool;
     float viewport[16][4];
     int32_t scissor[16][4];
     uint8_t ds[8], poly[4], color_state[4], blend[8][8], ms[0x18];
@@ -31,9 +36,9 @@ typedef struct {
 } DrawState;
 static DrawState st;
 static GLuint uniform_buffers[36], vertex_buffers[16], index_buffer, vao;
-static uint64_t native_draws, shaders_ok, shaders_failed, rejection[12];
+static uint64_t native_draws, shaders_ok, shaders_failed, rejection[13];
 enum { R_NO_PROGRAM, R_TARGET, R_SHADER_FEATURE, R_TRANSLATE, R_COMPILE, R_TOPOLOGY,
-       R_INDICES, R_VERTEX_FORMAT, R_VERTEX_RANGE, R_UBO, R_DEPTH_BLEND, R_CACHE };
+       R_INDICES, R_VERTEX_FORMAT, R_VERTEX_RANGE, R_UBO, R_DEPTH_BLEND, R_CACHE, R_TEXTURE };
 #define PROGRAM_SLOTS 512
 typedef struct {
     NvnProgram *nvn;
@@ -73,10 +78,11 @@ const char *gles_draw_rejection_summary(void) {
     snprintf(line, sizeof line,
         "reject target=%" PRIu64 " fixed=%" PRIu64 " no-prog=%" PRIu64
         " features=%" PRIu64 " translation=%" PRIu64 " compile=%" PRIu64
-        " vertex=%" PRIu64 " indices=%" PRIu64,
+        " vertex=%" PRIu64 " indices=%" PRIu64 " texture=%" PRIu64,
         rejection[R_TARGET], rejection[R_DEPTH_BLEND], rejection[R_NO_PROGRAM],
         rejection[R_SHADER_FEATURE], rejection[R_TRANSLATE], rejection[R_COMPILE],
-        rejection[R_VERTEX_FORMAT] + rejection[R_VERTEX_RANGE], rejection[R_INDICES]);
+        rejection[R_VERTEX_FORMAT] + rejection[R_VERTEX_RANGE], rejection[R_INDICES],
+        rejection[R_TEXTURE]);
     return line;
 }
 const char *gles_draw_rejection_stats(void) {
@@ -88,12 +94,14 @@ const char *gles_draw_rejection_stats(void) {
         "\nrejected_compilation=%" PRIu64 "\nrejected_topology=%" PRIu64
         "\nrejected_indices=%" PRIu64 "\nrejected_vertex_format=%" PRIu64
         "\nrejected_vertex_range=%" PRIu64 "\nrejected_ubo=%" PRIu64
-        "\nrejected_depth_blend=%" PRIu64 "\nrejected_cache=%" PRIu64 "\n",
+        "\nrejected_depth_blend=%" PRIu64 "\nrejected_cache=%" PRIu64
+        "\nrejected_texture_binding=%" PRIu64 "\n",
         attempts, rejection[R_NO_PROGRAM], rejection[R_TARGET],
         rejection[R_SHADER_FEATURE], rejection[R_TRANSLATE],
         rejection[R_COMPILE], rejection[R_TOPOLOGY], rejection[R_INDICES],
         rejection[R_VERTEX_FORMAT], rejection[R_VERTEX_RANGE],
-        rejection[R_UBO], rejection[R_DEPTH_BLEND], rejection[R_CACHE]);
+        rejection[R_UBO], rejection[R_DEPTH_BLEND], rejection[R_CACHE],
+        rejection[R_TEXTURE]);
     return buffer;
 }
 
@@ -257,12 +265,14 @@ static Program *program_for_draw(void) {
         rejection[R_TRANSLATE]++; shaders_failed++; return p;
     }
     // Do not issue draws with unresolved shader resources or semantics.
-    if (p->vs->ntex || p->fs->ntex || p->vs->uses_gmem || p->fs->uses_gmem ||
+    // Fragment-only native 2D samplers are now supported. Vertex samplers
+    // and cross-stage sampler-name conflicts still need a separate mapping.
+    if (p->vs->ntex || p->fs->ntex > 32 || p->vs->uses_gmem || p->fs->uses_gmem ||
         p->vs->uses_gmem_map || p->fs->uses_gmem_map ||
         strstr(p->vs->msl, "uint64_t") || strstr(p->fs->msl, "uint64_t") ||
         strstr(p->vs->msl, "subgroup") || strstr(p->fs->msl, "subgroup")) {
         shader_diagnostic("unsupported-maxwell-feature", vs, fs,
-                          p->vs->ntex || p->fs->ntex ? "texture-sampling pending" :
+                          p->vs->ntex || p->fs->ntex > 32 ? "unsupported shader sampler stages/count" :
                           p->vs->uses_gmem || p->fs->uses_gmem ||
                           p->vs->uses_gmem_map || p->fs->uses_gmem_map ? "global-memory pending" :
                           "GLSL ES capability pending");
@@ -401,6 +411,50 @@ static bool bind_uniforms(Program *p) {
     }
     return true;
 }
+
+static bool bind_textures(Program *p) {
+    if (!p->fs || p->fs->ntex == 0) return true;
+    GLint max_units = 0;
+    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &max_units);
+    if (p->fs->ntex > max_units || p->fs->ntex > 32) {
+        rejection[R_TEXTURE]++; return false;
+    }
+    for (int i=0; i<p->fs->ntex; i++) {
+        const ShaderTexture *ref=&p->fs->tex[i];
+        if (ref->is_image || ref->bindless || ref->type != TEXTYPE_2D) {
+            rejection[R_TEXTURE]++; return false;
+        }
+        int slot=((int)ref->handle_offset-0x20)/8;
+        if (slot<0 || slot>=32 || !st.tpool || !st.tpool->entries) {
+            rejection[R_TEXTURE]++; return false;
+        }
+        uint64_t handle=st.tex[STAGE_FRAGMENT][slot];
+        uint32_t tic=(uint32_t)handle&0xfffffu;
+        uint32_t tsc=(uint32_t)(handle>>20)&0xfffu;
+        if (!handle || tic>=(uint32_t)st.tpool->count) {
+            rejection[R_TEXTURE]++; return false;
+        }
+        const NvnTexEntry *entry=&((const NvnTexEntry*)st.tpool->entries)[tic];
+        NvnTexture *tex=entry->tex;
+        // Array/mip/format reinterpretation requires real GLES texture views.
+        if (!tex || entry->has_view || tex->target!=1 ||
+            tex==st.color[0] || tex==st.depth) {
+            rejection[R_TEXTURE]++; return false;
+        }
+        NvnSamplerDesc *sampler=NULL;
+        if (st.spool && st.spool->entries && tsc<(uint32_t)st.spool->count)
+            sampler=&((NvnSamplerDesc*)st.spool->entries)[tsc];
+        if (!gles_sample_texture(tex,sampler,i,ref->shadow,ref->type)) {
+            rejection[R_TEXTURE]++; return false;
+        }
+        char name[16];
+        snprintf(name,sizeof name,"t%d",i);
+        GLint loc=glGetUniformLocation(p->gl_program,name);
+        if (loc>=0) glUniform1i(loc,i);
+    }
+    return true;
+}
+
 static bool attributes(Program *p, uint32_t last_index, uint32_t first_index, uint32_t instances) {
     uint64_t stream_bytes[16] = {0};
     // First validate the WHOLE vertex layout. No partial GL draws when a
@@ -632,6 +686,10 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
     Program *p=program_for_draw();
     if (!p || !p->gl_program) return false;
     int w=0,h=0;
+    // The upload path can create temporary FBOs. Bind the real render
+    // target AFTER binding sampled images, not before.
+    glUseProgram(p->gl_program);
+    if (!bind_textures(p)) return false;
     if (!gles_draw_framebuffer(st.color[0], st.depth, &w,&h)) { rejection[R_TARGET]++; return false; }
     glViewport((GLint)st.viewport[0][0],(GLint)st.viewport[0][1],
                (GLsizei)st.viewport[0][2],(GLsizei)st.viewport[0][3]);
@@ -649,6 +707,8 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
         else glDrawArraysInstanced(prim,(GLint)first,(GLsizei)count,(GLsizei)instances);
     }
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    gles_mark_texture_written(st.color[0]);
+    if (st.ds[0] || st.ds[3]) gles_mark_texture_written(st.depth);
     native_draws++;
     if (native_draws <= 12) fprintf(stderr, "[gles-nvn] real NVN draw ok: primitive=%u count=%u program=%u\n",
                   (unsigned)r->x[0],count,p->gl_program);
@@ -715,9 +775,14 @@ bool gles_draw_state(const CmdRec *r) {
                 else st.stencil_vmask[i] = (uint32_t)r->x[1];
             }
             return true;
-        case CMD_BIND_TEXTURES: case CMD_SET_TEXTURE_POOL: case CMD_SET_SAMPLER_POOL:
-            // Recorded by NVN, but not consumed by the non-textured subset.
+        case CMD_BIND_TEXTURES:
+            for(uint64_t i=0;i<r->x[2] && i+r->x[1]<32 && r->x[0]<6;i++)
+                memcpy(&st.tex[r->x[0]][r->x[1]+i],r->extra+i*8,8);
             return true;
+        case CMD_SET_TEXTURE_POOL:
+            st.tpool=(NvnDescPool *)(uintptr_t)r->x[0]; return true;
+        case CMD_SET_SAMPLER_POOL:
+            st.spool=(NvnDescPool *)(uintptr_t)r->x[0]; return true;
         default: return false;
     }
 }

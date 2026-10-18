@@ -134,3 +134,45 @@ The GLES shader translator now writes at most 24 diagnostic events to
 include the stage, driver error summary and shader addresses, **not** ROM
 data, shader source, game libraries or extracted assets. This helps separate
 unsupported Maxwell features from GLSL ES compilation/link errors.
+
+## Milestone 4: native CPU-backed Maxwell 2D texture sampling
+The user's current diagnostic continues to show black with audio. The
+independent GLES backend explicitly **rejected every Maxwell shader using a
+texture**; moreover `gles_upload_rgba` was a stub. Native raster state work
+alone therefore could not produce the game's textured scene.
+
+Implemented GLES-side texture sampling for a **strict 2D subset**:
+- Reads NVN texture/sampler handles from the existing descriptor pools
+  using the same indices as the Vulkan executor, without calling Vulkan.
+- Converts real Tegra block-linear guest texel data via `tegra_deswizzle`.
+  For BCn and ASTC LDR, reuses existing portable BCn and ASTC decoders;
+  selects the appropriate native GLES image format and uploads the pixels.
+- Binds actual GL sampler and texture objects to translated Maxwell
+  `sampler2D` uniforms. Texture formats/views not yet represented accurately
+  remain rejected; no placeholder textures or fabricated shader colors.
+- Tracks CPU texture versions to avoid uploading unchanged images on every
+  draw and protects GPU-produced render targets from being overwritten by
+  stale CPU-backed texture data.
+- Adds sample_ok/sample_failed/sample_cached/upload_bytes to GLES diagnostics.
+
+The following still require implementation: all non-2D targets (arrays,
+cubes, 3D), arbitrary views and sampler border modes, GPU memory writes and
+copy synchronization, compute, shader global memory (GMEM), binding stage
+conflicts, and several Vulkan-only GLSL constructs. Therefore **black screen
+or incomplete graphics may persist**; results must be checked from
+`graphics/gles.txt` and `graphics/gles-shaders.txt` in a new diagnostic ZIP.
+
+### Native RGBA video frames and depth-framebuffer binding
+The existing `gles_upload_rgba` callback previously dropped decoded RGBA
+video frames entirely, causing black video with working audio even when the
+native GLES context was valid. It now copies pixels into an eight-slot,
+mutex-protected queue; the GLES render thread performs `glTexSubImage2D`
+before NVN command execution and before presentation. Texture finalization
+removes queued entries under the same lock. Frames uploaded/dropped are
+counted in the diagnostics. No OpenGL calls occur from the decode callback.
+
+Also corrected the native color+depth framebuffer attachment path:
+creating a depth texture changes the current GL framebuffer; the color
+framebuffer is now explicitly rebound before attaching it. Unsupported
+texture formats may remain valid for sampling even when they cannot be
+used as render targets. OpenGL state and the safe Vulkan branch stay separate.

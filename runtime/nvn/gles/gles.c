@@ -4,8 +4,13 @@
 // Maxwell->GLSL ES translator, buffers and samplers are implemented.
 #include "gles.h"
 #include "draw.h"
+#include "../astc.h"
+#include "../bcn_decode.h"
+#include "../tegra.h"
 #include <GLES3/gl3.h>
 #include <inttypes.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +22,8 @@ typedef struct {
     GLsizei width, height;
     GLenum attachment;
     GLuint depth_bound;
+    bool cpu_uploaded, gpu_written;
+    uint64_t cpu_hash, last_cpu_check_frame;
 } GlesTexture;
 
 static SDL_Window *g_window;
@@ -28,6 +35,17 @@ static GLint g_clear_scissor[4] = {0, 0, 16384, 16384};
 static bool g_draw_needs_reset;
 static uint64_t g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported, g_unsupported;
 static int g_last_unsupported = -1;
+static uint64_t g_sample_ok, g_sample_fail, g_sample_uploaded_bytes, g_sample_cached;
+static GLuint g_texture_samplers[32];
+enum { GLES_VIDEO_QUEUE = 8 };
+typedef struct {
+    NvnTexture *tex;
+    uint8_t *pixels;
+    uint32_t w, h;
+} PendingVideo;
+static PendingVideo video_queue[GLES_VIDEO_QUEUE];
+static pthread_mutex_t video_mutex=PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t video_queued, video_uploaded, video_dropped;
 static char g_stats[512];
 static uint64_t g_executed_lists, g_last_checkpoint;
 
@@ -46,6 +64,12 @@ static void report(void) {
             gles_draw_native_count(), gles_draw_program_count(), gles_draw_shader_failure_count());
     fprintf(f, "%s", gles_draw_rejection_stats());
     fprintf(f, "nvn_lists_executed=%" PRIu64 "\n", g_executed_lists);
+    fprintf(f, "video_frames_queued=%" PRIu64 "\nvideo_frames_uploaded=%" PRIu64
+               "\nvideo_frames_dropped=%" PRIu64 "\n",
+            video_queued, video_uploaded, video_dropped);
+    fprintf(f, "sample_ok=%" PRIu64 "\nsample_failed=%" PRIu64
+               "\nsample_cached=%" PRIu64 "\nsample_uploaded_bytes=%" PRIu64 "\n",
+            g_sample_ok, g_sample_fail, g_sample_cached, g_sample_uploaded_bytes);
     fprintf(f, "frames=%" PRIu64 "\nclears=%" PRIu64 "\nunsupported_draws=%" PRIu64
                "\nunsupported_dispatches=%" PRIu64 "\nunsupported_commands=%" PRIu64
                "\nlast_unsupported_opcode=%d\n",
@@ -61,9 +85,14 @@ static void report(void) {
 const char *gles_stats(void) {
     snprintf(g_stats, sizeof g_stats, "GLES frames=%" PRIu64 " clears=%" PRIu64
              " nativeNVN=%" PRIu64 " programs=%" PRIu64 " failed=%" PRIu64
+             " sample_ok=%" PRIu64 " sample_fail=%" PRIu64 " sample_MB=%.1f"
+             " video_uploaded=%" PRIu64 " video_dropped=%" PRIu64
              " skipped_draws=%" PRIu64 " skipped_compute=%" PRIu64 " [%s]",
              g_frames, g_clears, gles_draw_native_count(), gles_draw_program_count(),
-             gles_draw_shader_failure_count(), g_draws_unsupported, g_dispatch_unsupported,
+             gles_draw_shader_failure_count(), g_sample_ok, g_sample_fail,
+             (double)g_sample_uploaded_bytes / 1048576.0,
+             (uint64_t)video_uploaded, (uint64_t)video_dropped,
+             g_draws_unsupported, g_dispatch_unsupported,
              gles_draw_rejection_summary());
     return g_stats;
 }
@@ -117,6 +146,7 @@ void gles_init(SDL_Window *window) {
     if (!linked) FATAL("[gles] presentation program link failed\n");
     g_present_sampler = glGetUniformLocation(g_present_program, "image0");
     glGenVertexArrays(1, &g_vertex_array);
+    glGenSamplers(32, g_texture_samplers);
     gles_draw_init();
     LOG("[gles] genuine GLES backend: %s / %s, version %s\n",
         glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION));
@@ -131,15 +161,30 @@ typedef struct {
 static FormatGL gpu_format(uint32_t format) {
     switch (format) {
     case 0x01: return (FormatGL){GL_R8, GL_RED, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x02: return (FormatGL){GL_R8_SNORM, GL_RED, GL_BYTE, GL_COLOR_ATTACHMENT0};
     case 0x0D: return (FormatGL){GL_RG8, GL_RG, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
-    case 0x19: case 0x25: case 0x6D:
+    case 0x0E: return (FormatGL){GL_RG8_SNORM, GL_RG, GL_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x19: case 0x25: case 0x6D: 
+    case 0x41: case 0x42: case 0x43: case 0x44: case 0x4D:
+    case 0x79: case 0x7A: case 0x7B: case 0x7C: case 0x7D:
+    case 0x7E: case 0x7F: case 0x80: case 0x81: case 0x82:
+    case 0x83: case 0x84: case 0x85: case 0x86:
         return (FormatGL){GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x4F: case 0x50:
     case 0x29: case 0x71:
         return (FormatGL){GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, GL_COLOR_ATTACHMENT0};
     case 0x2E: case 0x76:
         return (FormatGL){GL_RGBA32F, GL_RGBA, GL_FLOAT, GL_COLOR_ATTACHMENT0};
+    case 0x45: case 0x46: case 0x47: case 0x48: case 0x4E:
+    case 0x87: case 0x88: case 0x89: case 0x8A: case 0x8B:
+    case 0x8C: case 0x8D: case 0x8E: case 0x8F: case 0x90:
+    case 0x91: case 0x92: case 0x93: case 0x94:
     case 0x37: case 0x38:
         return (FormatGL){GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x49: return (FormatGL){GL_R8, GL_RED, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x4A: return (FormatGL){GL_R8_SNORM, GL_RED, GL_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x4B: return (FormatGL){GL_RG8, GL_RG, GL_UNSIGNED_BYTE, GL_COLOR_ATTACHMENT0};
+    case 0x4C: return (FormatGL){GL_RG8_SNORM, GL_RG, GL_BYTE, GL_COLOR_ATTACHMENT0};
     case 0x3F:
         return (FormatGL){GL_R11F_G11F_B10F, GL_RGB, GL_UNSIGNED_INT_10F_11F_11F_REV, GL_COLOR_ATTACHMENT0};
     case 0x32:
@@ -189,36 +234,41 @@ static GlesTexture *texture(NvnTexture *tex) {
     }
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
+        // Some valid sampled formats (e.g. SNORM) are not color-renderable.
+        // Keep the native GL texture for sampling, but never use it as an FBO.
         static int warned;
         if (warned++ < 15)
-            LOG("[gles] native framebuffer unsupported: fmt=%#x size=%ux%u status=%#x\n",
+            LOG("[gles] no native framebuffer for fmt=%#x size=%ux%u gl=%#x (sampling retained)\n",
                 tex->format, tex->width, tex->height, status);
         glDeleteFramebuffers(1, &t->framebuffer);
-        glDeleteTextures(1, &t->color);
-        free(t);
-        return NULL;
+        t->framebuffer = 0;
     }
     tex->backend = t;
     return t;
 }
 
+// Defined below. Called by depth clearing before its implementation.
+void gles_mark_texture_written(NvnTexture *tex);
 bool gles_draw_framebuffer(NvnTexture *color, NvnTexture *depth, int *w, int *h) {
-    GlesTexture *t = texture(color);
+    GlesTexture *t = color ? texture(color) : NULL;
     if (!color && depth) {
         // Depth-only pre-passes do not have a color attachment.
         GlesTexture *z = texture(depth);
-        if (!z || z->attachment == GL_COLOR_ATTACHMENT0) return false;
+        if (!z || !z->framebuffer || z->attachment == GL_COLOR_ATTACHMENT0) return false;
         glBindFramebuffer(GL_FRAMEBUFFER, z->framebuffer);
         if (w) *w = z->width;
         if (h) *h = z->height;
         return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     }
-    if (!t || t->attachment != GL_COLOR_ATTACHMENT0) return false;
+    if (!t || !t->framebuffer || t->attachment != GL_COLOR_ATTACHMENT0) return false;
     glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
     if (depth) {
         GlesTexture *z = texture(depth);
         if (!z || z->attachment == GL_COLOR_ATTACHMENT0 ||
             z->width != t->width || z->height != t->height) return false;
+        // Creating depth textures binds their own framebuffer; restore
+        // the color framebuffer before modifying its attachments.
+        glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
         if (t->depth_bound != z->color) {
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
                                    GL_TEXTURE_2D, 0, 0);
@@ -241,7 +291,7 @@ bool gles_draw_framebuffer(NvnTexture *color, NvnTexture *depth, int *w, int *h)
 bool gles_clear_depth(NvnTexture *depth, bool clear_depth, float value,
                       bool clear_stencil, uint32_t stencil, uint32_t mask) {
     GlesTexture *z = texture(depth);
-    if (!z || z->attachment == GL_COLOR_ATTACHMENT0) return false;
+    if (!z || !z->framebuffer || z->attachment == GL_COLOR_ATTACHMENT0) return false;
     glBindFramebuffer(GL_FRAMEBUFFER, z->framebuffer);
     glEnable(GL_SCISSOR_TEST);
     glScissor(g_clear_scissor[0], g_clear_scissor[1],
@@ -257,14 +307,170 @@ bool gles_clear_depth(NvnTexture *depth, bool clear_depth, float value,
         glClearStencil((GLint)stencil);
         bits |= GL_STENCIL_BUFFER_BIT;
     }
-    if (bits) glClear(bits);
+    if (bits) { glClear(bits); gles_mark_texture_written(depth); }
     glStencilMask(0xFF);
     glDepthMask(GL_TRUE);
     return bits != 0;
 }
 
-void gles_texture_destroyed(NvnTexture *tex) {
+
+// Only 2D, single-slice images with a genuine CPU backing are uploaded in
+// this initial native sampling path. Output data comes from Tegra layouts,
+// not from fake uniform colors or a Vulkan fallback.
+static unsigned bcn_type(uint32_t fmt) {
+    switch (fmt) {
+    case 0x41: case 0x42: case 0x45: case 0x46: return LAS_BC1;
+    case 0x43: case 0x47: return LAS_BC2;
+    case 0x44: case 0x48: return LAS_BC3;
+    case 0x49: return LAS_BC4U;
+    case 0x4A: return LAS_BC4S;
+    case 0x4B: return LAS_BC5U;
+    case 0x4C: return LAS_BC5S;
+    case 0x4D: case 0x4E: return LAS_BC7;
+    case 0x4F: return LAS_BC6S;
+    case 0x50: return LAS_BC6U;
+    default: return LAS_BC_NONE;
+    }
+}
+static bool sample_cpu_upload(NvnTexture *tex, GlesTexture *host) {
+    if (host->gpu_written) return true;  // preserve real GPU render-target content
+    if (!tex->addr) return host->cpu_uploaded;
+    if (tex->target != 1 || tex->layout.layers != 1 ||
+        tex->layout.depth > 1 || !tex->layout.fmt) return false;
+    const FormatInfo *fi=tex->layout.fmt;
+    const LevelLayout l=tegra_level(&tex->layout,0);
+    if (!fi->bpb || !l.wb || !l.hb || !l.w || !l.h || l.d != 1) return false;
+    uint64_t size=tegra_total_size(&tex->layout);
+    uint64_t raw=(uint64_t)l.wb*l.hb*fi->bpb;
+    if (!size || l.offset >= size || raw > size - l.offset ||
+        size > (64ull<<20) || !raw || raw > (32ull<<20) ||
+        tex->addr < 0x7000000000ull || tex->addr >= 0x7320000000ull ||
+        size > 0x7320000000ull-tex->addr) return false;
+    const uint8_t *memory=(const uint8_t *)(uintptr_t)tex->addr;
+    // Avoid hashing the same texture many times per frame. Static guest
+    // images are rechecked periodically; linear atlases are rechecked each
+    // frame to reflect updated glyphs.
+    const uint64_t period = (tex->flags & 0x10) ? 1u : 60u;
+    if (host->cpu_uploaded && g_frames >= host->last_cpu_check_frame &&
+        g_frames - host->last_cpu_check_frame < period) {
+        g_sample_cached++; return true;
+    }
+    host->last_cpu_check_frame = g_frames;
+    uint64_t h=1469598103934665603ull;
+    for (uint64_t i=0;i<size;i++) h=(h^memory[i])*1099511628211ull;
+    if (host->cpu_uploaded && host->cpu_hash == h) {
+        g_sample_cached++; return true;
+    }
+    uint8_t *linear=malloc((size_t)raw);
+    if (!linear) return false;
+    const uint8_t *src=memory+l.offset;
+    const bool linear_storage=(tex->flags & 0x10)!=0;
+    if (linear_storage) {
+        uint64_t stride=tex->stride ? tex->stride : (uint64_t)l.wb*fi->bpb;
+        if (stride < (uint64_t)l.wb*fi->bpb || stride > (64ull<<20) ||
+            (uint64_t)(l.hb-1)*stride+(uint64_t)l.wb*fi->bpb > size-l.offset) {
+            free(linear); return false;
+        }
+        for(uint32_t y=0;y<l.hb;y++)
+            memcpy(linear+(uint64_t)y*l.wb*fi->bpb,
+                   src+(uint64_t)y*stride,(uint64_t)l.wb*fi->bpb);
+    } else {
+        tegra_deswizzle(src,linear,l.wb,l.hb,1,fi->bpb,
+                        l.block_height_log2,l.block_depth_log2);
+    }
+    FormatGL f=gpu_format(tex->format);
+    if (!f.internal || f.attachment != GL_COLOR_ATTACHMENT0) {free(linear);return false;}
+    uint8_t *pixels=linear;
+    uint64_t bytes=raw;
+    unsigned bc=bcn_type(tex->format);
+    const bool astc=tex->format >= 0x79 && tex->format <= 0x94;
+    if (bc || astc) {
+        unsigned px=bc?las_bcn_pixel_bytes(bc):4;
+        bytes=(uint64_t)l.w*l.h*px;
+        if (!px || bytes > (64ull<<20)) {free(linear);return false;}
+        pixels=malloc((size_t)bytes);
+        if (!pixels) {free(linear);return false;}
+        bool ok=bc ? las_bcn_decode(bc,linear,(size_t)raw,l.w,l.h,1,pixels,(size_t)bytes) : true;
+        if (astc) astc_decode_ldr(linear,l.w,l.h,fi->bw,fi->bh,
+                                  tex->format >= 0x87,pixels);
+        free(linear);
+        if (!ok) {free(pixels);return false;}
+    }
+    glBindTexture(GL_TEXTURE_2D,host->color);
+    glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,(GLsizei)l.w,(GLsizei)l.h,
+                    f.format,f.type,pixels);
+    GLenum status=glGetError();
+    glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+    if (pixels) free(pixels);
+    if(status!=GL_NO_ERROR) {
+        static unsigned warn;
+        if(warn++<10) LOG("[gles] CPU texture upload error: format=%#x gl=%#x\n",tex->format,status);
+        return false;
+    }
+    host->cpu_hash=h;
+    host->cpu_uploaded=true;
+    g_sample_uploaded_bytes+=bytes;
+    return true;
+}
+
+static GLint sampler_wrap(uint32_t wrap) {
+    switch(wrap) {
+    case 0: case 7: return GL_CLAMP_TO_EDGE;
+    case 1: return GL_REPEAT;
+    case 6: return GL_MIRRORED_REPEAT;
+    default: return 0; // border/mirror-clamp needs an exact extension path
+    }
+}
+bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
+                         int unit, bool shadow, uint8_t target) {
+    if (!tex || unit < 0 || unit >= 32 || target != 1) {
+        g_sample_fail++; return false;
+    }
+    GlesTexture *host=texture(tex);
+    if (!host || !sample_cpu_upload(tex,host)) {g_sample_fail++;return false;}
+    if (shadow && host->attachment != GL_DEPTH_ATTACHMENT &&
+        host->attachment != GL_DEPTH_STENCIL_ATTACHMENT) {
+        g_sample_fail++; return false;
+    }
+    GLint wrap_s=sampler?sampler_wrap(sampler->wrap[0]):GL_CLAMP_TO_EDGE;
+    GLint wrap_t=sampler?sampler_wrap(sampler->wrap[1]):GL_CLAMP_TO_EDGE;
+    if (!wrap_s || !wrap_t) {g_sample_fail++;return false;}
+    GLuint sm=g_texture_samplers[unit];
+    if (!sm) {g_sample_fail++;return false;}
+    uint32_t mag=sampler?sampler->mag_filter:1, min=sampler?sampler->min_filter:1;
+    glSamplerParameteri(sm,GL_TEXTURE_WRAP_S,wrap_s);
+    glSamplerParameteri(sm,GL_TEXTURE_WRAP_T,wrap_t);
+    glSamplerParameteri(sm,GL_TEXTURE_MIN_FILTER,
+                        (min==1||min==3||min==5)?GL_LINEAR:GL_NEAREST);
+    glSamplerParameteri(sm,GL_TEXTURE_MAG_FILTER,mag==1?GL_LINEAR:GL_NEAREST);
+    glSamplerParameteri(sm,GL_TEXTURE_COMPARE_MODE,shadow?GL_COMPARE_REF_TO_TEXTURE:GL_NONE);
+    if (shadow) glSamplerParameteri(sm,GL_TEXTURE_COMPARE_FUNC,GL_LEQUAL);
+    glBindSampler((GLuint)unit,sm);
+    glActiveTexture(GL_TEXTURE0+(GLenum)unit);
+    glBindTexture(GL_TEXTURE_2D,host->color);
+    g_sample_ok++;
+    return true;
+}
+void gles_mark_texture_written(NvnTexture *tex) {
     if (!tex || !tex->backend) return;
+    ((GlesTexture *)tex->backend)->gpu_written=true;
+}
+
+void gles_texture_destroyed(NvnTexture *tex) {
+    if (!tex) return;
+    // Finalization may run on the game thread while video decode submits
+    // pixels. Remove any pending upload while holding the queue lock, before
+    // the NVN object is freed by its owner.
+    pthread_mutex_lock(&video_mutex);
+    for (int i=0;i<GLES_VIDEO_QUEUE;i++) {
+        if (video_queue[i].tex == tex) {
+            free(video_queue[i].pixels);
+            memset(&video_queue[i],0,sizeof video_queue[i]);
+        }
+    }
+    pthread_mutex_unlock(&video_mutex);
+    if (!tex->backend) return;
     GlesTexture *t = tex->backend;
     // NVN objects may be finalized by non-GL threads. Avoid invoking GLES
     // with no current context; a per-context deferred-delete queue is next.
@@ -276,17 +482,66 @@ void gles_texture_destroyed(NvnTexture *tex) {
     tex->backend = NULL;
 }
 
-// Video decode callbacks can run on non-GL threads; a safe upload queue
-// must be implemented before touching a GLES texture here.
+// Video producers use independent guest/FFmpeg threads. This callback
+// intentionally does NOT call GLES: pixels are copied into an owned queue
+// and applied only by the thread holding the SDL GLES context.
 void gles_upload_rgba(NvnTexture *t, const void *src, uint32_t w, uint32_t h, uint32_t stride) {
-    (void)t; (void)src; (void)w; (void)h; (void)stride;
-    g_unsupported++;
+    uint64_t bytes=(uint64_t)w*h*4u;
+    if (!t || !src || !w || !h || w>8192 || h>8192 ||
+        stride<(uint64_t)w*4u || bytes>(64ull<<20)) {
+        video_dropped++; return;
+    }
+    uint8_t *copy=malloc((size_t)bytes);
+    if (!copy) {video_dropped++;return;}
+    const uint8_t *in=src;
+    for(uint32_t y=0;y<h;y++)
+        memcpy(copy+(uint64_t)y*w*4u,in+(uint64_t)y*stride,(uint64_t)w*4u);
+    pthread_mutex_lock(&video_mutex);
+    int slot=-1;
+    for(int i=0;i<GLES_VIDEO_QUEUE;i++)
+        if(video_queue[i].tex==t) {slot=i;break;}
+    if(slot<0)
+        for(int i=0;i<GLES_VIDEO_QUEUE;i++)
+            if(!video_queue[i].tex){slot=i;break;}
+    if(slot<0) {slot=(int)(video_queued%GLES_VIDEO_QUEUE);video_dropped++;}
+    free(video_queue[slot].pixels);
+    video_queue[slot]=(PendingVideo){t,copy,w,h};
+    video_queued++;
+    pthread_mutex_unlock(&video_mutex);
+}
+static void gles_flush_video_queue(void) {
+    // The queue lock remains held while uploading: texture finalization
+    // cannot free the NVN object until the current upload finishes.
+    pthread_mutex_lock(&video_mutex);
+    for(int i=0;i<GLES_VIDEO_QUEUE;i++) {
+        PendingVideo *q=&video_queue[i];
+        if(!q->tex) continue;
+        GlesTexture *tex=texture(q->tex);
+        if(tex && tex->attachment==GL_COLOR_ATTACHMENT0 &&
+           q->w<=tex->width && q->h<=tex->height &&
+           (q->tex->format==0x25 || q->tex->format==0x19 ||
+            q->tex->format==0x6d || q->tex->format==0x37 ||
+            q->tex->format==0x38)) {
+            glBindTexture(GL_TEXTURE_2D,tex->color);
+            glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+            glTexSubImage2D(GL_TEXTURE_2D,0,0,0,q->w,q->h,
+                            GL_RGBA,GL_UNSIGNED_BYTE,q->pixels);
+            if(glGetError()==GL_NO_ERROR){
+                tex->gpu_written=true;
+                video_uploaded++;
+            } else video_dropped++;
+            glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+        } else video_dropped++;
+        free(q->pixels);
+        memset(q,0,sizeof *q);
+    }
+    pthread_mutex_unlock(&video_mutex);
 }
 
 static void clear_texture(NvnTexture *tex, const float *rgba, uint32_t mask,
                           const int32_t region[6]) {
     GlesTexture *t = texture(tex);
-    if (!t || t->attachment != GL_COLOR_ATTACHMENT0) return;
+    if (!t || !t->framebuffer || t->attachment != GL_COLOR_ATTACHMENT0) return;
     glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
     glViewport(0, 0, t->width, t->height);
     glEnable(GL_SCISSOR_TEST);
@@ -298,6 +553,7 @@ static void clear_texture(NvnTexture *tex, const float *rgba, uint32_t mask,
     glColorMask(!!(mask & 1), !!(mask & 2), !!(mask & 4), !!(mask & 8));
     glClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
     glClear(GL_COLOR_BUFFER_BIT);
+    gles_mark_texture_written(tex);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     g_clears++;
 }
@@ -410,6 +666,7 @@ void gles_execute(uint64_t handle) {
         gles_draw_reset();
         g_draw_needs_reset = false;
     }
+    gles_flush_video_queue();
     execute_list(handle, 0);
     ++g_executed_lists;
     // Keep a short-lived startup snapshot even when Android kills the
@@ -427,6 +684,7 @@ void gles_execute(uint64_t handle) {
 
 void gles_present(NvnTexture *tex) {
     if (!g_context) return;
+    gles_flush_video_queue();
     int w = 1, h = 1;
     SDL_GetWindowSizeInPixels(g_window, &w, &h);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);

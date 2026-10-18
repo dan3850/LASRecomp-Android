@@ -67,3 +67,31 @@ assert "gles-shaders.txt" in source("android/src/com/retroaura/lasrecomp/Graphic
 assert "shader_diagnostic(\"vertex-translate\"" in draw
 assert "shader_diagnostic(\"fragment-compile\"" not in draw or "compile_shader(GL_FRAGMENT_SHADER" in draw
 print("GLES driver shader diagnostic source checks passed")
+
+# Native texture path: use existing verified Tegra/BCn/ASTC decoders, no
+# Vulkan/PixelCopy substitutes or fake solid-color textures.
+gles = source("runtime/nvn/gles/gles.c")
+draws = source("runtime/nvn/gles/draw.c")
+for token in ("tegra_deswizzle(", "astc_decode_ldr(", "las_bcn_decode(",
+              "glTexSubImage2D(", "GL_UNPACK_ALIGNMENT", "gles_sample_texture(",
+              "glGenSamplers(32", "tex->target != 1"):
+    assert token in gles, f"Native Tegra 2D texture support missing: {token}"
+for token in ("bind_textures(", "gles_sample_texture(", "CMD_BIND_TEXTURES",
+              "CMD_SET_TEXTURE_POOL", "CMD_SET_SAMPLER_POOL", "R_TEXTURE",
+              "gles_mark_texture_written("):
+    assert token in draws, f"Native Maxwell 2D sampler path missing: {token}"
+assert "p->fs->ntex || p->vs->ntex" not in draws
+assert "if (!bind_textures(p)) return false;" in draws
+assert "glBindSampler((GLuint)unit,sm);" in gles
+print("GLES native CPU textures and real Maxwell sampler binding: source checks passed")
+
+# Video surfaces are produced by a non-GL thread: pixel data must be copied
+# into a bounded queue and uploaded on the actual GLES render thread.
+for token in ("pthread_mutex_lock(&video_mutex)", "GLES_VIDEO_QUEUE = 8",
+              "gles_flush_video_queue(", "video_frames_uploaded=",
+              "video_uploaded++", "glTexSubImage2D(GL_TEXTURE_2D,0,0,0,q->w"):
+    assert token in gles, f"GLES video frame queue missing: {token}"
+assert gles.count("gles_flush_video_queue();") >= 2
+assert "void gles_mark_texture_written(NvnTexture *tex);" in gles
+assert "glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);" in gles
+print("Native GLES video upload ownership and GL-thread queue: source checks passed")
