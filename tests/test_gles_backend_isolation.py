@@ -445,3 +445,15 @@ for _ in range(2048):
     expected=(((high<<32)|low)+off-heap_base)&0xffffffffffffffff
     assert (diff_hi<<32)|diff == expected
 print("GLES packed read-only GMEM and 64-bit guest address tests passed")
+
+# GLES 3.2 provides glBindBufferBase but NOT desktop OpenGL's
+# glShaderStorageBlockBinding. Bind GFast explicitly in GLSL ES 3.20.
+translator=source("runtime/nvn/maxwell/translate.c")
+draws=source("runtime/nvn/gles/draw.c")
+assert "layout(std430, binding = 0) %sbuffer GFast" in translator
+assert "glBindBufferBase(GL_SHADER_STORAGE_BUFFER,0,gmem_ssbo);" in draws
+draw_code = re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", "", draws)
+assert "glShaderStorageBlockBinding(" not in draw_code
+assert 'glGetProgramResourceIndex(p->gl_program,GL_SHADER_STORAGE_BLOCK,"GFast")' in draws
+assert 'layout(std430, set = %d, binding = %d) %sbuffer GFast' in translator
+print("GLES storage buffer binding 0 without desktop-only API: source checks passed")

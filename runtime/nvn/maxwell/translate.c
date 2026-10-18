@@ -1940,7 +1940,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (info->uses_gmem_map) {  // (compute) the dispatch's storage buffers, device-local: gmap[i] = heap offset, size, word
         if (es) {
             sp(&s, "layout(std140) uniform GMap { uvec4 gmap[%d]; };\n", GMAP_MAX + 1);
-            sp(&s, "layout(std430) %sbuffer GFast { uint w[]; } gfast_;\n", c->uses_gmem_store ? "" : "readonly ");
+            // GLES 3.1+ requires a shader-declared storage binding.
+            // glShaderStorageBlockBinding is desktop GL, not an ES API.
+            sp(&s, "layout(std430, binding = 0) %sbuffer GFast { uint w[]; } gfast_;\n", c->uses_gmem_store ? "" : "readonly ");
         } else {
             sp(&s, "layout(std140, set = %d, binding = %d) uniform GMap { uvec4 gmap[%d]; };\n", set, GMAP_BUFFER_INDEX, GMAP_MAX + 1);
             sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GFast { uint w[]; } gfast_;\n", set, GFAST_BUFFER_INDEX,

@@ -666,7 +666,9 @@ static bool bind_readonly_gmem(Program *p) {
         gmem_snapshot_reject_gl++;return false;
     }
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER,0,gmem_ssbo);
-    glShaderStorageBlockBinding(p->gl_program,fast_block,0);
+    // GLES 3.2 has no glShaderStorageBlockBinding entry point.
+    // The GLSL ES storage block declares layout(binding=0), matching
+    // the real buffer bound above; keep resource-index validation above.
     glBindBuffer(GL_UNIFORM_BUFFER,gmem_table_ubo);
     glBufferData(GL_UNIFORM_BUFFER,sizeof plan.tab,plan.tab,GL_STREAM_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER,last_uniform_binding,gmem_table_ubo);
