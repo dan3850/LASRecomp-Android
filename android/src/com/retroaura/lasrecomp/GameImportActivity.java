@@ -47,7 +47,7 @@ public final class GameImportActivity extends Activity {
     private static native boolean nativeSupportsModMenu(String libraryPath);
 
     private static final String GAME_TREE_PREF = "selected_game_tree";
-    // A separate test selection: GLES has no NVN game backend yet.
+    // GLES selections are diagnostics, not a replacement NVN game backend.
     private static final String RENDERER_PREF = "experimental_renderer";
     private static final int PICK_GAME_FOLDER = 101;
     private static final int PICK_GAME_CODE = 102;
@@ -135,26 +135,44 @@ public final class GameImportActivity extends Activity {
         }
     }
 
+    private String selectedRenderer() {
+        return getPreferences(MODE_PRIVATE).getString(RENDERER_PREF, "vulkan");
+    }
+
     private boolean openglTestSelected() {
-        return "gles-test".equals(getPreferences(MODE_PRIVATE).getString(RENDERER_PREF, "vulkan"));
+        return "gles-test".equals(selectedRenderer());
+    }
+
+    private boolean openglGameOverlaySelected() {
+        return "gles-game".equals(selectedRenderer());
     }
 
     private void showRendererChoice() {
         // Never present the GLES smoke test as a Zelda renderer.
         final String[] names = {
             "Vulkan — jogar Zelda (padrão)",
-            "OpenGL ES 3.0 — teste da GPU (ainda NÃO roda Zelda)"
+            "Vulkan + OpenGL ES 3.0 — teste dentro do Zelda",
+            "OpenGL ES 3.0 — teste gráfico independente"
         };
         new AlertDialog.Builder(this).setTitle("Escolher renderizador")
-            .setSingleChoiceItems(names, openglTestSelected() ? 1 : 0, (dialog, choice) -> {
+            .setSingleChoiceItems(names, openglTestSelected() ? 2 : openglGameOverlaySelected() ? 1 : 0, (dialog, choice) -> {
                 getPreferences(MODE_PRIVATE).edit()
-                    .putString(RENDERER_PREF, choice == 1 ? "gles-test" : "vulkan").apply();
+                    .putString(RENDERER_PREF, choice == 2 ? "gles-test" :
+                        choice == 1 ? "gles-game" : "vulkan").apply();
                 dialog.dismiss();
                 showGameFilesState();
                 if (choice == 1) {
-                    new AlertDialog.Builder(this).setTitle("OpenGL experimental")
-                        .setMessage("Este modo testa o driver OpenGL ES real com shaders e medição de FPS. " +
-                            "Ainda não executa os comandos NVN do Zelda. Para jogar, selecione Vulkan.")
+                    new AlertDialog.Builder(this).setTitle("Teste OpenGL dentro do jogo")
+                        .setMessage("Nesta etapa, o Zelda continua sendo desenhado pelo Vulkan. " +
+                            "Uma superfície OpenGL ES real ficará ativa por cima do jogo " +
+                            "para testar os dois contextos gráficos juntos. " +
+                            "A medição da GPU OpenGL será incluída no ZIP gráfico. " +
+                            "Isto NÃO é um backend OpenGL para os comandos NVN do Zelda.")
+                        .setPositiveButton("Entendi", null).show();
+                } else if (choice == 2) {
+                    new AlertDialog.Builder(this).setTitle("OpenGL independente")
+                        .setMessage("Este modo executa somente o teste de shaders OpenGL ES 3.0, " +
+                            "sem carregar Zelda.")
                         .setPositiveButton("Entendi", null).show();
                 }
             }).setNegativeButton("Cancelar", null).show();
@@ -298,6 +316,7 @@ public final class GameImportActivity extends Activity {
                 game.setClassName(this, "com.retroaura.lasrecomp.GameSDLActivity");
                 Uri tree = rememberedGameFolder();
                 if (tree != null) game.putExtra("game_tree_uri", tree.toString());
+                game.putExtra("opengl_overlay_test", openglGameOverlaySelected());
                 startActivity(game);
             }
         });
@@ -720,12 +739,15 @@ public final class GameImportActivity extends Activity {
         boolean code = hasGameCode();
         playButton.setVisibility(View.VISIBLE);
         boolean gles = openglTestSelected();
-        // GLES diagnostic can run without copyrighted game data or a private game library.
+        boolean combined = openglGameOverlaySelected();
+        // Standalone GL requires no game files; combined mode needs the real game.
         playButton.setEnabled(!importing && (gles || (files && code)));
-        playButton.setText(gles ? "TESTAR OPENGL ES 3.0 (NÃO É O JOGO)" :
-            files && code ? "JOGAR — VULKAN" : "JOGAR — AGUARDANDO ARQUIVOS E BIBLIOTECA");
-        rendererButton.setText(gles ? "RENDERIZADOR: OPENGL ES (SOMENTE TESTE)" :
-            "RENDERIZADOR: VULKAN (JOGO)");
+        playButton.setText(gles ? "TESTAR OPENGL ES 3.0 (SEM JOGO)" :
+            files && code ? combined ? "JOGAR — VULKAN + OPENGL (TESTE)" : "JOGAR — VULKAN" :
+            "JOGAR — AGUARDANDO ARQUIVOS E BIBLIOTECA");
+        rendererButton.setText(gles ? "GRÁFICO: OPENGL ES (TESTE ISOLADO)" :
+            combined ? "GRÁFICO: VULKAN + OPENGL (TESTE NO JOGO)" :
+            "GRÁFICO: VULKAN (JOGO)");
         verifyButton.setVisibility(privateGameCodeFile().isFile() ? View.VISIBLE : View.GONE);
         verifyButton.setEnabled(!importing);
         fontButton.setEnabled(!importing);

@@ -34,6 +34,8 @@ public final class GameSDLActivity extends SDLActivity {
     private android.widget.Button captureButton;
     private final android.os.Handler captureHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private GameTouchControls touchControls;
+    // Opt-in GLES context alongside Vulkan; Zelda's NVN graphics remain Vulkan.
+    private OpenGLGameOverlay glGameOverlay;
     private android.net.Uri selectedGameTree;
     private GameDocumentBridge.RomfsIndex romfsIndex;
 
@@ -128,6 +130,19 @@ public final class GameSDLActivity extends SDLActivity {
         super.onCreate(state);
         enforceLandscapeFullscreen();
         if (mLayout != null) {
+            if (getIntent().getBooleanExtra("opengl_overlay_test", false)) {
+                try {
+                    glGameOverlay = new OpenGLGameOverlay(this);
+                    mLayout.addView(glGameOverlay, new ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT));
+                    markActivity("OpenGL ES overlay test requested; NVN renderer remains Vulkan");
+                } catch (RuntimeException error) {
+                    glGameOverlay = null;
+                    markActivity("OpenGL ES overlay setup failed: " + error);
+                    android.util.Log.e("LASRecomp/GLES", "Overlay init failure", error);
+                }
+            }
             touchControls = new GameTouchControls(this);
             mLayout.addView(touchControls, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -194,7 +209,13 @@ public final class GameSDLActivity extends SDLActivity {
     @Override
     protected void onPause() {
         if (touchControls != null) touchControls.releaseAll();
+        if (glGameOverlay != null) glGameOverlay.onPause();
         super.onPause();
+    }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (glGameOverlay != null) glGameOverlay.onResume();
     }
     @Override
     protected void onDestroy() {

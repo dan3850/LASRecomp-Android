@@ -45,7 +45,7 @@ final class GraphicsDiagnostics {
                     add(zip, new File(root, "lasrecomp.log"), "runtime-tail.txt", LOG_LIMIT, true);
                     add(zip, new File(root, "lasrecomp.log"), "runtime-start.txt", 32768, false);
                     add(zip, new File(root, "mods/stable60-v2.status.txt"), "mods/status.txt", 4096, false);
-                    String[] names = {"device.txt", "events.txt", "report.txt", "capture.state", "frame.png"};
+                    String[] names = {"device.txt", "events.txt", "report.txt", "capture.state", "frame.png", "gl-overlay.txt"};
                     for (String name : names) add(zip, new File(root, "graphics/" + name), "graphics/" + name,
                         name.endsWith(".png") ? 32 * LOG_LIMIT : LOG_LIMIT, false);
                     for (int i = 0; i < 4; i++) for (String source : new String[] {"cpu", "gpu"}) {
