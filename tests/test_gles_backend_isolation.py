@@ -305,3 +305,54 @@ assert 'const char *prefix = stage == STAGE_FRAGMENT ? "f" : "v";' in translator
 assert 'layout(std140, set = %d, binding = %d) uniform CB%d' in translator
 assert 'snprintf(name,sizeof name,"%s_CB%d",stage ? "F" : "V", k);' in draws
 print("GLES GL_ZERO stencil and scoped per-stage constant block checks passed")
+
+# Adreno 840 12:38 diagnostic: the GLES renderer linked 72 Maxwell
+# programs and ran 256979 native draws, but lost 165610 others.
+# Translate non-GMEM unsigned carry and funnel shifts without uint64_t.
+# This must remain GLES-only: Vulkan still uses the original 64-bit path.
+translator=source("runtime/nvn/maxwell/translate.c")
+draw=source("runtime/nvn/gles/draw.c")
+assert translator.count("if (c->key && c->key->glsl_es)") >= 3
+for token in ("uaddCarry(av, bv, ca)", "uaddCarry(mid, extra, cb)",
+              "uaddCarry(av,bv,ca)", "uaddCarry(s0,cv,cb)",
+              "uaddCarry(s1,extra,cd)",
+              "cc = (ca + cb) & 1u", "cc = (ca + cb + cd) & 1u",
+              "uint shf32_r(uint hi, uint lo, uint sh)",
+              "uint shf32_l(uint hi, uint lo, uint sh)",
+              "shf32_r(%s, %s, %s)", "shf32_l(%s, %s, %s)"):
+    assert token in translator, f"Missing GLES 32-bit equivalent: {token}"
+for token in ("ulong sum = ulong", "ulong(%s) << 32"):
+    assert token in translator, "The Vulkan shader translator path must remain unchanged"
+for token in ("shader_reject_gmem=", "shader_reject_sampler=",
+              "shader_reject_int64=", "shader_reject_subgroup=",
+              "shader_disabled_draws=",
+              "shader_disabled_draws++",
+              "if (!p->gl_program) {"):
+    assert token in draw, f"Missing GLES unsupported shader diagnostic: {token}"
+
+# Deterministic algebraic reference for GLSL uaddCarry chains/32-bit SHF.
+# These tests check the intended math, not a compiled shader.
+import random
+random_test = random.Random(0xC0FFEE)
+mask32 = (1 << 32) - 1
+def add32(x, y):
+    total = x + y
+    return total & mask32, total >> 32
+for _ in range(4096):
+    a,b,c,extra = (random_test.getrandbits(32) for _ in range(4))
+    mid,ca = add32(a,b)
+    out,cb = add32(mid,extra)
+    total = a+b+extra
+    assert out == (total & mask32) and ((ca+cb)&1) == ((total>>32)&1)
+    mid,ca = add32(a,b)
+    mid,cb = add32(mid,c)
+    out,cd = add32(mid,extra)
+    total = a+b+c+extra
+    assert out == (total & mask32) and ((ca+cb+cd)&1) == ((total>>32)&1)
+    shift=random_test.randrange(32)
+    expected_right=(((a<<32)|b)>>shift)&mask32
+    expected_left=(((((a<<32)|b)<<shift)>>32)&mask32)
+    got_right=b if shift==0 else ((b>>shift)|(a<<(32-shift)))&mask32
+    got_left=a if shift==0 else ((a<<shift)|(b>>(32-shift)))&mask32
+    assert expected_right == got_right and expected_left == got_left
+print("GLES ES3 32-bit carry/funnel shift regression: 4096 reference cases passed")

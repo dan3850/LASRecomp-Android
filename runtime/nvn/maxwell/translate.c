@@ -1119,20 +1119,48 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     } else if (OPM(0x1c00000000000000ull, 0xfe00000000000000ull)) {  // IADD32I (CC bit 52, X bit 53)
         bool wcc = bits(w, 52, 1), x = bits(w, 53, 1);
         if (wcc || x) c->uses_cc = true;
-        sp(&c->body, "    { ulong sum = ulong(%s%s) + ulong(0x%08xu)%s;%s\n", bits(w, 56, 1) ? "-" : "", R(a), (uint32_t)bits(w, 20, 32),
-           x ? " + ulong(cc)" : "", wcc ? " cc = uint(sum >> 32) & 1u;" : "");
-        if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = uint(sum);\n", d); }
-        sp(&c->body, "    }\n");
+        if (c->key && c->key->glsl_es) {
+            // GLSL ES 3.20 has uaddCarry() without any shaderInt64 extension.
+            // Carry-out parity matches (unsigned 64-bit sum >> 32) & 1.
+            sp(&c->body, "    { uint av = %s%s, bv = 0x%08xu, extra = %s; uint ca, cb;\n"
+                         "      uint mid = uaddCarry(av, bv, ca);\n"
+                         "      uint sum = uaddCarry(mid, extra, cb);\n",
+               bits(w, 56, 1) ? "-" : "", R(a), (uint32_t)bits(w, 20, 32), x ? "cc" : "0u");
+            if (wcc) sp(&c->body, "      cc = (ca + cb) & 1u;\n");
+            if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = sum;\n", d); }
+            sp(&c->body, "    }\n");
+        } else {
+            sp(&c->body, "    { ulong sum = ulong(%s%s) + ulong(0x%08xu)%s;%s\n", bits(w, 56, 1) ? "-" : "", R(a), (uint32_t)bits(w, 20, 32),
+               x ? " + ulong(cc)" : "", wcc ? " cc = uint(sum >> 32) & 1u;" : "");
+            if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = uint(sum);\n", d); }
+            sp(&c->body, "    }\n");
+        }
     } else if (OPM(0x5cc0000000000000ull, 0xfff0000000000000ull) || OPM(0x4cc0000000000000ull, 0xfff0000000000000ull) ||
                OPM(0x38c0000000000000ull, 0xfef0000000000000ull)) {  // IADD3
         bool wcc3 = bits(w, 47, 1), x3 = bits(w, 48, 1);
         if (wcc3 || x3) {  // carry in/out (64-bit address math)
             c->uses_cc = true;
-            sp(&c->body, "    { ulong sum = ulong(%s%s) + ulong(%s%s) + ulong(%s%s)%s;\n", bits(w, 51, 1) ? "-" : "", R(a),
-               bits(w, 50, 1) ? "-" : "", B(false), bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)), x3 ? " + ulong(cc)" : "");
-            if (wcc3) sp(&c->body, "      cc = uint(sum >> 32) & 1u;\n");
-            if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = uint(sum);\n", d); }
-            sp(&c->body, "    }\n");
+            if (c->key && c->key->glsl_es) {
+                // Four unsigned 32-bit addends (including optional carry-in):
+                // the high bit of their 64-bit total is the parity of
+                // the carry-outs from successive uaddCarry operations.
+                sp(&c->body, "    { uint av = %s%s, bv = %s%s, cv = %s%s, extra = %s;\n"
+                             "      uint ca, cb, cd; uint s0 = uaddCarry(av,bv,ca);\n"
+                             "      uint s1 = uaddCarry(s0,cv,cb);\n"
+                             "      uint sum = uaddCarry(s1,extra,cd);\n",
+                   bits(w, 51, 1) ? "-" : "", R(a),
+                   bits(w, 50, 1) ? "-" : "", B(false),
+                   bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)), x3 ? "cc" : "0u");
+                if (wcc3) sp(&c->body, "      cc = (ca + cb + cd) & 1u;\n");
+                if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = sum;\n", d); }
+                sp(&c->body, "    }\n");
+            } else {
+                sp(&c->body, "    { ulong sum = ulong(%s%s) + ulong(%s%s) + ulong(%s%s)%s;\n", bits(w, 51, 1) ? "-" : "", R(a),
+                   bits(w, 50, 1) ? "-" : "", B(false), bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)), x3 ? " + ulong(cc)" : "");
+                if (wcc3) sp(&c->body, "      cc = uint(sum >> 32) & 1u;\n");
+                if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = uint(sum);\n", d); }
+                sp(&c->body, "    }\n");
+            }
         } else {
             sprintf(t, "(%s%s + %s%s + %s%s)", bits(w, 51, 1) ? "-" : "", R(a), bits(w, 50, 1) ? "-" : "", B(false),
                     bits(w, 49, 1) ? "-" : "", R((int)bits(w, 39, 8)));
@@ -1382,8 +1410,15 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         bool right = (w >> 56) == 0x5c || (w >> 57) == (0x38 >> 1);
         const char *sh = ((w >> 60) == 3) ? B(false) : R((int)bits(w, 20, 8));
         const char *hi = R((int)bits(w, 39, 8));
-        if (right) sprintf(t, "uint((((ulong(%s) << 32) | ulong(%s)) >> (%s & 31u)))", hi, R(a), sh);
-        else sprintf(t, "uint((((ulong(%s) << 32) | ulong(%s)) << (%s & 31u)) >> 32)", hi, R(a), sh);
+        if (c->key && c->key->glsl_es) {
+            // SHF only consumes the 32-bit half of a concatenated pair;
+            // avoid Vulkan's 64-bit temporary on GLES without changing it.
+            if (right) sprintf(t, "shf32_r(%s, %s, %s)", hi, R(a), sh);
+            else sprintf(t, "shf32_l(%s, %s, %s)", hi, R(a), sh);
+        } else {
+            if (right) sprintf(t, "uint((((ulong(%s) << 32) | ulong(%s)) >> (%s & 31u)))", hi, R(a), sh);
+            else sprintf(t, "uint((((ulong(%s) << 32) | ulong(%s)) << (%s & 31u)) >> 32)", hi, R(a), sh);
+        }
         set_reg(c, d, t);
     } else if (OPM(0xeed0000000000000ull, 0xfff8000000000000ull) || OPM(0xeed8000000000000ull, 0xfff8000000000000ull)) {  // LDG / STG
         bool store = bits(w, 51, 1);
@@ -1812,6 +1847,12 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (stage == STAGE_VERTEX)
             sp(&s, "uniform highp uint gles_base_instance;\n");
         sp(&s, "%s", strstr(glsl_prelude, "#define cbr"));
+        // Exact 32-bit halves of a 64-bit funnel shift. The zero-shift
+        // case must not OR the other word into the result.
+        sp(&s, "uint shf32_r(uint hi, uint lo, uint sh) { uint n=sh&31u;"
+               " return n==0u ? lo : ((lo>>n) | (hi<<(32u-n))); }\n"
+               "uint shf32_l(uint hi, uint lo, uint sh) { uint n=sh&31u;"
+               " return n==0u ? hi : ((hi<<n) | (lo>>(32u-n))); }\n");
     } else {
         sp(&s, "%s", glsl_prelude);
     }

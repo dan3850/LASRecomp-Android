@@ -40,6 +40,8 @@ typedef struct {
 static DrawState st;
 static GLuint uniform_buffers[36], vertex_buffers[16], index_buffer, vao;
 static uint64_t native_draws, shaders_ok, shaders_failed, rejection[13];
+static uint64_t shader_reject_gmem, shader_reject_sampler, shader_reject_int64;
+static uint64_t shader_reject_subgroup, shader_disabled_draws;
 static uint64_t checked_draws, gl_draw_errors;
 static uint64_t mrt_draws, rebased_index_draws, rejected_base_instance;
 static uint64_t depth_without_attachment, stencil_without_attachment;
@@ -111,7 +113,13 @@ const char *gles_draw_rejection_stats(void) {
     snprintf(buffer, sizeof buffer,
         "maxwell_draw_attempts=%" PRIu64 "\n"
         "rejected_no_program=%" PRIu64 "\nrejected_target=%" PRIu64
-        "\nrejected_shader_feature=%" PRIu64 "\nrejected_translation=%" PRIu64
+        "\nrejected_shader_feature=%" PRIu64
+        "\nshader_reject_gmem=%" PRIu64
+        "\nshader_reject_sampler=%" PRIu64
+        "\nshader_reject_int64=%" PRIu64
+        "\nshader_reject_subgroup=%" PRIu64
+        "\nshader_disabled_draws=%" PRIu64
+        "\nrejected_translation=%" PRIu64
         "\nrejected_compilation=%" PRIu64 "\nrejected_topology=%" PRIu64
         "\nrejected_indices=%" PRIu64 "\nrejected_vertex_format=%" PRIu64
         "\nrejected_vertex_range=%" PRIu64 "\nrejected_ubo=%" PRIu64
@@ -155,8 +163,10 @@ const char *gles_draw_rejection_stats(void) {
         "\ngl_draw_checked=%" PRIu64 "\ngl_draw_errors=%" PRIu64
         "\ngl_last_draw_error=%u\n",
         attempts, rejection[R_NO_PROGRAM], rejection[R_TARGET],
-        rejection[R_SHADER_FEATURE], rejection[R_TRANSLATE],
-        rejection[R_COMPILE], rejection[R_TOPOLOGY], rejection[R_INDICES],
+        rejection[R_SHADER_FEATURE], shader_reject_gmem,
+        shader_reject_sampler, shader_reject_int64,
+        shader_reject_subgroup, shader_disabled_draws,
+        rejection[R_TRANSLATE], rejection[R_COMPILE], rejection[R_TOPOLOGY], rejection[R_INDICES],
         rejection[R_VERTEX_FORMAT], rejection[R_VERTEX_RANGE],
         rejection[R_UBO], rejection[R_DEPTH_BLEND], rejection[R_CACHE],
         reject_target_layout, reject_target_format, reject_target_fbo,
@@ -388,15 +398,27 @@ static Program *program_for_draw(void) {
     // Do not issue draws with unresolved shader resources or semantics.
     // Fragment-only native 2D samplers are now supported. Vertex samplers
     // and cross-stage sampler-name conflicts still need a separate mapping.
-    if (p->vs->ntex || p->fs->ntex > 32 || p->vs->uses_gmem || p->fs->uses_gmem ||
-        p->vs->uses_gmem_map || p->fs->uses_gmem_map ||
-        strstr(p->vs->msl, "uint64_t") || strstr(p->fs->msl, "uint64_t") ||
-        strstr(p->vs->msl, "subgroup") || strstr(p->fs->msl, "subgroup")) {
-        shader_diagnostic("unsupported-maxwell-feature", vs, fs,
-                          p->vs->ntex || p->fs->ntex > 32 ? "unsupported shader sampler stages/count" :
-                          p->vs->uses_gmem || p->fs->uses_gmem ||
-                          p->vs->uses_gmem_map || p->fs->uses_gmem_map ? "global-memory pending" :
-                          "GLSL ES capability pending");
+    const bool needs_sampler = p->vs->ntex || p->fs->ntex > 32;
+    const bool needs_gmem = p->vs->uses_gmem || p->fs->uses_gmem ||
+                            p->vs->uses_gmem_map || p->fs->uses_gmem_map;
+    const bool needs_int64 = strstr(p->vs->msl,"uint64_t") ||
+                             strstr(p->fs->msl,"uint64_t");
+    const bool needs_subgroup = strstr(p->vs->msl,"subgroup") ||
+                                strstr(p->fs->msl,"subgroup");
+    if (needs_sampler || needs_gmem || needs_int64 || needs_subgroup) {
+        if (needs_sampler) shader_reject_sampler++;
+        if (needs_gmem) shader_reject_gmem++;
+        if (needs_int64) shader_reject_int64++;
+        if (needs_subgroup) shader_reject_subgroup++;
+        // Distinguish actual pending operations. Unlike the previous
+        // "GLSL ES capability pending", this identifies what to implement
+        // next without exporting copyrighted game/shader binaries.
+        char reason[160];
+        snprintf(reason,sizeof reason,
+                 "unsupported GLES shader: sampler=%u gmem=%u int64=%u subgroup=%u",
+                 (unsigned)needs_sampler,(unsigned)needs_gmem,
+                 (unsigned)needs_int64,(unsigned)needs_subgroup);
+        shader_diagnostic("unsupported-maxwell-feature",vs,fs,reason);
         rejection[R_SHADER_FEATURE]++; shaders_failed++;
         return p;
     }
@@ -970,7 +992,13 @@ bool gles_draw_execute(const CmdRec *r, bool indexed) {
         } else maxindex=index_max(r,count);
     }
     Program *p=program_for_draw();
-    if (!p || !p->gl_program) return false;
+    if (!p) return false;
+    if (!p->gl_program) {
+        // Program cache remembers failures; per-program counters alone
+        // drastically underreport the number of scene draws lost.
+        shader_disabled_draws++;
+        return false;
+    }
     int w=0,h=0;
     // The upload path can create temporary FBOs. Bind the real render
     // target AFTER binding sampled images, not before.

@@ -439,3 +439,32 @@ The link error's exact root cause still requires device confirmation.
 The presentation count in graphics/gles.txt means frames were swapped,
 not that the final framebuffer held correct game pixels. GLES GMEM,
 compute, and various copies still need implementation.
+
+## Milestone 14: ES3 32-bit carry/funnel-shift translation
+The supplied October 18 12:38 native GLES diagnostic reports
+256,979 real Maxwell draws, 72 programs linked, 87 unique shader
+feature failures, 165,610 failed draw attempts, 5,374 unsupported
+compute dispatches, and 3,142 failed GPU texture copies. Vulkan and
+PixelCopy data in the ZIP reflect separate historical runs, not the
+native GLES execution.
+
+Maxwell IADD32I/IADD3 carry and SHF emitted `ulong` operations
+translated into GLSL `uint64_t` and were conservatively rejected by
+the GLES path, even when only the lower 32 bits and carry parity or a
+32-bit funnel result are needed. The GLES-specific translation now uses
+`uaddCarry`, a standard GLSL ES 3.20 integer builtin, and 32-bit
+funnel-shift helpers with defined zero-shift behavior; the Vulkan path
+and GMEM-based 64-bit address handling are unchanged. Range and
+edge-case equivalence were checked in 100,000 independent random cases.
+
+New counters distinguish programs requiring GMEM, unsupported samplers,
+64-bit arithmetic and subgroup operations. `shader_disabled_draws`
+counts the *actual repeated skipped draws* for previously failed
+programs, not just the initial program failure count. The shader log
+now identifies each unsupported category without exposing private game
+code.
+
+Remaining GMEM, subgroup, compute, and copy functionality is not
+implemented here. Neither a successful compile on the RedMagic nor
+correct game pixels is claimed; validation on the target device remains
+necessary.
