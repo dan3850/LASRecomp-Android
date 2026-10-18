@@ -7,7 +7,7 @@
 #include "../astc.h"
 #include "../bcn_decode.h"
 #include "../tegra.h"
-#include <GLES3/gl3.h>
+#include <GLES3/gl32.h> // glCopyImageSubData: core OpenGL ES 3.2
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -20,6 +20,10 @@
 typedef struct {
     GLuint color, framebuffer;
     GLuint feedback_color, feedback_framebuffer; // Persistent native read snapshot for feedback draws
+    GLuint array_alias; // single-layer 2D-as-2D_ARRAY texture, not a fake view
+    uint64_t content_epoch, alias_epoch;
+    bool alias_valid, alias_swizzle_valid;
+    uint8_t alias_swizzle[4];
     GLsizei width, height, layers, levels;
     GLenum target, attachment;
     GLuint depth_bound;
@@ -589,6 +593,7 @@ static bool sample_cpu_upload(NvnTexture *tex, GlesTexture *host) {
     }
     host->cpu_hash=h;
     host->cpu_uploaded=true;
+    host->content_epoch++; // a prior 2D-array snapshot is now stale
     g_sample_uploaded_bytes+=uploaded_bytes;
     if (host->levels>1) {
         g_mip_textures_uploaded++;
@@ -597,6 +602,60 @@ static bool sample_cpu_upload(NvnTexture *tex, GlesTexture *host) {
     return true;
 }
 
+// Some NVN Maxwell samplers declare sampler2DArray but bind a normal
+// one-layer 2D texture (the GLES 3.2 target is fixed at texture creation).
+// A real single-layer GL_TEXTURE_2D_ARRAY alias preserves exactly the
+// underlying texels without accepting fabricated/absent array layers.
+// glCopyImageSubData is GLES3.2 core; it is not a Vulkan operation.
+static bool gles_single_layer_array_alias(NvnTexture *tex,GlesTexture *host) {
+    if (!tex || !host || tex->target!=1 || tex->layout.layers!=1 ||
+        host->target!=GL_TEXTURE_2D ||
+        (!host->gpu_written && !host->cpu_uploaded)) return false;
+    FormatGL f=gpu_format(tex->format);
+    if (!f.internal || f.attachment!=GL_COLOR_ATTACHMENT0) return false;
+    if (!host->array_alias) {
+        glGenTextures(1,&host->array_alias);
+        if (!host->array_alias) return false;
+        glBindTexture(GL_TEXTURE_2D_ARRAY,host->array_alias);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_BASE_LEVEL,0);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MAX_LEVEL,host->levels-1);
+        for(int level=0;level<host->levels;level++) {
+            LevelLayout m=tegra_level(&tex->layout,(uint32_t)level);
+            if (!m.w || !m.h) goto fail_alias;
+            glTexImage3D(GL_TEXTURE_2D_ARRAY,level,(GLint)f.internal,
+                         (GLsizei)m.w,(GLsizei)m.h,1,0,f.format,f.type,NULL);
+        }
+        if (glGetError()!=GL_NO_ERROR) goto fail_alias;
+        host->alias_epoch=UINT64_MAX;
+        host->alias_swizzle_valid=false;
+    }
+    if (!host->alias_valid || host->alias_epoch!=host->content_epoch) {
+        for(int level=0;level<host->levels;level++) {
+            LevelLayout m=tegra_level(&tex->layout,(uint32_t)level);
+            if (!m.w || !m.h) return false;
+            // Copies native GPU texels, including render-target output;
+            // no CPU staging and no change of texture format.
+            glCopyImageSubData(host->color,GL_TEXTURE_2D,level,0,0,0,
+                               host->array_alias,GL_TEXTURE_2D_ARRAY,
+                               level,0,0,0,(GLsizei)m.w,(GLsizei)m.h,1);
+        }
+        if (glGetError()!=GL_NO_ERROR) {
+            host->alias_valid=false;return false;
+        }
+        host->alias_valid=true;
+        host->alias_epoch=host->content_epoch;
+    }
+    return true;
+fail_alias:
+    glDeleteTextures(1,&host->array_alias);
+    host->array_alias=0;
+    host->alias_valid=false;
+    return false;
+}
 static GLint sampler_wrap(uint32_t wrap) {
     switch(wrap) {
     case 0: case 7: return GL_CLAMP_TO_EDGE;
@@ -614,8 +673,13 @@ bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
     }
     GlesTexture *host=texture(tex);
     GLenum want=target == 4 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
-    if (!host || host->target != want ||
-        !sample_cpu_upload(tex,host)) {g_sample_fail++;return false;}
+    const bool array_alias=target==4 && tex->target==1 &&
+                           tex->layout.layers==1;
+    if (!host || (host->target != want && !array_alias) ||
+        !sample_cpu_upload(tex,host) ||
+        (array_alias && !gles_single_layer_array_alias(tex,host))) {
+        g_sample_fail++;return false;
+    }
     if (shadow && host->attachment != GL_DEPTH_ATTACHMENT &&
         host->attachment != GL_DEPTH_STENCIL_ATTACHMENT) {
         g_sample_fail++; return false;
@@ -650,8 +714,11 @@ bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
     if (shadow) glSamplerParameteri(sm,GL_TEXTURE_COMPARE_FUNC,GL_LEQUAL);
     glBindSampler((GLuint)unit,sm);
     glActiveTexture(GL_TEXTURE0+(GLenum)unit);
-    glBindTexture(host->target,host->color);
-    if (!host->swizzle_valid || memcmp(host->current_swizzle,swizzle,4)!=0) {
+    GLuint sample_texture=array_alias ? host->array_alias : host->color;
+    glBindTexture(want,sample_texture);
+    bool swizzle_valid=array_alias ? host->alias_swizzle_valid : host->swizzle_valid;
+    const uint8_t *current_swizzle=array_alias ? host->alias_swizzle : host->current_swizzle;
+    if (!swizzle_valid || memcmp(current_swizzle,swizzle,4)!=0) {
         static const GLint channels[6]={GL_ZERO,GL_ONE,GL_RED,GL_GREEN,GL_BLUE,GL_ALPHA};
         GLint rgba[4];
         for (int c=0;c<4;c++) {
@@ -669,15 +736,20 @@ bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
             GL_TEXTURE_SWIZZLE_B, GL_TEXTURE_SWIZZLE_A
         };
         for (int c=0;c<4;c++)
-            glTexParameteri(host->target,swizzle_pnames[c],rgba[c]);
+            glTexParameteri(want,swizzle_pnames[c],rgba[c]);
         GLenum error=glGetError();
         if (error!=GL_NO_ERROR) {
             static int warn;
             if(warn++<8) LOG("[gles] texture swizzle GL error=%#x fmt=%#x\n",error,tex->format);
             g_sample_fail++; return false;
         }
-        memcpy(host->current_swizzle,swizzle,4);
-        host->swizzle_valid=true;
+        if(array_alias) {
+            memcpy(host->alias_swizzle,swizzle,4);
+            host->alias_swizzle_valid=true;
+        } else {
+            memcpy(host->current_swizzle,swizzle,4);
+            host->swizzle_valid=true;
+        }
     }
     g_sample_ok++;
     return true;
@@ -830,7 +902,9 @@ bad:
 }
 void gles_mark_texture_written(NvnTexture *tex) {
     if (!tex || !tex->backend) return;
-    ((GlesTexture *)tex->backend)->gpu_written=true;
+    GlesTexture *h=(GlesTexture *)tex->backend;
+    h->gpu_written=true;
+    h->content_epoch++; // invalidate copies made before this GPU write
 }
 
 void gles_texture_destroyed(NvnTexture *tex) {
@@ -853,6 +927,7 @@ void gles_texture_destroyed(NvnTexture *tex) {
     if (g_context && SDL_GL_GetCurrentContext() == g_context) {
         glDeleteFramebuffers(1, &t->feedback_framebuffer);
         glDeleteTextures(1, &t->feedback_color);
+        glDeleteTextures(1, &t->array_alias);
         glDeleteFramebuffers(1, &t->framebuffer);
         glDeleteTextures(1, &t->color);
     }
@@ -906,6 +981,7 @@ static void gles_flush_video_queue(void) {
                             GL_RGBA,GL_UNSIGNED_BYTE,q->pixels);
             if(glGetError()==GL_NO_ERROR){
                 tex->gpu_written=true;
+                tex->content_epoch++; // video replaces the sampled image
                 video_uploaded++;
             } else video_dropped++;
             glPixelStorei(GL_UNPACK_ALIGNMENT,4);
@@ -1020,6 +1096,7 @@ static bool gles_copy_texture(const GlesTexRef *from, const GlesTexRef *to,
         goto rejected;
     }
     d->gpu_written=true;
+    d->content_epoch++; // texture->texture changes are visible to array samplers
     g_copies_succeeded++;
     if (g_copies_succeeded<=8)
         LOG("[gles-copy] completed GPU blit src=%llu fmt=%#x %dx%d -> dst=%llu fmt=%#x %dx%d\n",
@@ -1103,6 +1180,7 @@ static bool gles_copy_buffer_texture(uint64_t src_addr, const GlesTexRef *ref) {
     }
     host->gpu_written=true;
     host->cpu_uploaded=false;
+    host->content_epoch++; // invalidate one-layer sampler-array alias
     g_buffer_tex_ok++;
     return true;
 bad:

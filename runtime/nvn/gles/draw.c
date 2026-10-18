@@ -788,7 +788,12 @@ static bool bind_textures(Program *p) {
         }
         const NvnTexEntry *entry=&((const NvnTexEntry*)st.tpool->entries)[tic];
         NvnTexture *tex=entry->tex;
-        if (!tex || (array ? tex->target!=4 : tex->target!=1)) {
+        // A true one-layer 2D source can be presented as sampler2DArray
+        // through a native GPU alias, preserving its only valid layer.
+        bool single_layer_array=array && tex && tex->target==1 &&
+                                tex->layout.layers==1;
+        if (!tex || (array ? (tex->target!=4 && !single_layer_array) :
+                            tex->target!=1)) {
             rejection[R_TEXTURE]++; texture_rejection[T_DESCRIPTOR]++; return false;
         }
         uint8_t swizzle[4];
@@ -821,7 +826,10 @@ static bool bind_textures(Program *p) {
         if (!gles_sample_texture(tex,sampler,i,ref->shadow,ref->type,swizzle)) {
             rejection[R_TEXTURE]++; texture_rejection[T_UPLOAD]++; return false;
         }
-        if ((feedback_color &&
+        // The one-layer array alias already copied the completed native
+        // 2D pixels above, so it is itself a feedback-safe sample. Binding
+        // the old sampler2D snapshot here would be a type mismatch.
+        if ((feedback_color && !single_layer_array &&
              !gles_bind_feedback_snapshot(tex,i,swizzle)) ||
             (feedback_depth &&
              !gles_bind_depth_feedback_snapshot(tex,i,swizzle))) {

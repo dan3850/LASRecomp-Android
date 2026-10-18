@@ -496,3 +496,31 @@ assert "bool feedback_depth = tex==st.depth;" in draws
 assert "gles_bind_depth_feedback_snapshot(tex,i,swizzle)" in draws
 assert "if(tex==st.depth)" not in draws
 print("GLES native depth-stencil feedback snapshot regression checks passed")
+
+# Adreno GLES 14:08: 2230 2D-array sampling attempts but zero bound.
+# Native ES3.2 textures have immutable targets. A single-layer 2D image
+# can be represented by a separately allocated one-layer 2D array with
+# real GPU texel copies (including mip chain), never faked samples.
+gles=source("runtime/nvn/gles/gles.c")
+draws=source("runtime/nvn/gles/draw.c")
+for token in ("#include <GLES3/gl32.h>", "glCopyImageSubData(",
+              "GL_TEXTURE_2D_ARRAY,host->array_alias",
+              "host->alias_epoch!=host->content_epoch",
+              "host->content_epoch++;", "glDeleteTextures(1, &t->array_alias)",
+              "bool array_alias=target==4 && tex->target==1",
+              "gles_single_layer_array_alias(tex,host)",
+              "GLuint sample_texture=array_alias ? host->array_alias : host->color;"):
+    assert token in gles, f"Missing real GLES single-layer array alias: {token}"
+assert "bool single_layer_array=array && tex && tex->target==1" in draws
+assert "tex->layout.layers==1" in draws
+print("GLES true one-layer sampler2DArray alias and GPU invalidation checks passed")
+
+# GPU-written video and buffer-to-texture updates must also invalidate any
+# single-layer sampling alias. That alias already snapshots color feedback
+# on glCopyImageSubData; don't accidentally rebind a sampler2D there.
+gles=source("runtime/nvn/gles/gles.c")
+draws=source("runtime/nvn/gles/draw.c")
+assert "tex->content_epoch++; // video replaces the sampled image" in gles
+assert "host->content_epoch++; // invalidate one-layer sampler-array alias" in gles
+assert "feedback_color && !single_layer_array &&" in draws
+print("GLES array aliases track video/copy updates and preserve sampler type")
