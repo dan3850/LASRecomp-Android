@@ -143,7 +143,7 @@ assert "entry->has_view || tex->target!=1" not in draws
 assert "if (!compatible_texture_view(entry,swizzle,&why))" in draws
 assert "rejected_view(entry,why);" in draws
 for token in ("GL_TEXTURE_2D_ARRAY", "glTexImage3D(", "glTexSubImage3D(",
-              "tegra_layer_size(", "layer_size*layers > size",
+              "tegra_layer_size(", "layer_size*layers>size",
               "host->target != want"):
     assert token in gles, f"Native GLES 2D array support missing: {token}"
 assert "g_sample_ok++;" in gles
@@ -165,7 +165,7 @@ assert "glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA" not in gles
 assert "normalize_swizzle(" in draws
 assert "view_reject_target=" in draws
 assert "view_reject_swizzle_conflict=" in draws
-assert "backend_milestone=nvn-gles-viewflags-swizzle-v2" in gles
+assert "backend_milestone=nvn-gles-full-mips-v3" in gles
 assert "backend_milestone=nvn-gles-array-identityviews-v1" not in gles
 print("GLES NVN six view flags and native swizzle translation: source assertions passed")
 
@@ -187,3 +187,23 @@ for token in ("GL_TEXTURE_SWIZZLE_R", "GL_TEXTURE_SWIZZLE_G",
     assert token in gl
 assert "glTexParameteriv(host->target,GL_TEXTURE_SWIZZLE_RGBA" not in gl
 print("Native GLES3 per-component swizzle API regression checks passed")
+
+# The Adreno 840 11:02 diagnostics showed 20,495 V_LEVEL rejections for
+# a legitimate complete 10-level NVN view. Make sure base level zero and
+# full-chain texture views are accepted, but partial/nonzero-base views
+# remain explicitly rejected until real GL texture views are implemented.
+gles=source("runtime/nvn/gles/gles.c")
+draws=source("runtime/nvn/gles/draw.c")
+assert "v->num_levels != tex->layout.levels" in draws
+assert "v->num_levels > 1" not in draws
+for token in ("for (GLint level=0; level<t->levels; ++level)",
+              "tegra_level(&tex->layout,(uint32_t)level)",
+              "for(uint32_t level=0; level<tex->layout.levels; level++)",
+              "glTexImage2D(t->target, level",
+              "glTexImage3D(t->target, level",
+              "glTexSubImage2D(host->target,(GLint)level",
+              "glTexSubImage3D(host->target,(GLint)level",
+              "GL_LINEAR_MIPMAP_LINEAR", "GL_TEXTURE_MAX_LEVEL",
+              "mip_levels_uploaded=", "backend_milestone=nvn-gles-full-mips-v3"):
+    assert token in gles, f"Missing NVN native full mip-chain support: {token}"
+print("GLES complete Tegra mip chain and full-view source assertions passed")

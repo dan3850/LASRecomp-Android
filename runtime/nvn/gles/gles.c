@@ -19,7 +19,7 @@
 
 typedef struct {
     GLuint color, framebuffer;
-    GLsizei width, height, layers;
+    GLsizei width, height, layers, levels;
     GLenum target, attachment;
     GLuint depth_bound;
     bool cpu_uploaded, gpu_written, swizzle_valid;
@@ -37,6 +37,7 @@ static bool g_draw_needs_reset;
 static uint64_t g_frames, g_clears, g_draws_unsupported, g_dispatch_unsupported, g_unsupported;
 static int g_last_unsupported = -1;
 static uint64_t g_sample_ok, g_sample_fail, g_sample_uploaded_bytes, g_sample_cached;
+static uint64_t g_mip_textures_uploaded, g_mip_levels_uploaded;
 static uint64_t g_copies_attempted, g_copies_succeeded, g_copies_failed;
 static uint64_t g_uniform_updates_ok, g_uniform_updates_failed;
 static uint64_t g_buffer_tex_attempts, g_buffer_tex_ok, g_buffer_tex_failed;
@@ -65,7 +66,7 @@ static void report(void) {
     mkdir("graphics", 0755);
     FILE *f = fopen("graphics/gles.txt", "w");
     if (!f) return;
-    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-viewflags-swizzle-v2\n"
+    fprintf(f, "backend=opengles\nbackend_milestone=nvn-gles-full-mips-v3\n"
                "NVN_renderer=OpenGL_ES\nVulkan_initialized=0\n");
     fprintf(f, "native_maxwell_draws=%" PRIu64 "\ngles_programs_linked=%" PRIu64
                "\ngles_programs_failed=%" PRIu64 "\n",
@@ -89,6 +90,8 @@ static void report(void) {
             g_present_missing, g_present_written, g_present_unwritten,
             g_present_gl_errors, g_last_present_id, g_last_present_format,
             g_last_present_gl_error);
+    fprintf(f, "mip_textures_uploaded=%" PRIu64 "\nmip_levels_uploaded=%" PRIu64 "\n",
+            g_mip_textures_uploaded, g_mip_levels_uploaded);
     fprintf(f, "sample_ok=%" PRIu64 "\nsample_failed=%" PRIu64
                "\nsample_cached=%" PRIu64 "\nsample_uploaded_bytes=%" PRIu64 "\n",
             g_sample_ok, g_sample_fail, g_sample_cached, g_sample_uploaded_bytes);
@@ -172,7 +175,7 @@ void gles_init(SDL_Window *window) {
     glGenVertexArrays(1, &g_vertex_array);
     glGenSamplers(32, g_texture_samplers);
     gles_draw_init();
-    LOG("[gles] native backend milestone=nvn-gles-viewflags-swizzle-v2\n");
+    LOG("[gles] native backend milestone=nvn-gles-full-mips-v3\n");
     LOG("[gles] genuine GLES backend: %s / %s, version %s\n",
         glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION));
     report();
@@ -233,6 +236,13 @@ static GlesTexture *texture(NvnTexture *tex) {
         (tex->target != 1 && tex->target != 4) ||
         tex->layout.layers < 1 || tex->layout.layers > 256)
         return NULL;
+    // All Tegra mip levels need matching native GLES storage. An invalid
+    // level count must be rejected, not interpreted as repeated 1x1 levels.
+    uint32_t maxdim=tex->width>tex->height ? tex->width : tex->height;
+    uint32_t maxlevels=1;
+    while (maxdim>1) { maxdim>>=1; maxlevels++; }
+    if (!tex->layout.levels || tex->layout.levels > maxlevels ||
+        tex->layout.levels > 16) return NULL;
     if (tex->backend) return tex->backend;
     FormatGL f = gpu_format(tex->format);
     if (!f.internal) {
@@ -246,6 +256,7 @@ static GlesTexture *texture(NvnTexture *tex) {
     t->width = (GLsizei)tex->width;
     t->height = (GLsizei)tex->height;
     t->layers = tex->target == 4 ? (GLsizei)tex->layout.layers : 1;
+    t->levels = (GLsizei)tex->layout.levels;
     t->target = tex->target == 4 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
     t->attachment = f.attachment;
     glGenTextures(1, &t->color);
@@ -254,12 +265,29 @@ static GlesTexture *texture(NvnTexture *tex) {
     glTexParameteri(t->target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(t->target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(t->target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    if (t->target == GL_TEXTURE_2D_ARRAY)
-        glTexImage3D(t->target, 0, (GLint)f.internal, t->width, t->height,
-                     t->layers, 0, f.format, f.type, NULL);
-    else
-        glTexImage2D(t->target, 0, (GLint)f.internal, t->width, t->height,
-                     0, f.format, f.type, NULL);
+    glTexParameteri(t->target, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(t->target, GL_TEXTURE_MAX_LEVEL, t->levels - 1);
+    for (GLint level=0; level<t->levels; ++level) {
+        LevelLayout m=tegra_level(&tex->layout,(uint32_t)level);
+        if (t->target == GL_TEXTURE_2D_ARRAY)
+            glTexImage3D(t->target, level, (GLint)f.internal,
+                         (GLsizei)m.w,(GLsizei)m.h,t->layers,
+                         0,f.format,f.type,NULL);
+        else
+            glTexImage2D(t->target, level, (GLint)f.internal,
+                         (GLsizei)m.w,(GLsizei)m.h,
+                         0,f.format,f.type,NULL);
+    }
+    GLenum tex_storage_error=glGetError();
+    if (tex_storage_error != GL_NO_ERROR) {
+        static int warned_mips;
+        if (warned_mips++ < 12)
+            LOG("[gles] native mip storage failed: fmt=%#x levels=%d layers=%d gl=%#x\n",
+                tex->format, t->levels, t->layers, tex_storage_error);
+        glDeleteTextures(1,&t->color);
+        free(t);
+        return NULL;
+    }
     glGenFramebuffers(1, &t->framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, t->framebuffer);
     if (t->target == GL_TEXTURE_2D_ARRAY)
@@ -372,108 +400,127 @@ static unsigned bcn_type(uint32_t fmt) {
     }
 }
 static bool sample_cpu_upload(NvnTexture *tex, GlesTexture *host) {
-    if (host->gpu_written) return true;  // preserve real GPU render-target content
+    if (host->gpu_written) return true;  // GPU-written render target must not be overwritten
     if (!tex->addr) return host->cpu_uploaded;
     if ((tex->target != 1 && tex->target != 4) ||
         (tex->target == 1 && tex->layout.layers != 1) ||
-        tex->layout.layers > 256 || tex->layout.depth > 1 ||
-        !tex->layout.fmt) return false;
+        !tex->layout.layers || tex->layout.layers > 256 ||
+        tex->layout.depth > 1 || !tex->layout.fmt ||
+        tex->layout.levels != (uint32_t)host->levels) return false;
     const FormatInfo *fi=tex->layout.fmt;
-    const LevelLayout l=tegra_level(&tex->layout,0);
-    if (!fi->bpb || !l.wb || !l.hb || !l.w || !l.h || l.d != 1) return false;
+    LevelLayout base=tegra_level(&tex->layout,0);
+    if (!fi->bpb || !base.wb || !base.hb || !base.w || !base.h || base.d != 1)
+        return false;
     uint64_t size=tegra_total_size(&tex->layout);
-    uint64_t raw=(uint64_t)l.wb*l.hb*fi->bpb;
-    uint64_t layer_size = tegra_layer_size(&tex->layout);
-    uint64_t layers = (uint64_t)tex->layout.layers;
-    if (!size || !layer_size || l.offset >= layer_size ||
-        raw > layer_size - l.offset || layer_size > UINT64_MAX/layers ||
-        layer_size*layers > size ||
-        size > (64ull<<20) || !raw || raw > (32ull<<20) ||
-        tex->addr < 0x7000000000ull || tex->addr >= 0x7320000000ull ||
-        size > 0x7320000000ull-tex->addr) return false;
+    uint64_t layer_size=tegra_layer_size(&tex->layout);
+    uint64_t layers=tex->layout.layers;
+    uint64_t rawmax=(uint64_t)base.wb*base.hb*fi->bpb;
+    if (!size || !layer_size || !rawmax || rawmax>(32ull<<20) ||
+        base.offset>=layer_size || rawmax>layer_size-base.offset ||
+        layer_size>UINT64_MAX/layers || layer_size*layers>size ||
+        size>(64ull<<20) ||
+        tex->addr<0x7000000000ull || tex->addr>=0x7320000000ull ||
+        size>0x7320000000ull-tex->addr) return false;
     const uint8_t *memory=(const uint8_t *)(uintptr_t)tex->addr;
-    // Avoid hashing the same texture many times per frame. Static guest
-    // images are rechecked periodically; linear atlases are rechecked each
-    // frame to reflect updated glyphs.
-    const uint64_t period = (tex->flags & 0x10) ? 1u : 60u;
-    if (host->cpu_uploaded && g_frames >= host->last_cpu_check_frame &&
-        g_frames - host->last_cpu_check_frame < period) {
+    // For unchanged CPU textures we can skip both the Tegra conversion and
+    // GLES upload. Linear glyph atlases are refreshed more frequently.
+    const uint64_t period=(tex->flags & 0x10) ? 1u : 60u;
+    if (host->cpu_uploaded && g_frames>=host->last_cpu_check_frame &&
+        g_frames-host->last_cpu_check_frame<period) {
         g_sample_cached++; return true;
     }
-    host->last_cpu_check_frame = g_frames;
+    host->last_cpu_check_frame=g_frames;
     uint64_t h=1469598103934665603ull;
-    for (uint64_t i=0;i<size;i++) h=(h^memory[i])*1099511628211ull;
-    if (host->cpu_uploaded && host->cpu_hash == h) {
-        g_sample_cached++; return true;
+    for(uint64_t i=0;i<size;i++) h=(h^memory[i])*1099511628211ull;
+    if(host->cpu_uploaded && host->cpu_hash==h){
+        g_sample_cached++;return true;
     }
-    // Upload every layer. NVN 2D arrays hold independent block-linear
-    // slices; uploading only layer zero makes the sprites disappear whenever
-    // Maxwell samples a different layer.
     FormatGL f=gpu_format(tex->format);
-    if (!f.internal || f.attachment != GL_COLOR_ATTACHMENT0) return false;
+    if(!f.internal || f.attachment!=GL_COLOR_ATTACHMENT0) return false;
     const bool linear_storage=(tex->flags & 0x10)!=0;
     const unsigned bc=bcn_type(tex->format);
-    const bool astc=tex->format >= 0x79 && tex->format <= 0x94;
-    const unsigned px=bc ? las_bcn_pixel_bytes(bc) : 4;
-    const uint64_t decoded=(uint64_t)l.w*l.h*px;
-    if ((bc || astc) && (!px || decoded > (64ull<<20))) return false;
-    uint8_t *linear=malloc((size_t)raw);
-    uint8_t *converted=(bc || astc) ? malloc((size_t)decoded) : NULL;
-    if (!linear || ((bc || astc) && !converted)) {
-        free(linear); free(converted); return false;
+    const bool astc=tex->format>=0x79 && tex->format<=0x94;
+    const unsigned pixel_bytes=bc?las_bcn_pixel_bytes(bc):4;
+    uint64_t decodedmax=(uint64_t)base.w*base.h*pixel_bytes;
+    if((bc||astc) && (!pixel_bytes || decodedmax>(64ull<<20))) return false;
+    uint8_t *linear=malloc((size_t)rawmax);
+    uint8_t *converted=(bc||astc)?malloc((size_t)decodedmax):NULL;
+    if(!linear || ((bc||astc) && !converted)){
+        free(linear);free(converted);return false;
     }
     glBindTexture(host->target,host->color);
     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
     GLenum status=GL_NO_ERROR;
-    for (uint32_t layer=0; layer<tex->layout.layers; ++layer) {
-        uint64_t pos=(uint64_t)layer*layer_size + l.offset;
-        if (pos > size || raw > size-pos) { status=GL_INVALID_VALUE; break; }
-        const uint8_t *source=memory+pos;
-        if (linear_storage) {
-            uint64_t stride=tex->stride ? tex->stride : (uint64_t)l.wb*fi->bpb;
-            if (stride < (uint64_t)l.wb*fi->bpb || stride > (64ull<<20) ||
-                (uint64_t)(l.hb-1)*stride+(uint64_t)l.wb*fi->bpb > size-pos) {
-                status=GL_INVALID_VALUE; break;
+    uint64_t uploaded_bytes=0;
+    for(uint32_t layer=0; layer<tex->layout.layers && status==GL_NO_ERROR; layer++){
+        for(uint32_t level=0; level<tex->layout.levels; level++){
+            LevelLayout l=tegra_level(&tex->layout,level);
+            uint64_t raw=(uint64_t)l.wb*l.hb*fi->bpb;
+            uint64_t pos=(uint64_t)layer*layer_size+l.offset;
+            if(!raw || raw>rawmax || pos>size || raw>size-pos ||
+               l.offset>layer_size || raw>layer_size-l.offset ||
+               l.d!=1) { status=GL_INVALID_VALUE;break; }
+            const uint8_t *source=memory+pos;
+            if(linear_storage){
+                // NVN's linear stride is expressed per level's rows.
+                uint64_t stride=tex->stride ? tex->stride : (uint64_t)l.wb*fi->bpb;
+                if(stride<(uint64_t)l.wb*fi->bpb || stride>(64ull<<20) ||
+                   (uint64_t)(l.hb-1)*stride+(uint64_t)l.wb*fi->bpb>size-pos ||
+                   (uint64_t)(l.hb-1)*stride+(uint64_t)l.wb*fi->bpb>layer_size-l.offset) {
+                    status=GL_INVALID_VALUE;break;
+                }
+                for(uint32_t y=0;y<l.hb;y++)
+                    memcpy(linear+(uint64_t)y*l.wb*fi->bpb,
+                           source+(uint64_t)y*stride,
+                           (uint64_t)l.wb*fi->bpb);
+            }else{
+                tegra_deswizzle(source,linear,l.wb,l.hb,1,fi->bpb,
+                                l.block_height_log2,l.block_depth_log2);
             }
-            for(uint32_t y=0;y<l.hb;y++)
-                memcpy(linear+(uint64_t)y*l.wb*fi->bpb,
-                       source+(uint64_t)y*stride,(uint64_t)l.wb*fi->bpb);
-        } else {
-            tegra_deswizzle(source,linear,l.wb,l.hb,1,fi->bpb,
-                            l.block_height_log2,l.block_depth_log2);
-        }
-        const void *pixels=linear;
-        if (bc) {
-            if (!las_bcn_decode(bc,linear,(size_t)raw,l.w,l.h,1,converted,(size_t)decoded)) {
-                status=GL_INVALID_VALUE; break;
+            const void *pixels=linear;
+            uint64_t bytes=raw;
+            if(bc){
+                bytes=(uint64_t)l.w*l.h*pixel_bytes;
+                if(bytes>decodedmax ||
+                   !las_bcn_decode(bc,linear,(size_t)raw,l.w,l.h,1,
+                                   converted,(size_t)bytes)){
+                    status=GL_INVALID_VALUE;break;
+                }
+                pixels=converted;
+            }else if(astc){
+                bytes=(uint64_t)l.w*l.h*4;
+                if(bytes>decodedmax){status=GL_INVALID_VALUE;break;}
+                astc_decode_ldr(linear,l.w,l.h,fi->bw,fi->bh,
+                                tex->format>=0x87,converted);
+                pixels=converted;
             }
-            pixels=converted;
-        } else if (astc) {
-            astc_decode_ldr(linear,l.w,l.h,fi->bw,fi->bh,
-                            tex->format >= 0x87,converted);
-            pixels=converted;
+            if(host->target==GL_TEXTURE_2D_ARRAY)
+                glTexSubImage3D(host->target,(GLint)level,0,0,(GLint)layer,
+                                (GLsizei)l.w,(GLsizei)l.h,1,f.format,f.type,pixels);
+            else
+                glTexSubImage2D(host->target,(GLint)level,0,0,
+                                (GLsizei)l.w,(GLsizei)l.h,f.format,f.type,pixels);
+            status=glGetError();
+            if(status!=GL_NO_ERROR) break;
+            uploaded_bytes+=bytes;
         }
-        if (host->target == GL_TEXTURE_2D_ARRAY)
-            glTexSubImage3D(host->target,0,0,0,(GLint)layer,
-                            (GLsizei)l.w,(GLsizei)l.h,1,f.format,f.type,pixels);
-        else
-            glTexSubImage2D(host->target,0,0,0,(GLsizei)l.w,(GLsizei)l.h,
-                            f.format,f.type,pixels);
-        status=glGetError();
-        if (status != GL_NO_ERROR) break;
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT,4);
-    free(linear); free(converted);
-    if(status!=GL_NO_ERROR) {
+    free(linear);free(converted);
+    if(status!=GL_NO_ERROR){
         static unsigned warn;
-        if(warn++<10) LOG("[gles] CPU texel upload failed: fmt=%#x layers=%u gl=%#x\n",
-                           tex->format,tex->layout.layers,status);
+        if(warn++<10)
+            LOG("[gles] Tegra mip upload failed: fmt=%#x levels=%u layers=%u gl=%#x\n",
+                tex->format,tex->layout.levels,tex->layout.layers,status);
         return false;
     }
-    uint64_t bytes=(bc || astc) ? decoded*layers : raw*layers;
     host->cpu_hash=h;
     host->cpu_uploaded=true;
-    g_sample_uploaded_bytes+=bytes;
+    g_sample_uploaded_bytes+=uploaded_bytes;
+    if (host->levels>1) {
+        g_mip_textures_uploaded++;
+        g_mip_levels_uploaded+=(uint64_t)host->levels*layers;
+    }
     return true;
 }
 
@@ -508,9 +555,24 @@ bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler,
     uint32_t mag=sampler?sampler->mag_filter:1, min=sampler?sampler->min_filter:1;
     glSamplerParameteri(sm,GL_TEXTURE_WRAP_S,wrap_s);
     glSamplerParameteri(sm,GL_TEXTURE_WRAP_T,wrap_t);
-    glSamplerParameteri(sm,GL_TEXTURE_MIN_FILTER,
-                        (min==1||min==3||min==5)?GL_LINEAR:GL_NEAREST);
+    const bool has_mips=host->levels>1 && host->cpu_uploaded;
+    GLenum filter=GL_NEAREST;
+    switch(min) {
+    case 1: filter=GL_LINEAR;break;
+    case 2: filter=has_mips?GL_NEAREST_MIPMAP_NEAREST:GL_NEAREST;break;
+    case 3: filter=has_mips?GL_LINEAR_MIPMAP_NEAREST:GL_LINEAR;break;
+    case 4: filter=has_mips?GL_NEAREST_MIPMAP_LINEAR:GL_NEAREST;break;
+    case 5: filter=has_mips?GL_LINEAR_MIPMAP_LINEAR:GL_LINEAR;break;
+    default:break;
+    }
+    glSamplerParameteri(sm,GL_TEXTURE_MIN_FILTER,filter);
     glSamplerParameteri(sm,GL_TEXTURE_MAG_FILTER,mag==1?GL_LINEAR:GL_NEAREST);
+    if(sampler){
+        glSamplerParameterf(sm,GL_TEXTURE_MIN_LOD,sampler->lod_min);
+        glSamplerParameterf(sm,GL_TEXTURE_MAX_LOD,
+                            sampler->lod_max>1000.0f ? (float)(host->levels-1) :
+                            sampler->lod_max);
+    }
     glSamplerParameteri(sm,GL_TEXTURE_COMPARE_MODE,shadow?GL_COMPARE_REF_TO_TEXTURE:GL_NONE);
     if (shadow) glSamplerParameteri(sm,GL_TEXTURE_COMPARE_FUNC,GL_LEQUAL);
     glBindSampler((GLuint)unit,sm);

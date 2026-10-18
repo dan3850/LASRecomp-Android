@@ -300,3 +300,31 @@ This removes an identified blanket rejection but does not implement
 non-base mipmap sampling, 2D views of selected array layers, GLSL ES
 unsupported global memory/compute, or full render correctness. It has
 not been built or tested on the Android GPU by the assistant.
+
+## Milestone 9: native Tegra mip chains, based on 11:02 diagnostic
+The user-provided `LASRecomp-grafico-20261018-110214.zip` shows
+20,495 view rejections (all `view_reject_level`), while
+`texture_views_accepted=20156` and `sample_ok=20156`.
+A repeated rejected view has `mask=0x3f`, `base_level=0`,
+`num_levels=10`, matching the texture's complete 10-level mip chain.
+The GLES path previously allocated/uploaded **only mip level 0** and
+incorrectly rejected this entirely valid complete-chain view.
+
+The experimental GLES renderer now allocates a complete native GL
+mipmap chain up to the actual Tegra-reported level count (limited by
+the texture dimensions and 16 levels), and uploads every level of
+every array layer, using `tegra_level` per-level offsets and the
+existing Tegra deswizzler / ASTC and BCn decoders. Sampler minification
+filters select nearest/linear mipmap filtering for NVN modes 2–5, with
+non-mip fallback for images that only contain GPU-rendered base levels.
+The view validator accepts level 0 plus all levels, including views
+that explicitly specify `num_levels=10`, but still rejects arbitrary
+mip subranges without a true per-view GL resource. Diagnostic
+`mip_textures_uploaded` and `mip_levels_uploaded` distinguish actual
+full-chain uploads from metadata-only validation.
+
+Other remaining blockers from this log include 27,695 fixed-function
+rejections, 10,875 index rejections, 100 failed shader programs,
+2,705 skipped compute operations and later EGL_BAD_SURFACE events.
+A complete playable render has **not** been proven; no Android device
+build was run by the assistant.

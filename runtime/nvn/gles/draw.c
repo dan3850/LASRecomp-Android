@@ -466,8 +466,12 @@ static bool compatible_texture_view(const NvnTexEntry *entry, uint8_t swizzle[4]
     // Do not reject the NVN depth-mode/target flags by treating them as
     // unrecognized bits: these bits are defined by objects.c (16 and 32).
     if (v->setmask & ~63u) { *reason=V_UNKNOWN; return false; }
-    if ((v->setmask & 1u) && (v->base_level != 0 || v->num_levels > 1)) {
-        // The native GLES prototype currently allocates mip level zero only.
+    if ((v->setmask & 1u) &&
+        (v->base_level != 0 ||
+         (v->num_levels && v->num_levels != tex->layout.levels))) {
+        // A view covering the same complete mip chain is native GLES
+        // texture state and does not require a different GL view object.
+        // Partial mip selections still require a separate texture view.
         *reason=V_LEVEL; return false;
     }
     if ((v->setmask & 2u) &&
@@ -490,8 +494,8 @@ static bool compatible_texture_view(const NvnTexEntry *entry, uint8_t swizzle[4]
     for (int c=0;c<4;c++) if (swizzle[c] > 5u) {
         *reason=V_UNKNOWN; return false;
     }
-    // The actual channel selection will be installed with GLES3 native
-    // GL_TEXTURE_SWIZZLE_RGBA, not discarded or treated as identity.
+    // The actual channel selection is applied through the four GLES 3.2
+    // GL_TEXTURE_SWIZZLE_R/G/B/A parameters, never treated as identity.
     return true;
 }
 static void rejected_view(const NvnTexEntry *entry, int reason) {
