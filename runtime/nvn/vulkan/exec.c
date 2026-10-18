@@ -30,6 +30,7 @@
 #include "replay.h"
 #include "worker_budget.h"
 #include "guest_copy_policy.h"
+#include "preflight_policy.h"
 #include "../shader_prep.h"
 #include "cache_identity.h"
 #include "../bcn_decode.h"
@@ -3044,6 +3045,25 @@ static void gmem_read_texture(NvnTexture *t) {
         gmem_read_range(t->addr, t->flags & 0x10 ? t->stride * t->height : tegra_total_size(&t->layout));
 }
 
+// A/B switch: wait only for guest ranges that this draw/dispatch can read.
+// Default enabled on Android; =0 restores the original all-bound preflight.
+// GPU global-memory indirect addressing still resolves ALL bound ranges.
+// Shader constants, samplers and all buffers actually read by HLE stay guarded.
+static bool gmem_used_only_preflight(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *env = getenv("LARECOMP_VK_PREFLIGHT_USED_ONLY");
+#ifdef __ANDROID__
+        enabled = !env || atoi(env) != 0;
+#else
+        enabled = env && atoi(env) != 0;
+#endif
+        LOG("[vk-gmem] used-only CPU preflight %s (LARECOMP_VK_PREFLIGHT_USED_ONLY=%s)\n",
+            enabled ? "enabled" : "disabled", env ? env : "unset");
+    }
+    return enabled != 0 && getenv("LARECOMP_DEBUG_DATA") == NULL;
+}
+
 static void gmem_read_stage(int stage, ShaderInfo *si) {
     if (st.program) {
         NvnShaderStage *ss = &st.program->stages[stage];
@@ -3051,7 +3071,11 @@ static void gmem_read_stage(int stage, ShaderInfo *si) {
     }
     if (si->uses_gmem)
         for (int i = 0; i < 16; ++i) gmem_read_range(st.sbuf[stage][i].addr, st.sbuf[stage][i].size);
-    for (int i = 0; i < 18; ++i) gmem_read_range(st.ubuf[stage][i].addr, st.ubuf[stage][i].size);
+    const bool all = !gmem_used_only_preflight();
+    for (int i = 0; i < 18; ++i)
+        if (all || las_vk_preflight_ubuf((unsigned)stage, si->cbuf_mask,
+                                         si->uses_gmem_map, (unsigned)i))
+            gmem_read_range(st.ubuf[stage][i].addr, st.ubuf[stage][i].size);
     for (int i = 0; i < si->ntex; ++i) {
         gmem_read_texture(shader_texture_object(stage, &si->tex[i]));
     }
@@ -4179,7 +4203,15 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     gmem_read_stage(0, pr->vi);
     gmem_read_stage(1, pr->fi);
-    for (int i = 0; i < 16; ++i) gmem_read_range(st.vbuf[i].addr, st.vbuf[i].size);
+    // Draws only dereference vertex streams assigned to active shader inputs.
+    // Unbound/missing attributes instead use ZERO_BINDING constants.
+    const uint32_t read_vbuf_mask = gmem_used_only_preflight()
+        ? las_vk_preflight_vbuf_mask(pr->vi->attr_mask, st.attrib,
+                                     st.nattrib > 0 ? (unsigned)st.nattrib : 0)
+        : UINT32_C(0xffff);
+    for (int i = 0; i < 16; ++i)
+        if (read_vbuf_mask & (UINT32_C(1) << i))
+            gmem_read_range(st.vbuf[i].addr, st.vbuf[i].size);
     if (indexed) gmem_read_range(r->x[3], (uint64_t)r->x[2] * (r->x[1] == 0 ? 1 : r->x[1] == 1 ? 2 : 4));
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
