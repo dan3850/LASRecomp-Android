@@ -964,7 +964,7 @@ static GLenum blend_factor(uint8_t f) {
     case 0x62: return GL_ONE_MINUS_CONSTANT_COLOR;
     case 0x63: return GL_CONSTANT_ALPHA;
     case 0x64: return GL_ONE_MINUS_CONSTANT_ALPHA;
-    default: return 0;
+    default: return GL_INVALID_ENUM; // GL_ZERO (0) is a legal factor, not an error
     }
 }
 static GLenum blend_equation(uint8_t f) {
@@ -1005,7 +1005,10 @@ static bool bind_fixed_state(void) {
         GLenum cs = blend_factor(b[1]), cd = blend_factor(b[2]),
                as = blend_factor(b[3]), ad = blend_factor(b[4]),
                ce = blend_equation(b[5]), ae = blend_equation(b[6]);
-        if (!cs || !cd || !as || !ad || !ce || !ae) {
+        // GL_ZERO has numeric value 0 and is valid for NVN blend factors.
+        // Only the explicit sentinel denotes an unsupported factor.
+        if (cs==GL_INVALID_ENUM || cd==GL_INVALID_ENUM ||
+            as==GL_INVALID_ENUM || ad==GL_INVALID_ENUM || !ce || !ae) {
             reject_fixed[FIX_BLEND]++;return false;
         }
         glEnable(GL_BLEND);

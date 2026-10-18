@@ -911,7 +911,12 @@ static bool gles_copy_texture(const GlesTexRef *from, const GlesTexRef *to,
         (uint64_t)sy+sh>(unsigned)s->height ||
         (uint64_t)dx+dw>(unsigned)d->width ||
         (uint64_t)dy+dh>(unsigned)d->height) goto rejected;
-    const GLbitfield mask=src_depth ? GL_DEPTH_BUFFER_BIT : GL_COLOR_BUFFER_BIT;
+    // A packed depth-stencil NVN copy transfers both aspects. Previously
+    // blitting depth alone lost the stencil mask that later draw passes
+    // depend on (even though both images were D24S8/D32FS8).
+    const GLbitfield mask=!src_depth ? GL_COLOR_BUFFER_BIT :
+        s->attachment==GL_DEPTH_STENCIL_ATTACHMENT ?
+        (GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT) : GL_DEPTH_BUFFER_BIT;
     const GLenum filter=src_depth ? GL_NEAREST :
         (downsample || (flags&1)) ? GL_LINEAR : GL_NEAREST;
     // Only successful exact-size color blits or GLES-defined scaling:

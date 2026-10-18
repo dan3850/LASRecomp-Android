@@ -457,3 +457,25 @@ assert "glShaderStorageBlockBinding(" not in draw_code
 assert 'glGetProgramResourceIndex(p->gl_program,GL_SHADER_STORAGE_BLOCK,"GFast")' in draws
 assert 'layout(std430, set = %d, binding = %d) %sbuffer GFast' in translator
 print("GLES storage buffer binding 0 without desktop-only API: source checks passed")
+
+# Adreno 840 13:58: 684 native NVN draw calls were rejected by the
+# same GLenum zero-valued-factor mistake previously fixed for stencil.
+# GL_ZERO is allowed by GLES blend functions; unknown NVN factors are not.
+draws=source("runtime/nvn/gles/draw.c")
+translator=source("runtime/nvn/maxwell/translate.c")
+gles=source("runtime/nvn/gles/gles.c")
+for token in ("case 1: return GL_ZERO;", "default: return GL_INVALID_ENUM;",
+              "cs==GL_INVALID_ENUM", "cd==GL_INVALID_ENUM",
+              "as==GL_INVALID_ENUM", "ad==GL_INVALID_ENUM"):
+    assert token in draws, f"Missing correct GLES GL_ZERO blend handling: {token}"
+assert "if (!cs || !cd || !as || !ad || !ce || !ae)" not in draws
+# The real device rejected a fragment sampler declaration with missing
+# precision, so later references to the sampler were also invalid.
+assert 'sp(&s, "uniform highp %s t%d;' in translator
+assert 'sp(&s, "uniform %s t%d;' not in translator
+assert 'layout(set = %d, binding = %d) uniform %s t%d;' in translator
+# GLES depth-stencil copy must preserve stencil on GPU, not only depth.
+assert "(GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT)" in gles
+assert "s->attachment==GL_DEPTH_STENCIL_ATTACHMENT" in gles
+assert "glBlitFramebuffer(sx,sy,sx+sw,sy+sh,dx,dy,dx+dw,dy+dh,mask,filter);" in gles
+print("GLES zero-valued blending, highp samplers, and depth-stencil copy checks passed")

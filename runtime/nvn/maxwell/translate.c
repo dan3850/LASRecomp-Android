@@ -1967,7 +1967,11 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     }
     for (int i = 0; i < info->ntex; i++) {
         ShaderTexture *t = &info->tex[i];
-        if (es) sp(&s, "uniform %s t%d;\n", glsl_sampler_type(t), i);
+        if (es)
+            // GLSL ES fragment samplers (including arrays/shadow samplers)
+            // require a defined precision. Without it the driver rejects
+            // the declaration and all later textureSize/texture calls.
+            sp(&s, "uniform highp %s t%d;\n", glsl_sampler_type(t), i);
         else sp(&s, "layout(set = %d, binding = %d) uniform %s t%d;\n", set, 32 + i, glsl_sampler_type(t), i);
         // size of level l as (width, height, depth or layers)
         switch (t->type) {
