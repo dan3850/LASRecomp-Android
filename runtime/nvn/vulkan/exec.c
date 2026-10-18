@@ -30,6 +30,7 @@
 #include "replay.h"
 #include "worker_budget.h"
 #include "guest_copy_policy.h"
+#include "../shader_prep.h"
 #include "cache_identity.h"
 #include "../bcn_decode.h"
 #include "../renderer.h"
@@ -4004,6 +4005,8 @@ static CsProg *compute_program(NvnProgram *np) {
     run_job(build_compute, cp);
     return cp;
 }
+
+#include "shader_headstart.inc"
 
 static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
