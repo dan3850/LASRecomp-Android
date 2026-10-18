@@ -140,7 +140,8 @@ for token in ("compatible_texture_view(", "texture_reject_kind=",
               "texture_array_bound="):
     assert token in draws, f"NVN GLES texture-view diagnostics missing: {token}"
 assert "entry->has_view || tex->target!=1" not in draws
-assert "if (!compatible_texture_view(entry))" in draws
+assert "if (!compatible_texture_view(entry,swizzle,&why))" in draws
+assert "rejected_view(entry,why);" in draws
 for token in ("GL_TEXTURE_2D_ARRAY", "glTexImage3D(", "glTexSubImage3D(",
               "tegra_layer_size(", "layer_size*layers > size",
               "host->target != want"):
