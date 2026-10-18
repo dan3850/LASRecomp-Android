@@ -629,12 +629,15 @@ static bool prep_run_locked(const char *romfs, void (*progress)(int done, int to
     return true;
 }
 
+// Headstart takes ~10 seconds to prepare 96 pipelines on Adreno 840,
+// with no measured steady-state FPS benefit. Keep replay enabled, but make
+// the optional archive scan and AOT compilation opt-in on every platform.
+// LARECOMP_VK_HEADSTART=1 restores the previous startup behaviour.
 void shader_prep_boot(const char *romfs) {
     const char *e = getenv("LARECOMP_VK_HEADSTART");
-#ifdef __ANDROID__
-    if (e && atoi(e) == 0) return;
-#else
-    if (!e || atoi(e) == 0) return;
-#endif
+    if (!e || atoi(e) == 0) {
+        LOG("[shader-headstart] startup AOT skipped (set LARECOMP_VK_HEADSTART=1 to enable)\n");
+        return;
+    }
     shader_prep_run(romfs, NULL, NULL);
 }
