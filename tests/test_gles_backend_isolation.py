@@ -3,6 +3,7 @@
 These do not replace an Android compilation or gameplay test.
 """
 from pathlib import Path
+import re
 
 root = Path(__file__).resolve().parents[1]
 def source(path):
@@ -42,8 +43,11 @@ assert "glsl_es" in translator and "glsl_es" in maxwell_h
 assert "#version 320 es" in translator
 assert "GL_MAX_UNIFORM_BUFFER_BINDINGS" in draw
 assert "stream_bytes[stream]" in draw
+# Do not mistake API names mentioned in comments for backend calls.
+# Check executable C source (including string literals), not explanatory comments.
+draw_code = re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", "", draw)
 for forbidden in ("vkCmdDraw", "PixelCopy", "gl_FragCoord = vec4(", "fake Maxwell"):
-    assert forbidden not in draw
+    assert forbidden not in draw_code, f"Forbidden GLES executable token: {forbidden}"
 print("GLES native separation and limited Maxwell GLSL ES draw path: source assertions passed")
 
 fixed = source("runtime/nvn/gles/draw.c")
