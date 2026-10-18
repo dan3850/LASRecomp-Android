@@ -377,7 +377,7 @@ for token in ("bool gles_bind_feedback_snapshot(",
     assert token in gles, f"Missing native GLES render-target snapshot: {token}"
 for token in ("gles_bind_feedback_snapshot(tex,i,swizzle)",
               "for(int attachment=0;attachment<st.ncolor;attachment++)",
-              "if(tex==st.depth)", "texture_rejection[T_FEEDBACK]++"):
+              "bool feedback_depth = tex==st.depth;", "texture_rejection[T_FEEDBACK]++"):
     assert token in draws, f"Missing NVN feedback draw binding: {token}"
 assert "tex==st.color[0] || tex==st.depth" not in draws
 print("Native GLES same-pass color feedback snapshot and rejection path checks passed")
@@ -479,3 +479,20 @@ assert "(GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT)" in gles
 assert "s->attachment==GL_DEPTH_STENCIL_ATTACHMENT" in gles
 assert "glBlitFramebuffer(sx,sy,sx+sw,sy+sh,dx,dy,dx+dw,dy+dh,mask,filter);" in gles
 print("GLES zero-valued blending, highp samplers, and depth-stencil copy checks passed")
+
+# The real Adreno GLES 14:08 snapshot discarded 1086 draws sampling the
+# currently attached depth/stencil texture. GLES must snapshot actual GPU
+# pixels to a second depth FBO, not sample attached memory or fake zeros.
+gles=source("runtime/nvn/gles/gles.c")
+draws=source("runtime/nvn/gles/draw.c")
+for token in ("bool gles_bind_depth_feedback_snapshot(",
+              "glFramebufferTexture2D(GL_FRAMEBUFFER,h->attachment,GL_TEXTURE_2D,",
+              "GL_DEPTH_BUFFER_BIT |", "GL_STENCIL_BUFFER_BIT : 0",
+              "glBlitFramebuffer(0,0,h->width,h->height,0,0,h->width,h->height,",
+              "glReadBuffer(GL_NONE);",
+              "glBindTexture(GL_TEXTURE_2D,h->feedback_color);"):
+    assert token in gles, f"Missing native GLES depth feedback: {token}"
+assert "bool feedback_depth = tex==st.depth;" in draws
+assert "gles_bind_depth_feedback_snapshot(tex,i,swizzle)" in draws
+assert "if(tex==st.depth)" not in draws
+print("GLES native depth-stencil feedback snapshot regression checks passed")

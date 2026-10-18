@@ -751,6 +751,83 @@ bad:
     g_feedback_copy_failed++;
     return false;
 }
+// Some post-processing passes read the currently bound NVN depth image.
+// GLES forbids sampling any texture still attached to the draw FBO. Copy
+// the completed native depth (and stencil when present) to a separate
+// persistent GLES depth texture before drawing. Never substitute zero depth
+// or alter the guest's original depth/stencil surface.
+bool gles_bind_depth_feedback_snapshot(NvnTexture *tex,int unit,
+                                       const uint8_t swizzle[4]) {
+    GlesTexture *h=tex ? texture(tex) : NULL;
+    if (!h || !h->gpu_written || !h->framebuffer || !h->color ||
+        h->target!=GL_TEXTURE_2D ||
+        (h->attachment!=GL_DEPTH_ATTACHMENT &&
+         h->attachment!=GL_DEPTH_STENCIL_ATTACHMENT) ||
+        h->levels!=1 || unit<0 || unit>=32 || !swizzle)
+        goto bad;
+    FormatGL f=gpu_format(tex->format);
+    if (!f.internal || f.attachment!=h->attachment ||
+        h->width<=0 || h->height<=0) goto bad;
+    uint64_t pixels=(uint64_t)h->width*(uint64_t)h->height;
+    if (!pixels || pixels> (64ull<<20)/8u) goto bad;
+    // The depth format (and stencil, if available) must be bit-compatible.
+    // glBlitFramebuffer rejects mismatched depth-stencil formats.
+    if (!h->feedback_color) {
+        glGenTextures(1,&h->feedback_color);
+        if (!h->feedback_color) goto bad_alloc;
+        glBindTexture(GL_TEXTURE_2D,h->feedback_color);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D,0,(GLint)f.internal,h->width,h->height,
+                     0,f.format,f.type,NULL);
+        if (glGetError()!=GL_NO_ERROR) goto bad_alloc;
+        glGenFramebuffers(1,&h->feedback_framebuffer);
+        if (!h->feedback_framebuffer) goto bad_alloc;
+        glBindFramebuffer(GL_FRAMEBUFFER,h->feedback_framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,h->attachment,GL_TEXTURE_2D,
+                               h->feedback_color,0);
+        const GLenum none=GL_NONE;
+        glDrawBuffers(1,&none);
+        glReadBuffer(GL_NONE);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)
+            goto bad_alloc;
+        g_feedback_allocated++;
+    }
+    for(int i=0;i<8 && glGetError()!=GL_NO_ERROR;i++) {}
+    glBindFramebuffer(GL_READ_FRAMEBUFFER,h->framebuffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,h->feedback_framebuffer);
+    glDisable(GL_SCISSOR_TEST);
+    const GLbitfield mask=GL_DEPTH_BUFFER_BIT |
+        (h->attachment==GL_DEPTH_STENCIL_ATTACHMENT ?
+         GL_STENCIL_BUFFER_BIT : 0);
+    glBlitFramebuffer(0,0,h->width,h->height,0,0,h->width,h->height,
+                      mask,GL_NEAREST);
+    if(glGetError()!=GL_NO_ERROR) goto bad;
+    glActiveTexture(GL_TEXTURE0+(GLenum)unit);
+    glBindTexture(GL_TEXTURE_2D,h->feedback_color);
+    const GLint channels[6]={GL_ZERO,GL_ONE,GL_RED,GL_GREEN,GL_BLUE,GL_ALPHA};
+    const GLenum pnames[4]={GL_TEXTURE_SWIZZLE_R,GL_TEXTURE_SWIZZLE_G,
+                            GL_TEXTURE_SWIZZLE_B,GL_TEXTURE_SWIZZLE_A};
+    for(int c=0;c<4;c++) {
+        if(swizzle[c]>5u) goto bad;
+        glTexParameteri(GL_TEXTURE_2D,pnames[c],channels[swizzle[c]]);
+    }
+    if(glGetError()!=GL_NO_ERROR) goto bad;
+    g_feedback_copy_ok++;
+    return true;
+bad_alloc:
+    if(h) {
+        glDeleteFramebuffers(1,&h->feedback_framebuffer);
+        glDeleteTextures(1,&h->feedback_color);
+        h->feedback_framebuffer=0;
+        h->feedback_color=0;
+    }
+bad:
+    g_feedback_copy_failed++;
+    return false;
+}
 void gles_mark_texture_written(NvnTexture *tex) {
     if (!tex || !tex->backend) return;
     ((GlesTexture *)tex->backend)->gpu_written=true;

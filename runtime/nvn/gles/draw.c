@@ -21,6 +21,8 @@ extern bool gles_sample_texture(NvnTexture *tex, NvnSamplerDesc *sampler, int un
                                 const uint8_t swizzle[4]);
 extern bool gles_bind_feedback_snapshot(NvnTexture *tex,int unit,
                                         const uint8_t swizzle[4]);
+extern bool gles_bind_depth_feedback_snapshot(NvnTexture *tex,int unit,
+                                              const uint8_t swizzle[4]);
 extern bool gles_color_target_supported(uint32_t format);
 extern void gles_mark_texture_written(NvnTexture *tex);
 extern uint32_t nvn_window_origin(void);
@@ -810,19 +812,19 @@ static bool bind_textures(Program *p) {
         bool feedback_color=false;
         for(int attachment=0;attachment<st.ncolor;attachment++)
             if(tex==st.color[attachment]) feedback_color=true;
-        if(tex==st.depth) {
-            // A depth snapshot needs matching depth-aspect semantics;
-            // this color-only GPU blit must not misrepresent it.
-            rejection[R_TEXTURE]++; texture_rejection[T_FEEDBACK]++; return false;
-        }
+        // Read the original depth texture's completed pixels before
+        // rendering this pass, not from its live FBO attachment.
+        bool feedback_depth = tex==st.depth;
         NvnSamplerDesc *sampler=NULL;
         if (st.spool && st.spool->entries && tsc<(uint32_t)st.spool->count)
             sampler=&((NvnSamplerDesc*)st.spool->entries)[tsc];
         if (!gles_sample_texture(tex,sampler,i,ref->shadow,ref->type,swizzle)) {
             rejection[R_TEXTURE]++; texture_rejection[T_UPLOAD]++; return false;
         }
-        if (feedback_color &&
-            !gles_bind_feedback_snapshot(tex,i,swizzle)) {
+        if ((feedback_color &&
+             !gles_bind_feedback_snapshot(tex,i,swizzle)) ||
+            (feedback_depth &&
+             !gles_bind_depth_feedback_snapshot(tex,i,swizzle))) {
             rejection[R_TEXTURE]++; texture_rejection[T_FEEDBACK]++; return false;
         }
         if (entry->has_view) texture_views_accepted++;
