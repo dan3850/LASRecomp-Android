@@ -310,6 +310,17 @@ step "Compilando SDL_main e bibliotecas do app"
 clang -shared -fPIC -O2 -Wl,-z,max-page-size=16384 \
  -Wl,-soname,libmain.so -I"$SDL_HEADERS" -L"$(dirname "$SDL_SO")" \
  -o "$LIB/libmain.so" android/game/game_entry.c -lSDL3 -ldl -llog
+# The original Neo analog controller needs an exported real Switch HID bridge.
+# Validate both libraries before producing a signed APK.
+if [[ "${LASRECOMP_NEO_CONTROLS:-1}" == 1 ]]; then
+ llvm-nm -D "$RUNTIME" |
+  grep 'lasrecomp_android_set_touch_stick' >/dev/null ||
+  fail "Neo native HID callback absent from liblasrecomp_runtime.so"
+ llvm-nm -D "$LIB/libmain.so" |
+  grep 'Java_com_retroaura_lasrecomp_GameSDLActivity_nativeSetNeoStick' >/dev/null ||
+  fail "Neo analog JNI callback absent from libmain.so"
+ echo "Neo: JNI -> Switch nn::hid real analog path verified"
+fi
 clang -shared -fPIC -O2 -fvisibility=hidden -Wl,-z,max-page-size=16384 \
  -Wl,-soname,liblasrecomp_prepare.so -o "$LIB/liblasrecomp_prepare.so" \
  android/prepare/game_prepare.c android/prepare/local_code_probe.c \
