@@ -40,6 +40,12 @@ NVN(nvnDeviceInitialize) {
     if (!once) {
         once = true;
         backend_init();
+#ifdef __ANDROID__
+        if (g_settings.force_adreno_max && !plat_adreno_turbo_set(true)) {
+            LOG("[adreno-turbo] requested at startup but unavailable; disabling toggle\n");
+            g_settings.force_adreno_max = false;
+        }
+#endif
         // Prepare shader variants on the game's native NVN initialization:
         // Vulkan and the pipeline replay are ready, but no game draw has run.
         // Read the user's SAF archives directly; nothing is bundled or copied.
