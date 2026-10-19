@@ -6,7 +6,7 @@ import struct
 from pathlib import Path
 
 import capstone
-from analyze import discover
+from analyze import discover, eh_frame_intervals
 from mario_leaf_codegen import translate
 from nso import Nso
 
@@ -14,6 +14,8 @@ from nso import Nso
 def analyze(nso, max_bytes=128, examples=5):
     funcs, _ = discover(nso)
     starts = sorted(funcs)
+    fde_ranges, fde_stats = eh_frame_intervals(nso)
+    fde_counts = Counter()
     text_lo, text_size = nso.text
     text_hi = text_lo + text_size
     counts = Counter()
@@ -31,6 +33,16 @@ def analyze(nso, max_bytes=128, examples=5):
     rejected_with_zero_word = 0
     for i, start in enumerate(starts):
         end = starts[i + 1] if i + 1 < len(starts) else text_hi
+        if start in fde_ranges:
+            fde_end = fde_ranges[start]
+            fde_counts["with_range"] += 1
+            fde_counts["shorter" if fde_end < end else "longer" if fde_end > end else "equal"] += 1
+            fde_size = fde_end - start
+            if 8 <= fde_size <= max_bytes:
+                fde_counts["eligible"] += 1
+                fde_words = struct.unpack_from("<" + "I" * (fde_size // 4), nso.image, start)
+                if translate(fde_words) is not None:
+                    fde_counts["accepted"] += 1
         size = end - start
         if not (text_lo <= start < end <= text_hi) or size % 4:
             counts["invalid_boundary"] += 1
@@ -86,6 +98,8 @@ def analyze(nso, max_bytes=128, examples=5):
             if len(samples.get(mnemonic, [])) < examples:
                 samples.setdefault(mnemonic, []).append((start + j * 4, word))
     counts["early_ret"] = rejected_with_early_ret
+    counts["fde_stats"] = fde_stats
+    counts["fde_counts"] = fde_counts
     counts["source_all"] = source_all
     counts["source_eligible"] = source_eligible
     counts["source_accepted"] = source_accepted
@@ -112,6 +126,9 @@ def main():
     print(f"Eligible: {counts['eligible']}; accepted: {counts['accepted']}; rejected: {counts['rejected']}")
     print(f"Excluded: short={counts['too_short']} long={counts['too_long']} invalid={counts['invalid_boundary']}")
     print(f"Eligible instructions: {total}; accepted instructions: {accepted}")
+    print("FDE valid={} skipped={}".format(counts["fde_stats"]["valid"], counts["fde_stats"]["skipped"]))
+    print("FDE boundaries shorter={} equal={} longer={}".format(counts["fde_counts"]["shorter"], counts["fde_counts"]["equal"], counts["fde_counts"]["longer"]))
+    print("FDE candidates eligible={} accepted={} (diagnostic only)".format(counts["fde_counts"]["eligible"], counts["fde_counts"]["accepted"]))
     print("Discovery source: all / eligible / accepted")
     for source in ("eh", "sym", "ptr", "bl"):
         print(f"  {source}: {counts['source_all'][source]} / {counts['source_eligible'][source]} / {counts['source_accepted'][source]}")
