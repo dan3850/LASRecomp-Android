@@ -21,10 +21,16 @@ for tool in python3 clang llvm-nm; do
 done
 python3 - <<'PY'
 import importlib.util
-missing = [m for m in ('capstone', 'unicorn', 'lz4') if importlib.util.find_spec(m) is None]
+import sys
+missing = [m for m in ('capstone', 'lz4') if importlib.util.find_spec(m) is None]
 if missing:
     raise SystemExit('ERRO: modulos Python ausentes: ' + ', '.join(missing) +
                      '. Reutilize os pacotes Python/Termux ja usados nos testes do Mario.')
+sys.path.insert(0, 'tools')
+from gen import has_unicorn
+if not has_unicorn():
+    print('Unicorn opcional ausente: compilacao habilitada com despacho local de saltos.')
+    print('O teste que executa ARM64 no Unicorn sera marcado como skipped.')
 PY
 
 mkdir -p "$OUT"

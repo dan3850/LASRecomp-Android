@@ -190,6 +190,66 @@ class TestFullPipeline(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(struct.unpack_from('<H', obj.read_bytes(), 18)[0], 183)
 
+    def test_missing_unicorn_links_and_executes_memory_loaded_branch_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exefs, out = root / 'exefs', root / 'out'
+            make_nso(exefs / 'main')
+            make_nso(exefs / 'sdk', sdk=True)
+            # A branch target read from memory is not recognized by the old
+            # address-arithmetic heuristic. Both interior targets and a tail
+            # jump to another module must still execute without Unicorn.
+            image = bytearray((exefs / 'main').read_bytes())
+            start = 0x100 + ENTRY
+            image[start:0x100 + CALLEE] = struct.pack('<I', NOP) * ((CALLEE - ENTRY) // 4)
+            struct.pack_into('<3I', image, start, 0xAA1E03F3, 0xF9400046, 0xD61F00C0)
+            struct.pack_into('<3I', image, start + 16, 0x91000C00, 0xAA1303FE, RET)
+            struct.pack_into('<3I', image, start + 32, 0x91001C00, 0xAA1303FE, RET)
+            (exefs / 'main').write_bytes(image)
+            blocked = root / 'without-unicorn'
+            blocked.mkdir()
+            (blocked / 'unicorn.py').write_text('raise ImportError("Unicorn intentionally unavailable")\n')
+            environment = dict(os.environ)
+            environment['PYTHONPATH'] = str(blocked) + os.pathsep + environment.get('PYTHONPATH', '')
+            built = subprocess.run([sys.executable, str(ROOT / 'tools/mario_full_recompile.py'),
+                                    str(exefs), '--output', str(out), '--simd', 'c', '--compile',
+                                    '--host-test'], env=environment, capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            report = json.loads((out / 'build-report.json').read_text())
+            self.assertEqual(report['status'], 'linked_requires_runtime')
+            self.assertEqual(report['jump_table_analysis'], 'local-dispatch')
+            self.assertGreater(report['modules']['main']['stats']['br_without_unicorn'], 0)
+            self.assertEqual(report['modules']['main']['jump_table_analysis'], 'local-dispatch')
+            harness = root / 'branch-test.c'
+            harness.write_text(SUPPORT + r'''
+extern const GameLibTables *mario_test_tables(void);
+int main(void) {
+    const GameLibTables *t=mario_test_tables();
+    test_set_tables(t);
+    GuestFn entry=0;
+    for (uint64_t i=0; i<*t->main_count; ++i)
+        if (t->main_addrs[i]==0x7000000040ull) entry=t->main_fns[i];
+    if (!entry) return 1;
+    const uint64_t targets[]={0x7000000050ull,0x7000000060ull,0x7004000040ull};
+    const uint64_t expected[]={13,17,10};
+    for (int i=0; i<3; ++i) {
+        Cpu c={0};
+        c.x[0]=10; c.x[2]=(uintptr_t)&targets[i]; c.x[30]=0x1234;
+        entry(&c);
+        if (c.x[0]!=expected[i] || c.x[30]!=0x1234 || c.x[4]!=(i==2 ? 5u : 0u)) return 2+i;
+    }
+    return 0;
+}
+''')
+            executable = root / 'branch-test'
+            linked = subprocess.run(['clang', '-O1', '-Wl,--export-dynamic',
+                                     '-I' + str(ROOT / 'runtime'), str(harness),
+                                     str(out / 'libmario_test.so'), '-Wl,-rpath,' + str(out),
+                                     '-o', str(executable)], capture_output=True, text=True)
+            self.assertEqual(linked.returncode, 0, linked.stderr)
+            ran = subprocess.run([str(executable)], capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+
     def test_whole_modules_link_and_reuse_only_unchanged_objects(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

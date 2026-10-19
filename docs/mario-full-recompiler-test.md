@@ -23,7 +23,12 @@ bash compilar-mario-full-test-termux.sh \
   /storage/emulated/0/SwitchRoms/Super-extraido
 ```
 
-Reutiliza Python, Capstone, Unicorn, LZ4, clang e llvm-nm já instalados.
+Reutiliza Python, Capstone, LZ4, clang e llvm-nm já instalados.
+Unicorn é opcional. Sem ele, saltos indiretos conservam todos os destinos locais
+da função em um dispatcher, incluindo endereços carregados da memória; destinos
+fora da função seguem para o dispatcher do runtime. Apenas o teste que executa
+o ARM64 original no Unicorn fica marcado como `skipped`. A presença ou ausência
+do Unicorn faz parte da configuração do cache de geração.
 Não baixa novamente o jogo nem depende de NDK, proot, Gradle ou GitHub Actions.
 `MARIO_JOBS=2` é o padrão; pode ser ajustado entre 1 e 8.
 

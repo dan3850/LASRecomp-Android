@@ -41,6 +41,16 @@ def sanitize(sym):
     return 'hle_' + re.sub(r'[^A-Za-z0-9_]', '_', sym)
 
 
+def has_unicorn():
+    """Optional Mario jump-table analysis, including the native library probe."""
+    try:
+        import unicorn
+        from unicorn import arm64_const
+    except (ImportError, OSError):
+        return False
+    return True
+
+
 class Module:
     def __init__(self, name, path, base, simd='asm', *, nso=None,
                  profile='zelda', expected_build_id=None):
@@ -54,6 +64,7 @@ class Module:
         if expected_build_id is not None and nso.build_id.lower() != expected_build_id.lower():
             raise ValueError(f'{name}: Build ID mismatch: expected {expected_build_id}, got {nso.build_id}')
         self.profile = profile
+        self.unicorn_analysis = profile != 'mario' or has_unicorn()
         # These maps contain Zelda addresses, offsets and behavior. Never share
         # them with another title, even if an instruction address happens to match.
         self.patches = PATCHES if profile == 'zelda' else {}
@@ -127,6 +138,8 @@ class Module:
 
     def jump_table(self, br_pc, entry, end):
         """Resolve `br xN` targets from a bounds-checked jump table, or None."""
+        if not self.unicorn_analysis:
+            return None
         r = self._jump_table_fallthrough(br_pc, entry, end)
         if r is None:
             r = self._jump_table_taken(br_pc, entry, end)
@@ -351,10 +364,14 @@ class Module:
                     tables[a] = jt
                     labels.update(jt)
                     self.stats['jumptables'] += 1
-                elif self.computed_target(a, entry):
+                elif not self.unicorn_analysis or self.computed_target(a, entry):
                     # unresolved table jump: allow jumping to any instruction of the function
+                    # Without Unicorn this also covers targets loaded from memory;
+                    # the address-arithmetic heuristic alone would miss those.
                     tables[a] = 'all'
                     self.stats['br_all_labels'] += 1
+                    if not self.unicorn_analysis:
+                        self.stats['br_without_unicorn'] += 1
                 else:
                     self.stats['br_dispatch'] += 1
             terminated = ins.kind in ('b', 'br', 'ret', 'trap')
@@ -731,6 +748,7 @@ def main():
             'stats': dict(m.stats), 'unsupported_samples': m.unsupported_samples,
             'dependencies': m.nso.needed, 'imports': len(m.nso.imports()),
             'stable60_menu': stable60_menu, 'boot_tested': False,
+            'jump_table_analysis': 'unicorn' if m.unicorn_analysis else 'local-dispatch',
         }
         write_if_changed(args.report, json.dumps(report, indent=2, sort_keys=True) + '\n')
     print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)

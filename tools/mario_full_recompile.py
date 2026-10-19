@@ -19,6 +19,7 @@ import subprocess
 import sys
 
 from nso import Nso
+from gen import has_unicorn
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_BASE = 0x7000000000
@@ -228,7 +229,12 @@ def main(argv=None):
         write_json(out / 'build-report.json', report)
         inputs = {name: input_info(exefs / name) for name in ('main', 'sdk')}
         bases = module_bases(inputs['main']['image_bytes'], inputs['sdk']['image_bytes'])
-        generator_id = digest({p: file_hash(ROOT / p) for p in GENERATOR_FILES})
+        analysis_backend = 'unicorn' if has_unicorn() else 'local-dispatch'
+        generator_id = digest({'sources': {p: file_hash(ROOT / p) for p in GENERATOR_FILES},
+                               'jump_table_analysis': analysis_backend})
+        report['jump_table_analysis'] = analysis_backend
+        if analysis_backend == 'local-dispatch':
+            print('Unicorn opcional ausente: saltos indiretos usam despacho local completo.', flush=True)
         report.update(inputs=inputs, bases={n: hex(b) for n, b in bases.items()}, modules={})
         extras = []
         for path in sorted(exefs.iterdir()):
