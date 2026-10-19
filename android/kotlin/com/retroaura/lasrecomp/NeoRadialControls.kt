@@ -82,6 +82,7 @@ class NeoRadialControls(private val activity: Activity, private val input: NeoIn
             val rp = rightHost.layoutParams as FrameLayout.LayoutParams
             if (rp.width != width) {
                 rp.width = width
+                rp.gravity = Gravity.END
                 rightHost.layoutParams = rp
             }
         }
@@ -89,8 +90,10 @@ class NeoRadialControls(private val activity: Activity, private val input: NeoIn
         val rr = FrameLayout.LayoutParams(1, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END)
         view.addView(leftHost, ll)
         view.addView(rightHost, rr)
-        leftHost.addView(left, FrameLayout.LayoutParams(\n            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        rightHost.addView(right, FrameLayout.LayoutParams(\n            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        leftHost.addView(left, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rightHost.addView(right, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         scope.launch { left.events().collect { dispatch(it) } }
         scope.launch { right.events().collect { dispatch(it) } }
     }
