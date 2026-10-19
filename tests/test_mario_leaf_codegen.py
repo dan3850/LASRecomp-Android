@@ -33,7 +33,10 @@ RET = 0xD65F03C0
 
 class State(ctypes.Structure):
     _fields_ = [("x", ctypes.c_uint64 * 31), ("sp", ctypes.c_uint64),
-                ("pc", ctypes.c_uint64), ("nzcv", ctypes.c_uint64)]
+                ("pc", ctypes.c_uint64), ("nzcv", ctypes.c_uint64),
+                ("mem", ctypes.POINTER(ctypes.c_uint8)),
+                ("mem_base", ctypes.c_uint64), ("mem_size", ctypes.c_uint64),
+                ("fault", ctypes.c_uint64)]
 
 
 class TestMarioCodegen(unittest.TestCase):
