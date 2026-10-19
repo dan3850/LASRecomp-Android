@@ -22,6 +22,14 @@ def run_reference(code, initial, ram=None, ram_base=0):
     while index < len(words):
         op = words[index]
         index += 1
+        if (op & 0xFC000000) == 0x14000000:
+            imm = op & 0x03FFFFFF
+            displacement = imm - 0x04000000 if imm & 0x02000000 else imm
+            target = index - 1 + displacement
+            if target < index or target >= len(words):
+                raise ValueError("Unsupported backward or external B")
+            index = target
+            continue
         if (op & 0xFF000010) == 0x54000000:
             cond = op & 15
             imm = (op >> 5) & 0x7FFFF
