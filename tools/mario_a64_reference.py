@@ -30,6 +30,19 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 raise ValueError("Unsupported backward or external B")
             index = target
             continue
+        if (op & 0x7E000000) == 0x36000000:
+            imm = (op >> 5) & 0x3FFF
+            displacement = imm - 0x4000 if imm & 0x2000 else imm
+            target = index - 1 + displacement
+            if target < index or target >= len(words):
+                raise ValueError("Unsupported backward or external TBZ/TBNZ")
+            rt = op & 31
+            bit = ((op >> 31) << 5) | ((op >> 19) & 31)
+            value = 0 if rt == 31 else regs[rt]
+            bit_set = bool(value & (1 << bit))
+            if bit_set == bool(op & 0x01000000):
+                index = target
+            continue
         if (op & 0xFF000010) == 0x54000000:
             cond = op & 15
             imm = (op >> 5) & 0x7FFFF
