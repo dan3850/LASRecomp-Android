@@ -281,13 +281,13 @@ def run_reference(code, initial, ram=None, ram_base=0):
 
         # Signed-imm9 unscaled and pre/post-index scalar LDR/STR.
         family = op & 0xFFC00C00
-        if (family & ~0xC00) in (0x38000000, 0x38400000,
+        # mode=2 is the separate register-offset encoding, not unscaled RAM.
+        if ((family & ~0xC00) in (0x38000000, 0x38400000,
                                  0x78000000, 0x78400000,
                                  0xB8000000, 0xB8400000,
-                                 0xF8000000, 0xF8400000):
+                                 0xF8000000, 0xF8400000)
+                and (op & 0xC00) != 0x800):
             mode = (op >> 10) & 3
-            if mode not in (0, 1, 3):
-                raise ValueError("Unsupported scalar single mode")
             width = 1 << ((op >> 30) & 3)
             is_load = bool(op & 0x00400000)
             rt, rn = op & 31, (op >> 5) & 31
