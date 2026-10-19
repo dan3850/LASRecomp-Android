@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.retroaura.lasrecomp.bootdiag">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+    <!-- The original Swordfish90 RadialGamePad vibrates when buttons are pressed.
+         Without this normal Android permission, a touch can crash the app. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <application
         android:label="LASRecomp Boot TESTE"
         android:hasCode="true"
