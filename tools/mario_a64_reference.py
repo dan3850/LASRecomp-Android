@@ -149,6 +149,32 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 regs[rd] = result
             continue
 
+        # ADD/SUB shifted-register, LSL only, independent arithmetic oracle.
+        if (op & 0x1F200000) == 0x0B000000:
+            shift_type = (op >> 22) & 3
+            amount = (op >> 10) & 63
+            width = 64 if op & (1 << 31) else 32
+            if shift_type != 0 or amount >= width:
+                raise ValueError("Unsupported shifted-register ADD/SUB")
+            mask = (1 << width) - 1
+            rd, rn, rm = op & 31, (op >> 5) & 31, (op >> 16) & 31
+            a = (0 if rn == 31 else regs[rn]) & mask
+            b = ((0 if rm == 31 else regs[rm]) << amount) & mask
+            subtract = bool(op & (1 << 30))
+            setflags = bool(op & (1 << 29))
+            result = (a - b if subtract else a + b) & mask
+            if setflags:
+                sign = 1 << (width - 1)
+                negative = bool(result & sign)
+                zero = result == 0
+                carry = a >= b if subtract else a + b > mask
+                overflow = (bool((a ^ b) & (a ^ result) & sign) if subtract
+                            else bool((~(a ^ b)) & (a ^ result) & sign))
+                nzcv = (int(negative) << 31) | (int(zero) << 30) | (int(carry) << 29) | (int(overflow) << 28)
+            if rd != 31:
+                regs[rd] = result
+            continue
+
         # ADDS/SUBS immediate; CMP is SUBS with destination XZR/WZR.
         family = op & 0x7F000000
         if family in (0x31000000, 0x71000000):
