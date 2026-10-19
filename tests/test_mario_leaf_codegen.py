@@ -41,13 +41,37 @@ class State(ctypes.Structure):
 
 class TestMarioCodegen(unittest.TestCase):
     def test_reject_unsupported_and_early_ret(self):
-        for words in ([RET, RET], [0x14000000, RET], [0xF8400400, RET],
-                      [0x14000001, RET], [0x52800000 | (2 << 21), RET]):
+        for words in ([RET, RET], [0xF8400400, RET],
+                      [0x52800000 | (2 << 21), RET]):
             with self.subTest(words=words):
                 self.assertIsNone(translate(words))
 
     def test_reject_missing_ret(self):
         self.assertIsNone(translate([add_imm(0, 0, 1)]))
+
+    @unittest.skipUnless(shutil.which("clang"), "Clang required")
+    def test_forward_b_native(self):
+        words = [0x14000002, add_imm(0, 0, 99), add_imm(0, 0, 7), RET]
+        body = translate(words)
+        self.assertIsNotNone(body)
+        for invalid in (0x14000000, 0x17FFFFFF, 0x14000004, 0x94000002):
+            self.assertIsNone(translate([invalid, RET]))
+        with tempfile.TemporaryDirectory(prefix="mario-b-") as tmp:
+            source, library = Path(tmp) / "branch.c", Path(tmp) / "branch.so"
+            source.write_text("\n".join([HEADER, "void branch(MarioA64State *s) {", *body, "}"]) + "\n")
+            subprocess.run(["clang", "-std=c11", "-O2", "-shared", "-fPIC",
+                            "-Wall", "-Wextra", "-Werror", str(source), "-o", str(library)],
+                           check=True)
+            state = State()
+            state.x[0] = 3
+            state.x[30] = 0x1234
+            state.nzcv = 0xA0000000
+            fn = ctypes.CDLL(str(library)).branch
+            fn.argtypes = [ctypes.POINTER(State)]
+            fn(ctypes.byref(state))
+            self.assertEqual(state.x[0], 10)
+            self.assertEqual(state.pc, 0x1234)
+            self.assertEqual(state.nzcv, 0xA0000000)
 
     def test_forward_conditional_branches(self):
         cbz = 0xB4000000 | (2 << 5) | 0
