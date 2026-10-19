@@ -14,18 +14,18 @@ class TestMarioFdePriorities(unittest.TestCase):
         self.md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
 
     def test_single_missing_family_nop_proxy(self):
-        words = [0x1E2703E0, RET]  # FMOV S0, WZR (currently unsupported)
+        words = [0xD4200000, RET]  # BRK #0 (deliberately unsupported trap)
         original = words.copy()
         missing, rescued, samples = inspect_candidate(words, 0x1000, self.md)
-        self.assertEqual(missing, {"fmov"})
-        self.assertEqual(rescued, {"fmov"})
-        self.assertEqual(samples["fmov"], (0x1000, 0x1E2703E0))
+        self.assertEqual(missing, {"brk"})
+        self.assertEqual(rescued, {"brk"})
+        self.assertEqual(samples["brk"], (0x1000, 0xD4200000))
         self.assertEqual(words, original)  # Diagnostic must not mutate guest code
 
     def test_two_missing_families_not_rescued(self):
-        words = [0x1E2703E0, 0xD61F0000, RET]  # FMOV, BR X0, RET
+        words = [0xD4200000, 0xD61F0000, RET]  # BRK, BR X0, RET
         missing, rescued, _ = inspect_candidate(words, 0x1000, self.md)
-        self.assertEqual(missing, {"fmov", "br"})
+        self.assertEqual(missing, {"brk", "br"})
         self.assertEqual(rescued, set())
 
     def test_adrp_now_supported_not_ranked(self):
