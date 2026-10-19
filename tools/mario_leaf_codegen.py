@@ -63,6 +63,15 @@ def translate(words):
     lines = ["    s->fault = 0;"]
     targets = set()
     for index, word in enumerate(words):
+        if (word & 0xFF000010) == 0x54000000:
+            if (word & 15) >= 14:
+                return None
+            imm = (word >> 5) & 0x7FFFF
+            displacement = imm - 0x80000 if imm & 0x40000 else imm
+            target = index + displacement
+            if target <= index or target >= len(words):
+                return None
+            targets.add(target)
         if (word & 0x7E000000) == 0x34000000:
             imm = (word >> 5) & 0x7FFFF
             displacement = imm - 0x80000 if imm & 0x40000 else imm
@@ -73,6 +82,25 @@ def translate(words):
     for index, word in enumerate(words):
         if index in targets:
             lines.append(f"mario_label_{index}: ;")
+        if (word & 0xFF000010) == 0x54000000:
+            imm = (word >> 5) & 0x7FFFF
+            displacement = imm - 0x80000 if imm & 0x40000 else imm
+            target = index + displacement
+            cond = word & 15
+            if cond >= 14 or target <= index or target >= len(words):
+                return None
+            predicates = [
+                "z", "!z", "c", "!c", "n", "!n", "v", "!v",
+                "c && !z", "!c || z", "n == v", "n != v",
+                "!z && (n == v)", "z || (n != v)",
+            ]
+            lines.append("    {")
+            lines.append("        uint64_t flags = s->nzcv;")
+            lines.append("        int n = (flags >> 31) & 1, z = (flags >> 30) & 1;")
+            lines.append("        int c = (flags >> 29) & 1, v = (flags >> 28) & 1;")
+            lines.append(f"        if ({predicates[cond]}) goto mario_label_{target};")
+            lines.append("    }")
+            continue
         if (word & 0x7E000000) == 0x34000000:
             imm = (word >> 5) & 0x7FFFF
             displacement = imm - 0x80000 if imm & 0x40000 else imm
