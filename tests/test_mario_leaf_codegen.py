@@ -41,7 +41,7 @@ class State(ctypes.Structure):
 
 class TestMarioCodegen(unittest.TestCase):
     def test_reject_unsupported_and_early_ret(self):
-        for words in ([RET, RET], [0x14000000, RET], [0xF9400000, RET],
+        for words in ([RET, RET], [0x14000000, RET], [0xF8400400, RET],
                       [0xB1000400, RET], [0x52800000 | (2 << 21), RET]):
             with self.subTest(words=words):
                 self.assertIsNone(translate(words))
@@ -53,6 +53,7 @@ class TestMarioCodegen(unittest.TestCase):
         self.assertIsNotNone(translate([add_imm(0, 0, 0x180), RET]))
         self.assertIsNotNone(translate([add_imm(31, 31, 16), RET]))
         self.assertIsNotNone(translate([mov_wide("movz", 2, 0x1234, width=32), RET]))
+        self.assertIsNotNone(translate([0xF9400000, RET]))  # LDR X0, [X0]
 
     @unittest.skipUnless(shutil.which("clang"), "Clang required for generated C tests")
     def test_native_semantics_all_registers_and_sp(self):
