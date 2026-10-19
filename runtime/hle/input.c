@@ -15,6 +15,9 @@
 #include "../nvn/renderer.h"
 #include "../settings.h"
 #include "../input_bind.h"
+#ifdef __ANDROID__
+#include "touch_axes.h"
+#endif
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -29,20 +32,10 @@ static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, p
 // True independent analog axes from the Android touch overlay. JNI forwards
 // these through libmain only after the native runtime is loaded. Never
 // synthesize keyboard keys: analog magnitude and diagonals must be preserved.
-static _Atomic int32_t touch_lx, touch_ly, touch_rx, touch_ry;
+static LasTouchAxes touch_axes;
 __attribute__((visibility("default")))
 void lasrecomp_touch_set_axis(int stick, int32_t x, int32_t y) {
-    if (x > 32767) x = 32767;
-    if (x < -32767) x = -32767;
-    if (y > 32767) y = 32767;
-    if (y < -32767) y = -32767;
-    if (stick == 0) {
-        atomic_store(&touch_lx, x);
-        atomic_store(&touch_ly, y);
-    } else if (stick == 1) {
-        atomic_store(&touch_rx, x);
-        atomic_store(&touch_ry, y);
-    }
+    las_touch_axes_set(&touch_axes, stick, x, y);
 }
 #endif
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
@@ -434,10 +427,13 @@ static void fill_state(Cpu *c) {
     int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry) + script_ry);
 #ifdef __ANDROID__
     if (!menu) {
-        lx = clamp_axis(lx + atomic_load(&touch_lx));
-        ly = clamp_axis(ly + atomic_load(&touch_ly));
-        rx = clamp_axis(rx + atomic_load(&touch_rx));
-        ry = clamp_axis(ry + atomic_load(&touch_ry));
+        int32_t tx, ty;
+        las_touch_axes_get(&touch_axes, 0, &tx, &ty);
+        lx = clamp_axis(lx + tx);
+        ly = clamp_axis(ly + ty);
+        las_touch_axes_get(&touch_axes, 1, &tx, &ty);
+        rx = clamp_axis(rx + tx);
+        ry = clamp_axis(ry + ty);
     }
 #endif
     extern bool mirror_input(void);  // mirror mode, the world on screen (runtime/hle/mirror.c): left and right swap
