@@ -428,7 +428,12 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
     if (vkGetQueryPoolResults(g_vk.dev, q->pool, 0, q->n, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
         double per = g_vk.props.limits.timestampPeriod;
         int64_t cand = (int64_t)plat_now_ns() - (int64_t)((double)t[q->n - 1] * per);
-        if (!cq_calibrated || cand < cq_offset) cq_offset = cand, cq_calibrated = true;
+        // Use one fixed host/GPU epoch per Vulkan session. Re-selecting the
+        // minimum offset on later submissions moves the guest's clock backwards
+        // even when the raw GPU timestamps are monotonic. Zelda consumes the
+        // timestamp *differences* for its frame pacing and dynamic resolution.
+        // Preserve the actual GPU intervals without injecting artificial time.
+        if (!cq_calibrated) cq_offset = cand, cq_calibrated = true;
         static int log = -1;  // LARECOMP_LOG_COUNTER=1: the host (provisional) and GPU times of each counter
         if (log < 0) log = getenv("LARECOMP_LOG_COUNTER") != NULL;
         for (uint32_t k = 0; k < q->n; k++) {
@@ -3663,6 +3668,9 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    // A rebuilt Vulkan device may start with a different GPU timestamp epoch.
+    cq_calibrated = false;
+    cq_offset = 0;
     counter_prev_out = 0;
     counter_prev_tick = counter_prev_provisional = 0;
     atomic_store_explicit(&last_eager_completed, 0, memory_order_relaxed);
