@@ -29,6 +29,27 @@ static uint8_t keys_down[SDL_SCANCODE_COUNT];
 static SDL_Gamepad *pad;
 static _Atomic int64_t sampling;
 
+#ifdef __ANDROID__
+// Independent, real analog values from the Android touch controller.
+// JNI writes atomically on Android's UI thread; the emulated HID poll reads
+// on the game thread. Never overwrite physical gamepad or keyboard input.
+static _Atomic int32_t touch_lx, touch_ly, touch_rx, touch_ry;
+static int32_t touch_axis(float value) {
+    if (!isfinite(value)) value = 0;
+    if (value > 1.f) value = 1.f;
+    if (value < -1.f) value = -1.f;
+    return (int32_t)(value * 32767.f);
+}
+__attribute__((visibility("default")))
+void lasrecomp_touch_axes(float lx, float ly, float rx, float ry) {
+    // Android canvas grows downward; Switch/nn::hid analog Y grows upward.
+    atomic_store(&touch_lx, touch_axis(lx));
+    atomic_store(&touch_ly, touch_axis(-ly));
+    atomic_store(&touch_rx, touch_axis(rx));
+    atomic_store(&touch_ry, touch_axis(-ry));
+}
+#endif
+
 // Host keys / buttons held by a test script (LARECOMP_HOST_INPUT, input_frame): they go through the bindings
 static uint8_t test_keys[SDL_SCANCODE_COUNT];
 static _Atomic uint32_t test_pad;
@@ -412,6 +433,16 @@ static void fill_state(Cpu *c) {
     }
     int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
     int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry) + script_ry);
+#ifdef __ANDROID__
+    // Mix touch axes only when gameplay owns input. Preserve independent
+    // real pads, user bindings, scripted tests, menu focus and core timing.
+    if (!menu) {
+        lx = clamp_axis(lx + atomic_load(&touch_lx));
+        ly = clamp_axis(ly + atomic_load(&touch_ly));
+        rx = clamp_axis(rx + atomic_load(&touch_rx));
+        ry = clamp_axis(ry + atomic_load(&touch_ry));
+    }
+#endif
     extern bool mirror_input(void);  // mirror mode, the world on screen (runtime/hle/mirror.c): left and right swap
     bool mirrored = !menu && mirror_input();
     if (mirrored) {
