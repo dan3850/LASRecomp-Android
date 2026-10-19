@@ -164,6 +164,32 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 regs[rd] = result
             continue
 
+        # Conditional select/increment, including CSET's CSINC alias.
+        family = op & 0x7FE00C00
+        if family in (0x1A800000, 0x1A800400):
+            cond = (op >> 12) & 15
+            if cond >= 14:
+                raise ValueError("Unsupported conditional select condition")
+            width = 64 if op & (1 << 31) else 32
+            rd, rn, rm = op & 31, (op >> 5) & 31, (op >> 16) & 31
+            negative = bool(nzcv & 0x80000000)
+            zero = bool(nzcv & 0x40000000)
+            carry = bool(nzcv & 0x20000000)
+            overflow = bool(nzcv & 0x10000000)
+            predicates = (zero, not zero, carry, not carry, negative,
+                          not negative, overflow, not overflow,
+                          carry and not zero, not carry or zero,
+                          negative == overflow, negative != overflow,
+                          not zero and negative == overflow,
+                          zero or negative != overflow)
+            source = rn if predicates[cond] else rm
+            value = 0 if source == 31 else regs[source]
+            if not predicates[cond] and family == 0x1A800400:
+                value += 1
+            if rd != 31:
+                regs[rd] = value & ((1 << width) - 1)
+            continue
+
         # ADD/SUB shifted-register, LSL only, independent arithmetic oracle.
         if (op & 0x1F200000) == 0x0B000000:
             shift_type = (op >> 22) & 3
