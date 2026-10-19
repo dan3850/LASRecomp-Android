@@ -146,6 +146,17 @@ def translate(words):
             lines.append(f"    s->x[{dest}] = {expression};")
             continue
 
+        # MOV register alias of ORR (shifted register), LSL #0, Rn=XZR/WZR.
+        # Preserve flags; Rd=31 discards the value and Rm=31 reads zero.
+        if (word & 0x7FE0FFE0) == 0x2A0003E0:
+            dest, source = word & 31, (word >> 16) & 31
+            if dest != 31:
+                value = "0ULL" if source == 31 else f"s->x[{source}]"
+                if not (word & 0x80000000):
+                    value = f"(uint32_t)({value})"
+                lines.append(f"    s->x[{dest}] = {value};")
+            continue
+
         # ADDS/SUBS immediate, including CMP alias (SUBS with Rd=31).
         family = word & 0x7F000000
         if family in (0x31000000, 0x71000000):
