@@ -50,7 +50,7 @@ class NeoRadialControls(private val activity: Activity, private val input: NeoIn
                 single(9, NeoInputBridge.MINUS, "−"),
                 shoulder(2, NeoInputBridge.L, "L"),
                 SecondaryDialConfig.DoubleButton(2, 1f, button(NeoInputBridge.ZL, "ZL")),
-                single(1, NeoInputBridge.LEFT_STICK_BUTTON, "L3")
+                SecondaryDialConfig.SingleButton(1, 1f, 1f, button(NeoInputBridge.LEFT_STICK_BUTTON, "L3"))
             )
         )
         val rightConfig = RadialGamePadConfig(
@@ -67,7 +67,7 @@ class NeoRadialControls(private val activity: Activity, private val input: NeoIn
                 single(9, NeoInputBridge.PLUS, "+"),
                 shoulder(3, NeoInputBridge.R, "R"),
                 SecondaryDialConfig.DoubleButton(3, 1f, button(NeoInputBridge.ZR, "ZR")),
-                single(5, NeoInputBridge.RIGHT_STICK_BUTTON, "R3")
+                SecondaryDialConfig.SingleButton(5, 1f, 1f, button(NeoInputBridge.RIGHT_STICK_BUTTON, "R3"))
             )
         )
         left = RadialGamePad(leftConfig, 16f, activity)
