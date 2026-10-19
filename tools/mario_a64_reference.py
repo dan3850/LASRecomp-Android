@@ -231,11 +231,12 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 regs[dest] = result
             continue
 
-        # Independent decode for unsigned-offset 32/64-bit LDR/STR.
+        # Independent decode of unsigned-offset byte/halfword/word/doubleword.
         # Memory is a caller-provided bytearray, never a raw host address.
         family = op & 0xFFC00000
-        if family in (0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000):
-            width = 8 if (op >> 30) & 1 else 4
+        if family in (0x39000000, 0x39400000, 0x79000000, 0x79400000,
+                      0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000):
+            width = 1 << ((op >> 30) & 3)
             load = (op >> 22) & 1
             rt, rn = op & 31, (op >> 5) & 31
             address = ((stack if rn == 31 else regs[rn])
