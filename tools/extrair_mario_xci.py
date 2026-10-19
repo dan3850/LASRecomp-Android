@@ -72,10 +72,18 @@ def run(args: argparse.Namespace) -> Path:
     if any(p.exists() for p in (dest / "exefs", dest / "romfs", dest / "basedata")):
         fail("Há uma extração parcial na saída; não vou sobrescrever nada: "
              + str(dest) + ". Examine os arquivos existentes.")
-    yanu = shutil.which(args.yanu_cli)
+    # The official Termux bootstrap installs a 'yanu' wrapper inside
+    # $PREFIX/bin and explicitly deprecates the old 'yanu-cli' command.
+    # Prefer it, but retain backwards compatibility with older installs.
+    names = ([args.yanu_cli] if args.yanu_cli != "auto"
+             else ["yanu", "yanu-cli"])
+    yanu = next((found for name in names if (found := shutil.which(name))), None)
     if not yanu:
-        fail("yanu-cli não foi encontrado no PATH. Instale/configure seu Yanu "
-             "existente; verifique com: yanu-cli --help")
+        fail("Yanu não encontrado no PATH (procurei: " + ", ".join(names)
+             + "). Confira com: command -v yanu; command -v yanu-cli. "
+             "Se já extraiu Zelda com outro comando/proot, informe o caminho "
+             "com --yanu-cli /caminho/do/executavel; nenhuma reinstalação "
+             "ou download foi feito.")
     convdir = dest / "_yanu_converted"
     convdir.mkdir(parents=True, exist_ok=True)
     nsps = converted_nsps(convdir)
@@ -121,7 +129,7 @@ def main() -> int:
         description="Extrai XCI pessoal em exefs/romfs/ usando o Yanu já instalado.")
     parser.add_argument("xci", help="Caminho do arquivo .xci da sua própria cópia")
     parser.add_argument("--output", help="Pasta de saída; padrão: NOME-extraido ao lado do XCI")
-    parser.add_argument("--yanu-cli", default="yanu-cli", help="Comando do Yanu instalado")
+    parser.add_argument("--yanu-cli", default="auto", help="Comando instalado; padrão: detecta yanu (Termux) ou yanu-cli")
     parser.add_argument("--base-nsp", help="Nome do NSP base quando um XCI gera vários NSPs")
     parser.add_argument("--delete-intermediate", action="store_true",
                         help="Excluir apenas o NSP intermediário selecionado após extração válida")
