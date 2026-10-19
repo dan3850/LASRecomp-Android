@@ -665,7 +665,16 @@ NVN(nvnQueueAcquireTexture) {
 NVN(nvnQueuePresentTexture) {
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
-    if (i >= 0 && i < w->num) backend_present(HOST(NvnTexture, w->textures[i]));
+    if (i >= 0 && i < w->num) {
+        // Android Vulkan presentation executes on this guest caller, not an
+        // upstream Windows rqueue thread. Set the soft hint once per host thread.
+        static __thread bool render_hint_set;
+        if (!render_hint_set) {
+            render_hint_set = true;
+            plat_thread_perf_core(PLAT_PERF_RENDER);
+        }
+        backend_present(HOST(NvnTexture, w->textures[i]));
+    }
 }
 
 // ================================================================== small state objects
