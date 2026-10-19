@@ -152,7 +152,7 @@ def main():
     if not 1 <= args.limit <= 1000 or not 1 <= args.cases <= 100:
         p.error("--limit must be 1..1000 and --cases 1..100")
     if not 1 <= args.max_steps <= 1000000:
-        p.error("--max-steps must be 1..1000000"
+        p.error("--max-steps must be 1..1000000")
     clang = shutil.which("clang")
     if clang is None:
         p.error("clang is required for native validation")
