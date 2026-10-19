@@ -138,6 +138,10 @@ static bool store_entry(const Entry *e) {
 }
 static void *writer(void *unused) {
     (void)unused;
+    // Eden-style bounded Vulkan cache snapshots: a recipe writes its own
+    // small file immediately, but the driver-wide pipeline blob is costly.
+    // On clean shutdown replay_stop()/quick_exit_handler saves it again.
+    uint64_t last_checkpoint_ns = now_ns();
     for (;;) {
         pthread_mutex_lock(&replay.lock);
         Entry *pick = NULL;
@@ -153,7 +157,13 @@ static void *writer(void *unused) {
         if (ok) replay.saved++;
         pthread_mutex_unlock(&replay.lock);
         if (!ok) fprintf(stderr, "[replay] recipe save failed: %s\n", strerror(errno));
-        if (ok && replay.saved % 16 == 0 && replay.checkpoint) replay.checkpoint();
+        if (ok && replay.checkpoint && replay.saved % 32 == 0) {
+            const uint64_t now = now_ns();
+            if (now >= last_checkpoint_ns && now - last_checkpoint_ns >= 30000000000ull) {
+                replay.checkpoint();
+                last_checkpoint_ns = now;
+            }
+        }
     }
     return NULL;
 }
