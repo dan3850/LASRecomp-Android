@@ -116,7 +116,7 @@ def main():
             with zipfile.ZipFile(target) as archive:
                 try:
                     manifest = archive.read("AndroidManifest.xml")
-                    found = re.search(rb'\bpackage\s*=\s*["\\']([^"\\']+)', manifest)
+                    found = re.search(rb'package\s*=\s*"([^"]+)"', manifest)
                     package = found.group(1).decode("utf-8") if found else group
                 except KeyError:
                     package = group
