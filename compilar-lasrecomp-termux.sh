@@ -499,6 +499,13 @@ jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
 rm -f "$STAGE/dex"/classes*.dex
 "${D8_CMD[@]}" --min-api 26 --lib "$ANDROID_JAR" --output "$STAGE/dex" "$STAGE/classes.jar" "${RADIAL_JARS[@]}"
 [[ -s "$STAGE/dex/classes.dex" ]] || fail "D8 nao gerou classes.dex"
+if [[ "$NEO_ENABLE" == 1 ]]; then
+ grep -aql 'NeoRadialControls' "$STAGE/dex"/classes*.dex ||
+  fail "APK Neo invalido: NeoRadialControls nao entrou no DEX"
+ grep -aql 'com/swordfish/radialgamepad/library/RadialGamePad' "$STAGE/dex"/classes*.dex ||
+  fail "APK Neo invalido: implementacao original RadialGamePad nao entrou no DEX"
+ echo "VERIFICADO: controladores Neo e biblioteca original presentes no DEX."
+fi
 # libc++ ARM64 do NDK, necessaria para simbolos C++ do runtime.
 TERMUX_CXX="$PREFIX/lib/libc++_shared.so"
 [[ -s "$TERMUX_CXX" ]] || fail "libc++_shared.so do Termux ausente: $TERMUX_CXX"
@@ -568,4 +575,9 @@ else
 fi
 echo "LOG: $OUT/compilacao.log"
 [[ -n "${LASRECOMP_GAME_SO:-}" ]] || echo "AVISO: sem liblasgame.so privada, o APK nao inicia o jogo."
+if [[ "$NEO_ENABLE" == 1 ]]; then
+ echo "NEO RADIALGAMEPAD: ATIVADO (APK montado, teste visual no aparelho pendente)."
+else
+ echo "NEO RADIALGAMEPAD: DESATIVADO a pedido."
+fi
 echo "Build/assinatura verificados. Boot do jogo requer teste real."
