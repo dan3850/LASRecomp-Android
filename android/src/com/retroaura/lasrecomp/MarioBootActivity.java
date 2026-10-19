@@ -12,6 +12,8 @@ import android.widget.TextView;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
@@ -134,6 +136,19 @@ public final class MarioBootActivity extends Activity {
                     if (!Arrays.equals(magic, new byte[]{'M','E','T','A'}))
                         throw new java.io.IOException("main.npdm inválido");
                 }
+                // The shared filesystem uses this marker to select direct SAF
+                // directory reads instead of looking for an older romfs.bin.
+                File root = new File(getFilesDir(), "extracted");
+                if (!root.isDirectory() && !root.mkdirs())
+                    throw new IOException("Não foi possível preparar a pasta interna do teste");
+                File marker = new File(root, ".external-romfs-directory");
+                File pending = new File(root, ".external-romfs-directory.partial");
+                try (FileOutputStream output = new FileOutputStream(pending)) {
+                    output.write(tree.toString().getBytes(StandardCharsets.UTF_8));
+                    output.getFD().sync();
+                }
+                if (!pending.renameTo(marker))
+                    throw new IOException("Não foi possível ativar a leitura direta da pasta romfs");
                 runOnUiThread(() -> {
                     checking = false;
                     selected = tree;

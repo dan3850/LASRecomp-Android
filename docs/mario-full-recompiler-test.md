@@ -82,6 +82,9 @@ Com o acesso do Termux a Downloads configurado, o APK também é copiado para
 Instale o APK, selecione `Super-extraido` e toque em **Iniciar teste**.
 A pasta precisa conter `exefs/main`, `exefs/sdk`, `exefs/main.npdm` e `romfs/`.
 O app usa acesso de leitura via SAF e verifica os Build IDs antes de iniciar.
+Após validar a pasta, grava o marcador interno `.external-romfs-directory`,
+ativando o RomFS virtual do runtime sem exigir `romfs.bin` nem copiar os dados.
+Isso também ocorre ao reabrir o app com uma pasta já selecionada.
 O runtime repete essa verificação ao carregar os NSOs. O jogo é executado pelo
 ciclo SDL Android existente, com o dispatcher e os inicializadores de módulos
 do runtime. Serviços HLE ausentes encerram o teste com nome e endereço no log.
