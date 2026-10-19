@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Read-only coverage census of bounded ARM64 function candidates in a local NSO."""
+import argparse
+from collections import Counter
+import struct
+from pathlib import Path
+
+import capstone
+from analyze import discover
+from mario_leaf_codegen import translate
+from nso import Nso
+
+
+def analyze(nso, max_bytes=128, examples=5):
+    funcs, _ = discover(nso)
+    starts = sorted(funcs)
+    text_lo, text_size = nso.text
+    text_hi = text_lo + text_size
+    counts = Counter()
+    blockers = Counter()
+    samples = {}
+    accepted_by_length = Counter()
+    rejected_by_length = Counter()
+    md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+    total_instructions = 0
+    accepted_instructions = 0
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else text_hi
+        size = end - start
+        if not (text_lo <= start < end <= text_hi) or size % 4:
+            counts["invalid_boundary"] += 1
+            continue
+        if size < 8:
+            counts["too_short"] += 1
+            continue
+        if size > max_bytes:
+            counts["too_long"] += 1
+            continue
+        counts["eligible"] += 1
+        words = struct.unpack_from("<" + "I" * (size // 4), nso.image, start)
+        total_instructions += len(words)
+        if translate(words) is not None:
+            counts["accepted"] += 1
+            accepted_instructions += len(words)
+            accepted_by_length[len(words)] += 1
+            continue
+        counts["rejected"] += 1
+        rejected_by_length[len(words)] += 1
+        # Diagnostic histogram, not an assertion that every occurrence blocks translation.
+        # Report instruction forms absent from the supported subset by probing each word
+        # with a synthetic final RET. Branches need their original context to validate.
+        for j, word in enumerate(words):
+            if word == 0xD65F03C0 and j == len(words) - 1:
+                continue
+            if word == 0xD503201F:
+                continue
+            if (word & 0x7E000000) == 0x34000000:
+                continue
+            if (word & 0xFF000010) == 0x54000000:
+                continue
+            if translate((word, 0xD65F03C0)) is not None:
+                continue
+            code = struct.pack("<I", word)
+            decoded = list(md.disasm(code, start + j * 4))
+            mnemonic = decoded[0].mnemonic if decoded else "invalid"
+            blockers[mnemonic] += 1
+            if len(samples.get(mnemonic, [])) < examples:
+                samples.setdefault(mnemonic, []).append((start + j * 4, word))
+    return counts, blockers, samples, total_instructions, accepted_instructions
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("nso", type=Path)
+    parser.add_argument("--max-bytes", type=int, default=128)
+    parser.add_argument("--top", type=int, default=30)
+    parser.add_argument("--examples", type=int, default=3)
+    args = parser.parse_args()
+    if args.max_bytes < 8 or args.max_bytes % 4 or args.top < 1 or args.examples < 0:
+        parser.error("invalid max-bytes, top or examples")
+    nso = Nso(args.nso)
+    counts, blockers, samples, total, accepted = analyze(
+        nso, args.max_bytes, args.examples)
+    print(f"Build ID: {nso.build_id}")
+    print(f"Discovered starts: {sum(counts.values()) - counts['eligible']}")
+    print(f"Candidate span: 8..{args.max_bytes} bytes (next discovered start as boundary)")
+    print(f"Eligible: {counts['eligible']}; accepted: {counts['accepted']}; rejected: {counts['rejected']}")
+    print(f"Excluded: short={counts['too_short']} long={counts['too_long']} invalid={counts['invalid_boundary']}")
+    print(f"Eligible instructions: {total}; accepted instructions: {accepted}")
+    print("Unsupported instruction mnemonic occurrences in rejected candidates (not unique blockers):")
+    for mnemonic, count in blockers.most_common(args.top):
+        addresses = ", ".join(f"0x{addr:x}(0x{word:08x})" for addr, word in samples.get(mnemonic, ()))
+        print(f"  {mnemonic:12s} {count:7d}  {addresses}")
+
+
+if __name__ == "__main__":
+    main()
