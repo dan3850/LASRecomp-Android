@@ -1,7 +1,7 @@
 """Conservative AArch64 leaf-to-C recompiler with explicit guest CPU state.
 
-Only supports verified, memoryless instruction forms. Unsupported forms reject
-an entire candidate. Generated code is experimental and not a playable port.
+Supports restricted bounded memory operations. Unsupported forms reject the
+entire candidate. Generated code is experimental and not a playable port.
 """
 import argparse
 import struct
@@ -130,6 +130,44 @@ def translate(words):
             lines.append("    }")
             continue
 
+        # Signed scaled-offset STP/LDP, W/X general-purpose registers only.
+        # Pre/post-index and SIMD variants remain unsupported.
+        family = word & 0xFFC00000
+        if family in (0x29000000, 0x29400000, 0xA9000000, 0xA9400000):
+            width = 8 if word & 0x80000000 else 4
+            load = bool(word & 0x00400000)
+            rt, rt2, rn = word & 31, (word >> 10) & 31, (word >> 5) & 31
+            imm7 = (word >> 15) & 0x7F
+            offset = (imm7 - 128 if imm7 & 0x40 else imm7) * width
+            base = "s->sp" if rn == 31 else f"s->x[{rn}]"
+            lines.append("    {")
+            lines.append(f"        uint64_t addr = {base} + (uint64_t)({offset}LL);")
+            lines.append("        size_t off0, off1;")
+            lines.append(f"        if (!mario_offset(s, addr, {width}, &off0) ||")
+            lines.append(f"            !mario_offset(s, addr + {width}ULL, {width}, &off1)) {{")
+            lines.append("            s->fault = 1; return;")
+            lines.append("        }")
+            if load:
+                lines.append("        uint64_t value0 = 0, value1 = 0;")
+                lines.append(f"        for (size_t i = 0; i < {width}; ++i) {{")
+                lines.append("            value0 |= (uint64_t)s->mem[off0 + i] << (8 * i);")
+                lines.append("            value1 |= (uint64_t)s->mem[off1 + i] << (8 * i);")
+                lines.append("        }")
+                if rt != 31:
+                    lines.append(f"        s->x[{rt}] = value0;")
+                if rt2 != 31:
+                    lines.append(f"        s->x[{rt2}] = value1;")
+            else:
+                value0 = "0ULL" if rt == 31 else f"s->x[{rt}]"
+                value1 = "0ULL" if rt2 == 31 else f"s->x[{rt2}]"
+                lines.append(f"        uint64_t value0 = {value0}, value1 = {value1};")
+                lines.append(f"        for (size_t i = 0; i < {width}; ++i) {{")
+                lines.append("            s->mem[off0 + i] = (uint8_t)(value0 >> (8 * i));")
+                lines.append("            s->mem[off1 + i] = (uint8_t)(value1 >> (8 * i));")
+                lines.append("        }")
+            lines.append("    }")
+            continue
+
         return None  # unsupported branch, SIMD, memory mode or system instruction
     return None  # missing RET
 
@@ -148,7 +186,8 @@ def candidates(nso, limit, min_instructions=2, allow_memory=False):
             continue
         words = struct.unpack_from(f"<{span // 4}I", nso.image, start)
         if not allow_memory and any((w & 0xFFC00000) in
-                (0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000)
+                (0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000,
+                 0x29000000, 0x29400000, 0xA9000000, 0xA9400000)
                 for w in words):
             continue
         code = translate(words)
@@ -178,7 +217,7 @@ def main():
     parser.add_argument("--min-instructions", type=int, default=2,
                         help="minimum instructions per candidate (default: 2, excludes bare RET)")
     parser.add_argument("--with-memory", action="store_true",
-                        help="include bounded 32/64-bit LDR/STR functions")
+                        help="include bounded 32/64-bit LDR/STR and offset LDP/STP functions")
     args = parser.parse_args()
     if not 1 <= args.limit <= 1000:
         parser.error("--limit must be between 1 and 1000")
