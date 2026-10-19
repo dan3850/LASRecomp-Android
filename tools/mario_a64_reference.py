@@ -28,7 +28,7 @@ def run_reference(code, initial):
 
         # AArch64 move-wide immediate encoding (32/64 bit, shift 0..48).
         move_class = (op >> 23) & 0x3F
-        if move_class in (0b100101, 0b101001, 0b111001):
+        if move_class == 0b100101:
             is_64 = bool(op & (1 << 31))
             op_field = (op >> 29) & 0b11
             if op_field == 0b01:
