@@ -134,6 +134,42 @@ class TestMarioCodegen(unittest.TestCase):
                 self.assertEqual(state.x[1], expected_x1)
                 self.assertEqual(state.nzcv, 0x60000000 if operand == 10 else 0x80000000)
 
+    @unittest.skipUnless(shutil.which("clang"), "Clang required")
+    def test_mov_register_native(self):
+        cases = [
+            (0xAA0103E0, 0x1122334455667788, 0x1122334455667788),
+            (0x2A0103E0, 0x1122334455667788, 0x55667788),
+            (0xAA1F03E0, 0xFFFFFFFFFFFFFFFF, 0),
+            (0x2A1F03E0, 0xFFFFFFFFFFFFFFFF, 0),
+        ]
+        self.assertIsNone(translate([0xAA0107E0, RET]))  # shifted MOV
+        self.assertIsNone(translate([0xAA2103E0, RET]))  # non-MOV ORR
+        generated = [HEADER]
+        for i, (word, _, _) in enumerate(cases):
+            body = translate([word, RET])
+            self.assertIsNotNone(body)
+            generated.extend([f"void mov_{i}(MarioA64State *s) {{", *body, "}"])
+        with tempfile.TemporaryDirectory(prefix="mario-mov-") as tmp:
+            source, library = Path(tmp) / "mov.c", Path(tmp) / "mov.so"
+            source.write_text("\n".join(generated) + "\n", encoding="utf-8")
+            subprocess.run(["clang", "-std=c11", "-O2", "-shared", "-fPIC",
+                            "-Wall", "-Wextra", "-Werror", str(source), "-o", str(library)],
+                           check=True)
+            lib = ctypes.CDLL(str(library))
+            for i, (_, value, expected) in enumerate(cases):
+                state = State()
+                state.x[0] = 0xDEADBEEF
+                state.x[1] = value
+                state.x[30] = 0x12345678
+                state.nzcv = 0xA0000000
+                fn = getattr(lib, f"mov_{i}")
+                fn.argtypes = [ctypes.POINTER(State)]
+                fn(ctypes.byref(state))
+                self.assertEqual(state.x[0], expected)
+                self.assertEqual(state.x[1], value)
+                self.assertEqual(state.nzcv, 0xA0000000)
+                self.assertEqual(state.pc, 0x12345678)
+
     def test_supported_translation(self):
         self.assertIsNotNone(translate([add_imm(0, 0, 0x180), RET]))
         self.assertIsNotNone(translate([add_imm(31, 31, 16), RET]))
