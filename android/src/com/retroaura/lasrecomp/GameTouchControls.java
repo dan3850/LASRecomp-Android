@@ -130,7 +130,9 @@ public final class GameTouchControls extends View {
         float r = radius[i];
         rect.set(cx[i]-r, cy[i]-r, cx[i]+r, cy[i]+r);
         fill(held[i]>0 ? 0xD85B83B6 : 0xA3262D3A);
-        if (i==L || i==R) {
+        if (i<=RIGHT) {
+            drawDpadButton(canvas,i,r);
+        } else if (i==L || i==R) {
             rect.inset(-r*0.38f, r*0.18f);
             canvas.drawRoundRect(rect, r*0.42f, r*0.42f, paint);
             outline(density);
@@ -148,6 +150,15 @@ public final class GameTouchControls extends View {
         Paint.FontMetrics fm = paint.getFontMetrics();
         canvas.drawText(LABELS[i], cx[i],
                 cy[i]-(fm.ascent+fm.descent)*0.5f, paint);
+    }
+
+    private void drawDpadButton(Canvas canvas, int i, float r) {
+        // Directional cross sectors, instead of four unrelated round buttons.
+        float x=cx[i], y=cy[i], half=r*0.76f;
+        rect.set(x-half,y-half,x+half,y+half);
+        canvas.drawRoundRect(rect,r*0.22f,r*0.22f,paint);
+        outline(density);
+        canvas.drawRoundRect(rect,r*0.22f,r*0.22f,paint);
     }
 
     private void drawStick(Canvas canvas, int index, int offset) {
