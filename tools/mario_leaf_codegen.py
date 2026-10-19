@@ -95,6 +95,12 @@ def translate(words):
             target = index + displacement
             lines.append(f"    goto mario_label_{target};")
             continue
+        if (word & 0xFC000000) == 0x14000000:
+            imm = word & 0x03FFFFFF
+            displacement = imm - 0x04000000 if imm & 0x02000000 else imm
+            target = index + displacement
+            lines.append(f"    goto mario_label_{target};")
+            continue
         if (word & 0xFF000010) == 0x54000000:
             imm = (word >> 5) & 0x7FFFF
             displacement = imm - 0x80000 if imm & 0x40000 else imm
