@@ -7,6 +7,7 @@ Manifest format: '<type>\\t<absolute path>\\t<Android resource namespace>'.
 """
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import time
@@ -110,7 +111,17 @@ def main():
     cache = pathlib.Path(sys.argv[1]).expanduser().resolve()
     for group, name, version, extension in ARTIFACTS:
         target = fetch(group, name, version, extension, cache)
-        package = group if extension == "aar" else "-"
+        package = "-"
+        if extension == "aar":
+            with zipfile.ZipFile(target) as archive:
+                try:
+                    manifest = archive.read("AndroidManifest.xml")
+                    found = re.search(rb'\\bpackage\\s*=\\s*["\\\']([^"\\\']+)', manifest)
+                    package = found.group(1).decode("utf-8") if found else group
+                except KeyError:
+                    package = group
+            if name == "radialgamepad" and package == group:
+                package = "com.swordfish.radialgamepad.library"
         print(f"{extension}\\t{target}\\t{package}", flush=True)
 
 if __name__ == "__main__":
