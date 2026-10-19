@@ -96,8 +96,11 @@ def translate(words):
             ]
             lines.append("    {")
             lines.append("        uint64_t flags = s->nzcv;")
-            lines.append("        int n = (flags >> 31) & 1, z = (flags >> 30) & 1;")
-            lines.append("        int c = (flags >> 29) & 1, v = (flags >> 28) & 1;")
+            flag_names = ("n", "z", "c", "v")
+            flag_bits = (31, 30, 29, 28)
+            for name, bit in zip(flag_names, flag_bits):
+                if name in predicates[cond].replace("&&", " ").replace("||", " ").replace("!", " ").replace("==", " ").replace("!=", " ").split():
+                    lines.append(f"        int {name} = (flags >> {bit}) & 1;")
             lines.append(f"        if ({predicates[cond]}) goto mario_label_{target};")
             lines.append("    }")
             continue
