@@ -418,7 +418,7 @@ if [[ -n "$RADIAL_AAR" ]]; then
  [[ -s "$STAGE/radial/radial-classes.jar" ]] || fail "AAR sem classes.jar"
  RADIAL_JARS+=("$STAGE/radial/radial-classes.jar")
  RADIAL_CP="$RADIAL_CP:$STAGE/radial/radial-classes.jar"
- mapfile -d '' -t RADIAL_DEP_FILES < <(find "$RADIAL_DEPS" -maxdepth 1 -type f \\( -name '*.jar' -o -name '*.aar' \\) -print0 | sort -z)
+ mapfile -d '' -t RADIAL_DEP_FILES < <(find "$RADIAL_DEPS" -maxdepth 1 -type f \( -name '*.jar' -o -name '*.aar' \) -print0 | sort -z)
  (( ${#RADIAL_DEP_FILES[@]} > 0 )) || fail "Diretorio de dependencias RadialGamePad vazio"
  index=0
  for dep in "${RADIAL_DEP_FILES[@]}"; do
