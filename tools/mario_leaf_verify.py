@@ -19,7 +19,7 @@ except (ImportError, OSError):
     uc = None
     A = None
 
-from mario_a64_reference import run_reference
+from mario_a64_reference import InstructionLimitExceeded, run_reference
 from mario_leaf_codegen import Nso, candidates, render
 
 CODE_BASE = 0x10000000
@@ -70,15 +70,20 @@ def snapshot(state):
     return tuple(state.x), state.sp, state.pc, state.nzcv & 0xF0000000
 
 
-def run_original(code, initial, original_ram=None, allow_multiple_ret=False):
+def run_original(code, initial, original_ram=None, allow_multiple_ret=False,
+                 allow_backward_branches=False, max_steps=1024):
     if uc is None:
         guest_ram = bytearray(original_ram) if original_ram is not None else None
         try:
             result = run_reference(code, initial, guest_ram, RAM_BASE,
-                                   allow_multiple_ret=allow_multiple_ret)
+                                   allow_multiple_ret=allow_multiple_ret,
+                                   allow_backward_branches=allow_backward_branches,
+                                   max_steps=max_steps)
+        except InstructionLimitExceeded:
+            return None, bytes(guest_ram) if guest_ram is not None else None, 2
         except MemoryError:
-            return None, bytes(guest_ram) if guest_ram is not None else None, True
-        return result, bytes(guest_ram) if guest_ram is not None else None, False
+            return None, bytes(guest_ram) if guest_ram is not None else None, 1
+        return result, bytes(guest_ram) if guest_ram is not None else None, 0
 
     mu = uc.Uc(uc.UC_ARCH_ARM64, uc.UC_MODE_ARM)
     mu.mem_map(CODE_BASE, 0x1000)
@@ -93,8 +98,18 @@ def run_original(code, initial, original_ram=None, allow_multiple_ret=False):
     mu.reg_write(A.UC_ARM64_REG_SP, initial.sp)
     mu.reg_write(A.UC_ARM64_REG_NZCV, initial.nzcv)
     fault = False
+    execution = {"steps": 0, "timed_out": False}
+    if allow_backward_branches:
+        def loop_watchdog(emulator, address, size, user_data):
+            if execution["steps"] >= max_steps:
+                execution["timed_out"] = True
+                emulator.emu_stop()
+            else:
+                execution["steps"] += 1
+        mu.hook_add(uc.UC_HOOK_CODE, loop_watchdog)
     try:
-        mu.emu_start(CODE_BASE, initial.x[30], count=len(code) // 4)
+        mu.emu_start(CODE_BASE, initial.x[30],
+                     count=0 if allow_backward_branches else len(code) // 4)
     except uc.UcError as exc:
         if exc.errno not in (uc.UC_ERR_READ_UNMAPPED, uc.UC_ERR_WRITE_UNMAPPED,
                              uc.UC_ERR_READ_PROT, uc.UC_ERR_WRITE_PROT):
@@ -103,13 +118,15 @@ def run_original(code, initial, original_ram=None, allow_multiple_ret=False):
     memory_result = (bytes(mu.mem_read(RAM_BASE, RAM_SIZE))
                      if original_ram is not None else None)
     if fault:
-        return None, memory_result, True
+        return None, memory_result, 1
+    if execution["timed_out"]:
+        return None, memory_result, 2
     regs = [mu.reg_read(A.UC_ARM64_REG_X0 + i) for i in range(29)]
     regs += [mu.reg_read(A.UC_ARM64_REG_X29), mu.reg_read(A.UC_ARM64_REG_X30)]
     result = (tuple(regs), mu.reg_read(A.UC_ARM64_REG_SP),
               mu.reg_read(A.UC_ARM64_REG_PC),
               mu.reg_read(A.UC_ARM64_REG_NZCV) & 0xF0000000)
-    return result, memory_result, False
+    return result, memory_result, 0
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -124,19 +141,27 @@ def main():
     p.add_argument("--use-fde", action="store_true",
                    help="validate FDE-bounded candidates (experimental)")
     p.add_argument("--multi-ret", action="store_true",
-                   help="opt in to forward-only multiple-RET function validation")
+                   help="opt in to multiple-RET function validation")
+    p.add_argument("--loops", action="store_true",
+                   help="opt in to internal backward branches with a step watchdog")
+    p.add_argument("--max-steps", type=int, default=1024,
+                   help="maximum guest instructions per candidate when --loops is set")
     args = p.parse_args()
     if args.require_unicorn and uc is None:
         p.error("Unicorn Python module unavailable; omit --require-unicorn for reference comparison")
     if not 1 <= args.limit <= 1000 or not 1 <= args.cases <= 100:
         p.error("--limit must be 1..1000 and --cases 1..100")
+    if not 1 <= args.max_steps <= 1000000:
+        p.error("--max-steps must be 1..1000000"
     clang = shutil.which("clang")
     if clang is None:
         p.error("clang is required for native validation")
     nso = Nso(args.nso)
     matches = list(candidates(nso, args.limit, min_instructions=2,
                               allow_memory=args.with_memory, use_fde=args.use_fde,
-                              allow_multiple_ret=args.multi_ret))
+                              allow_multiple_ret=args.multi_ret,
+                              allow_backward_branches=args.loops,
+                              max_steps=args.max_steps))
     if not matches:
         raise SystemExit("No supported leaf candidates found")
     with tempfile.TemporaryDirectory(prefix="mario-leaf-verify-") as dirname:
@@ -148,7 +173,7 @@ def main():
                        check=True)
         dll = ctypes.CDLL(str(library))
         rng = random.Random(args.seed)
-        passed = faults = 0
+        passed = faults = timeouts = 0
         for start, end, _ in matches:
             fn = getattr(dll, f"mario_leaf_{start:08x}")
             fn.argtypes = [ctypes.POINTER(State)]
@@ -158,16 +183,20 @@ def main():
                 state, buf = new_state(rng, serial, args.with_memory)
                 before_ram = bytes(buf) if buf is not None else None
                 expected, expected_ram, expected_fault = run_original(
-                    code, state, before_ram, allow_multiple_ret=args.multi_ret)
+                    code, state, before_ram, allow_multiple_ret=args.multi_ret,
+                    allow_backward_branches=args.loops, max_steps=args.max_steps)
                 fn(ctypes.byref(state))
-                if bool(state.fault) != expected_fault:
-                    raise SystemExit(f"FAIL 0x{start:x} case {serial}: fault mismatch")
+                if int(state.fault) != expected_fault:
+                    raise SystemExit(f"FAIL 0x{start:x} case {serial}: fault code mismatch (native={state.fault}, reference={expected_fault})")
                 if buf is not None and bytes(buf) != expected_ram:
                     raise SystemExit(f"FAIL 0x{start:x} case {serial}: guest memory differs")
                 if expected_fault:
                     if state.pc != CODE_BASE:
                         raise SystemExit(f"FAIL 0x{start:x} case {serial}: PC changed on fault")
-                    faults += 1
+                    if expected_fault == 2:
+                        timeouts += 1
+                    else:
+                        faults += 1
                     continue
                 actual = snapshot(state)
                 if actual != expected:
@@ -185,11 +214,11 @@ def main():
                 passed += 1
         if passed == 0:
             raise SystemExit(f"No successful comparisons; only {faults} guest faults")
-        print(f"PASS: {len(matches)} Mario leaf candidates, {passed} successful CPU comparisons, {faults} matching guest faults")
+        print(f"PASS: {len(matches)} Mario leaf candidates, {passed} successful CPU comparisons, {faults} matching guest memory faults, {timeouts} matching instruction-limit stops")
         print("Compared x0..x30, SP, PC, NZCV" + (" and memory" if args.with_memory else "") + ".")
         print("Backend: Unicorn executing original ARM64" if uc is not None else
               "Backend: independent Python ARM64 subset interpreter (not Unicorn)")
-        print("Still unsupported: many memory variants, SIMD, backward/indirect branches, calls and dynamic linking.")
+        print("Still unsupported: many memory variants, SIMD, indirect/external branches, calls and dynamic linking.")
 
 if __name__ == "__main__":
     main()
