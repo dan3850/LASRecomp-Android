@@ -14,8 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/extrair_mario_xci.py"
 
-FAKE_YANU = r'''#!/usr/bin/env python3
-from pathlib import Path
+FAKE_YANU = r'''from pathlib import Path
 import os
 import sys
 
@@ -47,7 +46,7 @@ class TestYanuXciExtraction(unittest.TestCase):
         self.xci = self.root / "Super Mario 3D World.xci"
         self.xci.write_bytes(b"test-file-does-not-contain-a-real-game")
         self.fake = self.root / "yanu-cli"
-        self.fake.write_text(FAKE_YANU)
+        self.fake.write_text("#!" + sys.executable + "\n" + FAKE_YANU)
         self.fake.chmod(0o755)
         self.log = self.root / "calls.txt"
 
