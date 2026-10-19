@@ -232,9 +232,9 @@ class TestMarioBoot(unittest.TestCase):
         finally:
             altered.unlink()
 
-    def build_harness(self):
+    def build_harness(self, source_text=HARNESS):
         source = self.folder / 'boot.c'
-        source.write_text(HARNESS)
+        source.write_text(source_text)
         executable = self.folder / 'boot'
         sources = ['runtime/gamelib.c', 'runtime/loader.c', 'runtime/dispatch.c', 'runtime/mario_startup.c',
                    'runtime/fnprof.c', 'runtime/mods.c']

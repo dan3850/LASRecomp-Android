@@ -37,6 +37,38 @@ def fname(a):
     return f'f_{a:x}'
 
 
+def resume_name(address):
+    return f'mario_resume_{address:x}'
+
+
+def dispatch_rows(order, entries, resume_entries):
+    rows = {address: fname(address) for address in order}
+    for address in resume_entries:
+        for pc in range(address + 4, entries[address][0], 4):
+            rows[pc] = resume_name(address)
+    return sorted(rows.items())
+
+
+def table_source(name, rows, stable60_menu=False):
+    lines = ['#include "cpu.h"\n']
+    declared = set()
+    for _, function in rows:
+        if function not in declared:
+            lines.append(f'void {function}(Cpu *c);\n')
+            declared.add(function)
+    lines += [f'const uint64_t {name}_fn_addrs[] = {{\n',
+              ',\n'.join(hx(address) for address, _ in rows), '};\n',
+              f'const GuestFn {name}_fn_ptrs[] = {{\n',
+              ',\n'.join(function for _, function in rows), '};\n',
+              f'const uint64_t {name}_fn_count = {len(rows)};\n']
+    if stable60_menu:
+        lines += ['__attribute__((visibility("default")))\n',
+                  'const char *lasgame_mod_stable60_v2(void) { return "' + STABLE60_BUILD_ID + '"; }\n',
+                  '__attribute__((visibility("default")))\n',
+                  'const char *lasgame_mod_menu_v1(void) { return "' + STABLE60_CAPABILITY + '"; }\n']
+    return ''.join(lines)
+
+
 def sanitize(sym):
     return 'hle_' + re.sub(r'[^A-Za-z0-9_]', '_', sym)
 
@@ -404,13 +436,18 @@ class Module:
             return ['return;']
         raise Unsupported(k)
 
-    def emit_function(self, entry, end, labels, tables, hle):
-        out = [f'void {fname(entry)}(Cpu *c) {{']
+    def emit_function(self, entry, end, labels, tables, hle, *, resume=False):
+        if resume and (self.profile != 'mario' or entry in hle):
+            raise ValueError('resume entries require original Mario guest code')
+        function = resume_name(entry) if resume else fname(entry)
+        out = [f'void {function}(Cpu *c) {{']
         if entry in hle:
             out.append(f'    {sanitize(hle[entry])}(c);')
             out.append('}')
             return out
         out.append(f'    FN_ENTER({hx(entry)});')
+        if resume:
+            out.append('    goto L_dispatch;')
         batch = []
         refs = set()
 
@@ -429,7 +466,7 @@ class Module:
 
         # Functions with jump tables also get the all-instruction fallback: a table whose emulation
         # missed some cases then still reaches the right instruction instead of aborting.
-        all_labels = bool(tables)
+        all_labels = resume or bool(tables)
         if all_labels:
             labels = set(range(entry, end, 4))
         rando_here = [a for a in range(entry, end, 4) if a - self.base in self.rando_code]
@@ -499,6 +536,8 @@ class Module:
                 out.append(f'    c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; rt_dispatch(c);')
             elif k == 'br':
                 jt = tables.get(a)
+                if resume and not jt:
+                    jt = 'all'
                 if jt == 'all':
                     out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
                     continue
@@ -520,6 +559,13 @@ class Module:
             out.append(f'    switch (c->pc) {{ {cases} default: break; }}')
             out.append('    __attribute__((musttail)) return rt_dispatch(c);')
         out.append('}')
+        if resume:
+            # Direct C calls enter at the original start regardless of a stale
+            # Cpu.pc left by another dispatcher call. Interior table entries
+            # call the shared body with the exact PC supplied by rt_dispatch.
+            out += [f'void {fname(entry)}(Cpu *c) {{',
+                    f'    c->pc = {hx(entry)};',
+                    f'    __attribute__((musttail)) return {function}(c);', '}']
         self._refs = refs
         return out
 
@@ -584,6 +630,8 @@ def main():
                     help='select title patches; mario emits original instructions')
     ap.add_argument('--expect-build-id', help='reject another input version before writing output')
     ap.add_argument('--report', help='write a generation manifest (does not imply runtime compatibility)')
+    ap.add_argument('--resume-at', action='append', type=lambda value: int(value, 0), default=[],
+                    help='Mario: register interior instruction entries for the containing block')
     ap.add_argument('--chunk', type=int, default=1500)  # functions per file at most
     ap.add_argument('--chunk-bytes', type=int, default=1500000)  # and about this much C (even compile times)
     ap.add_argument('--big-fn', type=int, default=100000)  # bytes of C from which a function gets its own file
@@ -596,6 +644,8 @@ def main():
                     help='generate the original instructions without Stable 60fps hooks')
     ap.set_defaults(stable60_menu=None)
     args = ap.parse_args()
+    if args.resume_at and args.profile != 'mario':
+        ap.error('--resume-at is restricted to the Mario test profile')
     if args.chunk < 1 or args.chunk_bytes < 1 or args.big_fn < 1 or args.limit < 0:
         ap.error('chunk sizes must be positive and limit must be nonnegative')
 
@@ -674,6 +724,12 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
     order = sorted(entries)
+    resume_entries = set()
+    for target in args.resume_at:
+        index = bisect.bisect_right(order, target) - 1
+        if not m.in_text(target) or index < 0:
+            ap.error(f'resume target {target:#x} is outside compiled text')
+        resume_entries.add(order[index])
     if args.limit:
         order = order[:args.limit]
     nchunks = 0
@@ -689,7 +745,7 @@ def main():
                 a = order[ci]
                 ci += 1
                 end, labels, tables = entries[a]
-                lines = m.emit_function(a, end, labels, tables, hle)
+                lines = m.emit_function(a, end, labels, tables, hle, resume=a in resume_entries)
                 r = getattr(m, '_refs', set())
                 m._refs = set()
             n = sum(len(l) + 1 for l in lines)
@@ -715,34 +771,18 @@ def main():
         mm = re.fullmatch(re.escape(args.name) + r'_(\d{3,})\.c', fn)
         if mm and int(mm.group(1)) >= nchunks:
             os.remove(os.path.join(args.outdir, fn))
-    import io
-    with io.StringIO() as f:
-        f.write('#include "cpu.h"\n')
-        for a in order:
-            f.write(f'void {fname(a)}(Cpu *c);\n')
-        f.write(f'const uint64_t {args.name}_fn_addrs[] = {{\n')
-        f.write(',\n'.join(hx(a) for a in order))
-        f.write('};\n')
-        f.write(f'const GuestFn {args.name}_fn_ptrs[] = {{\n')
-        f.write(',\n'.join(fname(a) for a in order))
-        f.write('};\n')
-        f.write(f'const uint64_t {args.name}_fn_count = {len(order)};\n')
-        if stable60_menu:
-            # The Android loader and import screen require this exact marker.
-            # Export from main_table.c so no separate patch-tag object is needed.
-            f.write('__attribute__((visibility("default")))\n')
-            f.write('const char *lasgame_mod_stable60_v2(void) { return "'
-                    + STABLE60_BUILD_ID + '"; }\n')
-            f.write('__attribute__((visibility("default")))\n')
-            f.write('const char *lasgame_mod_menu_v1(void) { return "'
-                    + STABLE60_CAPABILITY + '"; }\n')
-        write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
+    rows = dispatch_rows(order, entries, resume_entries & set(order))
+    write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'),
+                     table_source(args.name, rows, stable60_menu))
     if args.report:
         report = {
             'schema': 1, 'profile': m.profile, 'module': m.name,
             'build_id': m.nso.build_id, 'base': hex(m.base), 'simd': args.simd,
             'image_bytes': m.nso.size, 'text_bytes': m.nso.text[1],
-            'functions': len(order), 'total_functions': len(entries),
+            'functions': len(rows), 'total_functions': len(entries) + len(rows) - len(order),
+            'primary_functions': len(order),
+            'resume_regions': [{'entry': hex(a), 'end': hex(entries[a][0])}
+                               for a in sorted(resume_entries & set(order))],
             'complete': len(order) == len(entries),
             'sources': [f'{args.name}_{i:03d}.c' for i in range(nchunks)] + [f'{args.name}_table.c'],
             'stats': dict(m.stats), 'unsupported_samples': m.unsupported_samples,

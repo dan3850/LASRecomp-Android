@@ -11,12 +11,22 @@ cd "$MARIO_ROOT"
 MARIO_GAME="${1:-/storage/emulated/0/SwitchRoms/Super-extraido}"
 MARIO_CODE="$MARIO_ROOT/build/private-mario-full-test"
 MARIO_BOOT="$MARIO_ROOT/build/mario-android-boot"
-python3 tools/mario_boot_profile.py --report "$MARIO_CODE/build-report.json" \
-    --game "$MARIO_GAME" --output "$MARIO_BOOT/profile"
 echo "BRANCH=$(git branch --show-current)"
 echo "HEAD=$(git rev-parse HEAD)"
+if [[ -n "${MARIO_RESUME_AT:-}" ]]; then
+    read -r -a MARIO_RESUME_POINTS <<< "$MARIO_RESUME_AT"
+    MARIO_RESUME_ARGS=()
+    for MARIO_POINT in "${MARIO_RESUME_POINTS[@]}"; do
+        MARIO_RESUME_ARGS+=(--resume-at "$MARIO_POINT")
+    done
+    python3 -u tools/mario_resume_repair.py --game "$MARIO_GAME" --output "$MARIO_CODE" \
+        --jobs "${MARIO_JOBS:-2}" "${MARIO_RESUME_ARGS[@]}" \
+        2>&1 | tee -a "$MARIO_CODE/reentrada.log"
+fi
+python3 tools/mario_boot_profile.py --report "$MARIO_CODE/build-report.json" \
+    --game "$MARIO_GAME" --output "$MARIO_BOOT/profile"
 echo "Reutilizando biblioteca existente: $MARIO_CODE/libmario_test.so"
-echo "Nenhum dos objetos main/sdk sera recompilado por este comando."
+echo "Objetos main/sdk fora dos blocos de reentrada solicitados permanecem em cache."
 export LASRECOMP_BUILD_OUT="$MARIO_BOOT"
 export LASRECOMP_MARIO_PROFILE="$MARIO_BOOT/profile/mario_profile_config.h"
 export LASRECOMP_MANIFEST="$MARIO_ROOT/android/mario/AndroidManifest.xml"

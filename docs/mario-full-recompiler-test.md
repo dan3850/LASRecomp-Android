@@ -99,6 +99,40 @@ precedência sobre a execução direta dos respectivos arrays.
 A correção da entrada não exige regenerar a biblioteca: o perfil de compilação
 nativa mantém as mesmas flags e os objetos sem alterações continuam em cache.
 
+### Reentrada em uma instrução interna
+
+Se o dispatcher parar em um endereço interno que ainda não consta da tabela,
+o teste aceita um reparo explícito por módulo e offset. Exemplo do bloqueio em
+`700452b89c`, com SDK em `7004000000`:
+
+```bash
+MARIO_RESUME_AT="sdk:0x52b89c" \
+  bash compilar-mario-boot-termux.sh /storage/emulated/0/SwitchRoms/Super-extraido
+```
+
+O reparo confere os hashes da biblioteca, dos NSOs e dos C gerados, localiza o
+bloco recompilado que contém a instrução e registra suas entradas internas.
+A execução entra no PC solicitado, preservando registradores e memória; uma
+chamada normal continua começando na entrada original. O código do bloco é
+compartilhado pelas entradas, e instruções não suportadas continuam como traps.
+Isso permite saltos de tabelas para casos internos, inclusive entre fragmentos,
+sem redirecionar para o prólogo da função ou substituir `vfprintf` por um stub.
+
+Somente o C que contém o bloco e sua tabela precisam ser recompilados. O cache
+antigo também pode exigir reconstruir `mario_test_entry.c`, que inclui
+`gamelib.h`. Esse header não é uma dependência dos chunks gerados: suas chaves
+antigas só são reaproveitadas quando fonte, headers usados, compilador e flags
+coincidem, variando exclusivamente o hash histórico desse header não utilizado.
+A identidade da biblioteca de origem é preservada para manter o cache Android;
+o SHA256 e os relatórios registram a biblioteca reparada. Não há regeneração
+dos demais chunks nem limpeza de caches.
+
+O plano fica em `build/private-mario-full-test/resume-plan.json`, vinculado aos
+hashes dos NSOs, e é respeitado por futuras gerações completas. Pedir outra
+instrução do mesmo bloco reparado não o recompila novamente. Um erro durante
+o reparo restaura a biblioteca concluída, as fontes e os metadados anteriores;
+uma transação interrompida é recuperada na próxima chamada do reparo.
+
 O perfil Mario desativa os callbacks de gameplay, patches do randomizer,
 leituras de câmera e overlays que dependem dos endereços do Zelda. O menu do
 teste fica restrito a controles, vídeo, áudio e saída.

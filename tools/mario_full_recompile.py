@@ -72,10 +72,12 @@ def module_bases(main_size, sdk_size):
     return {'main': MAIN_BASE, 'sdk': sdk}
 
 
-def generate(name, source, folder, info, base, simd, generator_id):
+def generate(name, source, folder, info, base, simd, generator_id, resume_targets=()):
     folder.mkdir(parents=True, exist_ok=True)
     spec = {'input': info, 'base': hex(base), 'simd': simd,
             'profile': 'mario', 'generator': generator_id}
+    if resume_targets:
+        spec['resume_targets'] = [hex(value) for value in resume_targets]
     key = digest(spec)
     stamp_path, report_path = folder / 'generation-state.json', folder / 'generation.json'
     stamp, report = read_json(stamp_path), read_json(report_path)
@@ -94,7 +96,8 @@ def generate(name, source, folder, info, base, simd, generator_id):
         subprocess.run([sys.executable, str(ROOT / 'tools/gen.py'), name,
                         str(source), hex(base), str(folder), '--profile', 'mario',
                         '--expect-build-id', info['build_id'], '--no-stable60-menu',
-                        '--simd', simd, '--report', str(report_path)], check=True)
+                        '--simd', simd, '--report', str(report_path),
+                        *(arg for value in resume_targets for arg in ('--resume-at', hex(value)))], check=True)
         report = read_json(report_path)
         if not report.get('complete') or report.get('functions', 0) == 0:
             raise ValueError(f'{name}: incomplete generation; no library will be linked')
@@ -116,6 +119,26 @@ def nm_symbols(nm, library, mode):
                    for line in result.stdout.splitlines() if line.split()})
 
 
+def legacy_gamelib_hashes():
+    """Recover old cache keys for generated C, which never includes gamelib.h.
+
+    Reuse still requires identical source, used headers, compiler and flags.
+    Only this unused header's historical hash may differ. Entry C includes
+    gamelib.h and is deliberately excluded from this compatibility path.
+    """
+    commits = subprocess.run(['git', 'log', '-64', '--format=%H', '--', 'runtime/gamelib.h'],
+                             cwd=ROOT, capture_output=True, text=True)
+    if commits.returncode:
+        return set()
+    hashes = set()
+    for commit in commits.stdout.splitlines():
+        header = subprocess.run(['git', 'show', commit + ':runtime/gamelib.h'],
+                                cwd=ROOT, capture_output=True)
+        if not header.returncode:
+            hashes.add(hashlib.sha256(header.stdout).hexdigest())
+    return hashes
+
+
 def compile_library(out, sources, identity, jobs, cc, nm, host_test, previous):
     target = platform.machine().lower()
     termux = target in ('aarch64', 'arm64') and os.environ.get('PREFIX') == '/data/data/com.termux/files/usr'
@@ -127,6 +150,9 @@ def compile_library(out, sources, identity, jobs, cc, nm, host_test, previous):
         raise ValueError('clang and llvm-nm (or nm) are required')
     version = subprocess.check_output([compiler, '--version'], text=True)
     headers = {p: file_hash(ROOT / p) for p in HEADERS}
+    generated_headers = {p: sha for p, sha in headers.items() if p != 'runtime/gamelib.h'}
+    old_headers = [dict(headers, **{'runtime/gamelib.h': sha}) for sha in
+                   legacy_gamelib_hashes() | {headers['runtime/gamelib.h']}]
     flags = ['-std=gnu11', '-O1', '-g0', '-fPIC', '-fno-strict-aliasing',
              '-fvisibility=hidden', '-Wno-unused-label', '-Wno-return-type',
              '-I' + str(ROOT / 'runtime')]
@@ -137,10 +163,16 @@ def compile_library(out, sources, identity, jobs, cc, nm, host_test, previous):
         obj = out / 'objects' / relative.with_suffix('.o')
         signature = obj.with_suffix('.json')
         source_flags = flags if source in sources else [*flags, '-DGAMELIB_ID=' + json.dumps(identity)]
-        key = digest({'source': file_hash(source), 'headers': headers,
-                      'compiler': compiler, 'version': version, 'flags': source_flags})
-        if obj.is_file() and obj.stat().st_size > 0 and read_json(signature).get('key') == key:
-            return obj, key, False
+        spec = {'source': file_hash(source), 'headers': generated_headers if source in sources else headers,
+                'compiler': compiler, 'version': version, 'flags': source_flags}
+        key = digest(spec)
+        if obj.is_file() and obj.stat().st_size > 0:
+            prior = read_json(signature).get('key')
+            if prior == key:
+                return obj, key, False
+            if source in sources and any(prior == digest(dict(spec, headers=old)) for old in old_headers):
+                write_json(signature, {'key': key})
+                return obj, key, False
         obj.parent.mkdir(parents=True, exist_ok=True)
         tmp = obj.with_suffix('.o.partial')
         print(f'CC {relative}', flush=True)
@@ -175,7 +207,7 @@ def compile_library(out, sources, identity, jobs, cc, nm, host_test, previous):
         undefined = nm_symbols(nm, tmp, '--undefined-only')
         if 'mario_test_tables' not in defined:
             raise ValueError('missing mario_test_tables export')
-        missing_guest = [s for s in undefined if re.fullmatch(r'f_[0-9a-f]+', s)]
+        missing_guest = [s for s in undefined if re.fullmatch(r'(?:f_|mario_resume_)[0-9a-f]+', s)]
         if missing_guest:
             raise ValueError('unlinked guest functions: ' + ', '.join(missing_guest[:20]))
         # These are deliberately resolved by the future host runtime, not by fake stubs here.
@@ -223,11 +255,18 @@ def main(argv=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             parser.error('another build is already using this output directory')
+        if (out / 'resume-transaction').exists():
+            from mario_resume_repair import recover
+            recover(out)
         previous = read_json(out / 'build-report.json')
         report = {'schema': 1, 'profile': 'mario', 'status': 'generating', 'simd': simd,
                   'boot_tested': False, 'runtime_ready': False}
         write_json(out / 'build-report.json', report)
         inputs = {name: input_info(exefs / name) for name in ('main', 'sdk')}
+        resume_plan = read_json(out / 'resume-plan.json')
+        if resume_plan and (resume_plan.get('schema') != 1 or resume_plan.get('inputs') !=
+                            {name: info['sha256'] for name, info in inputs.items()}):
+            raise ValueError('resume plan belongs to different NSOs; preserve it separately before changing game versions')
         bases = module_bases(inputs['main']['image_bytes'], inputs['sdk']['image_bytes'])
         analysis_backend = 'unicorn' if has_unicorn() else 'local-dispatch'
         generator_id = digest({'sources': {p: file_hash(ROOT / p) for p in GENERATOR_FILES},
@@ -246,7 +285,9 @@ def main(argv=None):
         sources = []
         for name in ('main', 'sdk'):
             module, generated = generate(name, exefs / name, out / 'generated' / name,
-                                         inputs[name], bases[name], simd, generator_id)
+                                         inputs[name], bases[name], simd, generator_id,
+                                         [bases[name] + int(value, 0) for value in
+                                          resume_plan.get('targets', {}).get(name, [])])
             report['modules'][name] = module
             sources.extend(generated)
         report['status'] = 'generated_requires_runtime'
