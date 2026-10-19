@@ -38,6 +38,15 @@ uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
 
+// Frame-critical host threads. Android uses a soft scheduler-priority hint only;
+// no CPU affinity/pinning, which would interfere with cpusets and thermal policy.
+enum { PLAT_PERF_GAME = 0, PLAT_PERF_RENDER = 1, PLAT_PERF_VSYNC = 2 };
+#ifdef __ANDROID__
+void plat_thread_perf_core(int role);
+#else
+static inline void plat_thread_perf_core(int role) { (void)role; }
+#endif
+
 // ---- process
 void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
