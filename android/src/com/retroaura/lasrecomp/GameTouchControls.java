@@ -271,6 +271,8 @@ public final class GameTouchControls extends View {
         int control=pointerToControl.get(pointerId,-1);
         if (control==LEFT_STICK) {
             moveStick(control,x,y);
+        } else if (control==HOME) {
+            // HOME is a momentary menu key, owned by its initial pointer.
         } else if (control>=0) {
             int next=hitButton(x,y);
             if (next!=control) {
