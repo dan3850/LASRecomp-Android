@@ -1,0 +1,83 @@
+LASRecomp Android — THIRD-PARTY LICENSES AND SOURCE NOTICES
+===========================================================
+License notices for the Termux-built APK. These are NOT permissions to
+redistribute Nintendo game data, proprietary game libraries or firmware.
+
+Project source (LAS Recomp): Copyright (c) 2026 Peiikai.
+License: MIT. Exact text: assets/licenses/LASRecomp-MIT.txt
+Source: https://github.com/peiikai/LASRecomp
+
+Original Android controller UI reference (Ryujinx Neo / Kenji-NX):
+Source: https://github.com/Sunshinin11/Ryujinx_Neo
+The original repository's LICENSE.txt identifies the Kenji-NX Team and
+Contributors and grants the MIT license. Our Android controller layout and
+input IDs are adapted with attribution. Exact license text is included at
+assets/licenses/Ryujinx-Neo-MIT.txt.
+This application is not affiliated with Ryujinx Neo, Ryujinx, Kenji-NX or Nintendo.
+
+RadialGamePad (original Swordfish90 Android gamepad overlay, version 2.0.0):
+Source: https://github.com/Swordfish90/RadialGamePad
+License: GNU GPL version 3 (source headers: GPL-3.0-or-later).
+The actual library code is included in classes.dex in Neo builds.
+Exact license text: assets/licenses/RadialGamePad-GPL-3.0.txt
+This is a copyleft library. Distributing an APK that combines it with the app
+requires careful GPL compliance, potentially including making the complete
+corresponding source of the combined work available under GPL-compatible terms.
+Attribution and a copied license alone are NOT sufficient for distribution.
+
+AndroidX (multiple artifacts) and Kotlin/Kotlin Coroutines:
+Sources: https://android.googlesource.com/platform/frameworks/support/
+         https://github.com/JetBrains/kotlin
+         https://github.com/Kotlin/kotlinx.coroutines
+License: Apache License, version 2.0. See
+assets/licenses/AndroidX-Apache-2.0.txt.
+Exact installed Maven coordinates for a Neo build are listed in
+assets/licenses/NEO_COMPONENTS.txt; upstream notices present in jars/aar files
+are copied to assets/licenses/embedded/ when available.
+
+SDL3 (release-3.2.22):
+Source: https://github.com/libsdl-org/SDL
+License: zlib, assets/licenses/SDL3-zlib.txt
+
+FFmpeg (n7.1.1, configured without --enable-gpl):
+Source: https://github.com/FFmpeg/FFmpeg
+License: LGPL-2.1-or-later for the FFmpeg configuration used.
+Text: assets/licenses/FFmpeg-LGPL-2.1.txt
+FFmpeg is linked statically into the game runtime. Redistributors must review
+LGPL obligations, including corresponding source and relinking requirements.
+See FFmpeg upstream licensing documents; the license text here alone is NOT a
+complete compliance solution.
+
+Shaderc (v2024.4):
+Source: https://github.com/google/shaderc
+License: Apache License, version 2.0 (plus licenses of its subcomponents).
+Text: assets/licenses/AndroidX-Apache-2.0.txt
+
+Vulkan Memory Allocator (v3.1.0):
+Source: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+License: MIT, assets/licenses/VMA-MIT.txt
+
+volk (1.3.295):
+Source: https://github.com/zeux/volk
+License: MIT, assets/licenses/Volk-MIT.txt
+
+Dear ImGui:
+Source: https://github.com/ocornut/imgui
+License: MIT, assets/licenses/Dear-ImGui-MIT.txt
+
+SMAA:
+Source: https://github.com/iryoku/smaa
+License: MIT, assets/licenses/SMAA-MIT.txt
+
+AdrenoTools:
+Source: https://github.com/bylaws/libadrenotools
+License: BSD-2-Clause, assets/licenses/AdrenoTools-BSD-2-Clause.txt
+
+Other components may contain additional copyright and notice requirements,
+including the shader compiler submodules and runtime libraries. This inventory
+is an initial notice bundle, NOT a complete license audit or legal clearance.
+Do not distribute a public/closed-source APK on the basis of these files alone.
+
+The Nintendo game, ROMFS, EXEFS, system firmware, cryptographic keys, and any
+game-derived native libraries are NOT supplied by this repository or these
+notices and must NOT be committed or repackaged for public distribution.
