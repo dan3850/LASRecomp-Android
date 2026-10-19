@@ -76,6 +76,26 @@ class TestYanuXciExtraction(unittest.TestCase):
         self.assertEqual(self.xci.read_bytes(), original)
         self.assertEqual(self.calls(), ["convert", "unpack"])
 
+    def test_current_termux_command_yanu_is_autodetected(self):
+        # Current Yanu bootstrap explicitly replaced yanu-cli with yanu.
+        current = self.root / "yanu"
+        current.write_text("#!" + sys.executable + "\\n" + FAKE_YANU)
+        current.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = str(self.root) + os.pathsep + env.get("PATH", "")
+        env["FAKE_YANU_LOG"] = str(self.log)
+        result = subprocess.run(
+            [sys.executable, str(TOOL), str(self.xci)],
+            capture_output=True, text=True, env=env, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["convert", "unpack"])
+
+    def test_explicit_existing_yanu_cli_remains_supported(self):
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["convert", "unpack"])
+
     def test_second_invocation_does_not_convert_again(self):
         self.assertEqual(self.run_tool().returncode, 0)
         result = self.run_tool()
