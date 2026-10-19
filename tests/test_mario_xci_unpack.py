@@ -90,6 +90,16 @@ class TestYanuXciExtraction(unittest.TestCase):
         current = self.root / "yanu"
         current.write_text("#!" + sys.executable + "\n" + FAKE_YANU)
         current.chmod(0o755)
+        proot = self.root / "proot-distro"
+        proot.write_text(
+            "#!" + sys.executable + "\n"
+            + "import os, sys\n"
+            + "a = sys.argv[1:]\n"
+            + "os.execv(" + repr(sys.executable) + ", ["
+            + repr(sys.executable) + ", " + repr(str(self.fake))
+            + "] + a[a.index('--') + 2:])\n"
+        )
+        proot.chmod(0o755)
         env = os.environ.copy()
         env["PATH"] = str(self.root) + os.pathsep + env.get("PATH", "")
         env["FAKE_YANU_LOG"] = str(self.log)
@@ -156,7 +166,7 @@ class TestYanuXciExtraction(unittest.TestCase):
         # The installed wrapper must never run. Direct proot-distro calls
         # the inner Yanu CLI without bash -c or argument splitting.
         wrapper = self.root / "yanu"
-        wrapper.write_text("#!/bin/sh\\nexit 71\n")
+        wrapper.write_text("#!/bin/sh\nexit 71\n")
         wrapper.chmod(0o755)
         proot = self.root / "proot-distro"
         proot.write_text(
