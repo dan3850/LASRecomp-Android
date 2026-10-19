@@ -244,10 +244,9 @@ echo "Vulkan headers: $VULKAN_INCLUDE"
 step "Compilando Vulkan/ImGui"
 mkdir -p "$OBJ/inc"
 python3 tools/vulkan-cache-build-id.py --output "$OBJ/inc/vulkan_cache_build_id.h"
-LC_ALL=C tr -d '\r' < third_party/smaa/SMAA.hlsl \
- | LC_ALL=C tr '\200-\377' '?' \
- | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$/\n"/' \
- > "$OBJ/inc/smaa_hlsl.inc"
+python3 tools/embed_smaa_hlsl.py third_party/smaa/SMAA.hlsl "$OBJ/inc/smaa_hlsl.inc" ||
+ fail "Falha ao gerar strings C do shader SMAA"
+
 INC=(-idirafter "$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Ithird_party/imgui \
  -Ithird_party/imgui/backends -Ithird_party/smaa/Textures \
  -I"$SDL_HEADERS" -I"$DEPS/shaderc/libshaderc/include" \
