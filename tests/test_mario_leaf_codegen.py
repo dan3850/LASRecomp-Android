@@ -42,7 +42,7 @@ class State(ctypes.Structure):
 class TestMarioCodegen(unittest.TestCase):
     def test_reject_unsupported_and_early_ret(self):
         for words in ([RET, RET], [0x14000000, RET], [0xF8400400, RET],
-                      [0xB1000400, RET], [0x52800000 | (2 << 21), RET]):
+                      [0x14000001, RET], [0x52800000 | (2 << 21), RET]):
             with self.subTest(words=words):
                 self.assertIsNone(translate(words))
 
