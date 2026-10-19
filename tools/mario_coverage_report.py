@@ -20,11 +20,11 @@ def analyze(nso, max_bytes=128, examples=5):
     counts["discovered"] = len(starts)
     blockers = Counter()
     samples = {}
-    accepted_by_length = Counter()
-    rejected_by_length = Counter()
     md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
     total_instructions = 0
     accepted_instructions = 0
+    rejected_with_early_ret = 0
+    rejected_with_zero_word = 0
     for i, start in enumerate(starts):
         end = starts[i + 1] if i + 1 < len(starts) else text_hi
         size = end - start
@@ -43,15 +43,20 @@ def analyze(nso, max_bytes=128, examples=5):
         if translate(words) is not None:
             counts["accepted"] += 1
             accepted_instructions += len(words)
-            accepted_by_length[len(words)] += 1
             continue
         counts["rejected"] += 1
-        rejected_by_length[len(words)] += 1
+        if 0xD65F03C0 in words[:-1]:
+            rejected_with_early_ret += 1
+        if 0 in words:
+            rejected_with_zero_word += 1
         # Diagnostic histogram, not an assertion that every occurrence blocks translation.
         # Report instruction forms absent from the supported subset by probing each word
         # with a synthetic final RET. Branches need their original context to validate.
+        seen = set()
         for j, word in enumerate(words):
-            if word == 0xD65F03C0 and j == len(words) - 1:
+            if word == 0xD65F03C0:
+                continue
+            if word == 0:
                 continue
             if word == 0xD503201F:
                 continue
@@ -64,9 +69,14 @@ def analyze(nso, max_bytes=128, examples=5):
             code = struct.pack("<I", word)
             decoded = list(md.disasm(code, start + j * 4))
             mnemonic = decoded[0].mnemonic if decoded else "invalid"
+            if mnemonic in seen:
+                continue
+            seen.add(mnemonic)
             blockers[mnemonic] += 1
             if len(samples.get(mnemonic, [])) < examples:
                 samples.setdefault(mnemonic, []).append((start + j * 4, word))
+    counts["early_ret"] = rejected_with_early_ret
+    counts["zero_word"] = rejected_with_zero_word
     return counts, blockers, samples, total_instructions, accepted_instructions
 
 
@@ -88,7 +98,8 @@ def main():
     print(f"Eligible: {counts['eligible']}; accepted: {counts['accepted']}; rejected: {counts['rejected']}")
     print(f"Excluded: short={counts['too_short']} long={counts['too_long']} invalid={counts['invalid_boundary']}")
     print(f"Eligible instructions: {total}; accepted instructions: {accepted}")
-    print("Unsupported instruction mnemonic occurrences in rejected candidates (not unique blockers):")
+    print(f"Rejected candidates with early RET: {counts['early_ret']}; containing zero word: {counts['zero_word']}")
+    print("Rejected candidates containing each unsupported mnemonic (not unique blockers):")
     for mnemonic, count in blockers.most_common(args.top):
         addresses = ", ".join(f"0x{addr:x}(0x{word:08x})" for addr, word in samples.get(mnemonic, ()))
         print(f"  {mnemonic:12s} {count:7d}  {addresses}")
