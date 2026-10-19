@@ -736,7 +736,20 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x26:  // Break
         if (x[0] & 0x80000000u) { LOG("[kernel] Break notification %llx\n", x[0]); x[0] = R_OK; break; }
 #if defined(__ANDROID__) && defined(LASRECOMP_MARIO_TEST)
-        mario_abort_diag(x[1], x[2], c->sp, x[29]);
+        {
+            uint64_t stack_end = 0;
+            pthread_mutex_lock(&g_klock);
+            for (int i = 0; i < nregions; i++) {
+                Region *r = &regions[i];
+                if ((r->perm & 1) && c->sp >= r->addr && c->sp - r->addr < r->size) {
+                    stack_end = r->addr + r->size;
+                    if (stack_end - c->sp > 0x10000) stack_end = c->sp + 0x10000;
+                    break;
+                }
+            }
+            mario_abort_diag(x[1], x[2], c->sp, x[29], stack_end);
+            pthread_mutex_unlock(&g_klock);
+        }
 #endif
         FATAL("svcBreak(reason=%llx, info=%llx, size=%llx) at %llx\n", x[0], x[1], x[2], pc);
     case 0x27: debug_string(x[0], x[1]); x[0] = R_OK; break;

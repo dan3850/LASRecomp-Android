@@ -16,6 +16,12 @@ class MarioAbortDiagnostics(unittest.TestCase):
 #define GUEST_LO 0x7000000000ull
 #define GUEST_HI 0x7320000000ull
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
+#ifdef BLOCK_OS_READERS
+#include <fcntl.h>
+#include <unistd.h>
+#define open(...) (-1)
+#define syscall(...) (-1L)
+#endif
 #include "mario_abort_diag.h"
 int main(void) {
     void *memory = mmap((void *)GUEST_LO, 4096, PROT_READ | PROT_WRITE,
@@ -26,10 +32,10 @@ int main(void) {
     uint64_t *frame = (void *)(GUEST_LO + 512);
     frame[0] = GUEST_LO + 528; frame[1] = 0x7004144b78;
     frame[2] = GUEST_LO + 512; frame[3] = 0x7000123450;
-    mario_abort_diag(GUEST_LO, 4, GUEST_LO, GUEST_LO + 512);
+    mario_abort_diag(GUEST_LO, 4, GUEST_LO, GUEST_LO + 512, GUEST_LO + 4096);
     munmap(memory, 4096);
-    mario_abort_diag(GUEST_LO, 4, GUEST_LO, GUEST_LO + 512);
-    mario_abort_diag(0, 4, UINT64_MAX - 8, UINT64_MAX);
+    mario_abort_diag(GUEST_LO, 4, GUEST_LO, GUEST_LO + 512, 0);
+    mario_abort_diag(0, 4, UINT64_MAX - 8, UINT64_MAX, 0);
     return 0;
 }
 '''
@@ -46,6 +52,14 @@ int main(void) {
             self.assertIn('lr=7000123450', result.stderr)
             self.assertEqual(result.stderr.count('[mario-abort] frame '), 2)
             self.assertEqual(result.stderr.count('info32='), 1)
+            subprocess.run(['cc', '-std=gnu11', '-Wall', '-Werror', '-Wno-unused-variable',
+                            '-DBLOCK_OS_READERS', '-I' + str(ROOT / 'runtime'),
+                            str(path), '-o', str(executable)], check=True)
+            blocked = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(blocked.returncode, 0, blocked.stderr)
+            self.assertIn('module=153 description=123', blocked.stderr)
+            self.assertEqual(blocked.stderr.count('[mario-abort] frame '), 2)
+            self.assertEqual(blocked.stderr.count('info32='), 1)
 
 
 if __name__ == '__main__':
