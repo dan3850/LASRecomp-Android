@@ -79,6 +79,13 @@ def translate(words):
             if target <= index or target >= len(words):
                 return None  # forward-only, inside this function
             targets.add(target)
+        if (word & 0x7E000000) == 0x36000000:
+            imm = (word >> 5) & 0x3FFF
+            displacement = imm - 0x4000 if imm & 0x2000 else imm
+            target = index + displacement
+            if target <= index or target >= len(words):
+                return None
+            targets.add(target)
         if (word & 0xFC000000) == 0x14000000:
             imm = word & 0x03FFFFFF
             displacement = imm - 0x04000000 if imm & 0x02000000 else imm
@@ -100,6 +107,16 @@ def translate(words):
             displacement = imm - 0x04000000 if imm & 0x02000000 else imm
             target = index + displacement
             lines.append(f"    goto mario_label_{target};")
+            continue
+        if (word & 0x7E000000) == 0x36000000:
+            imm = (word >> 5) & 0x3FFF
+            displacement = imm - 0x4000 if imm & 0x2000 else imm
+            target = index + displacement
+            rt = word & 31
+            bit = ((word >> 31) << 5) | ((word >> 19) & 31)
+            value = "0ULL" if rt == 31 else f"s->x[{rt}]"
+            op = "!=" if word & 0x01000000 else "=="
+            lines.append(f"    if ((({value} >> {bit}) & 1ULL) {op} 0ULL) goto mario_label_{target};")
             continue
         if (word & 0xFF000010) == 0x54000000:
             imm = (word >> 5) & 0x7FFFF
