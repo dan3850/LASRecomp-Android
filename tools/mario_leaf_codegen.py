@@ -146,6 +146,37 @@ def translate(words):
             lines.append(f"    s->x[{dest}] = {expression};")
             continue
 
+        # ADDS/SUBS immediate, including CMP alias (SUBS with Rd=31).
+        family = word & 0x7F000000
+        if family in (0x31000000, 0x71000000):
+            shift = (word >> 22) & 3
+            if shift > 1:
+                return None
+            width = 64 if word & 0x80000000 else 32
+            mask = "UINT64_MAX" if width == 64 else "UINT32_MAX"
+            dest, source = word & 31, (word >> 5) & 31
+            src = "s->sp" if source == 31 else f"s->x[{source}]"
+            imm = ((word >> 10) & 0xFFF) << (12 if shift else 0)
+            subtract = family == 0x71000000
+            lines.append("    {")
+            lines.append(f"        uint64_t a = {src} & {mask};")
+            lines.append(f"        uint64_t b = 0x{imm:x}ULL;")
+            lines.append(f"        uint64_t result = (a {'-' if subtract else '+'} b) & {mask};")
+            lines.append(f"        uint64_t sign = 1ULL << {width - 1};")
+            lines.append("        uint64_t n = (result & sign) != 0;")
+            lines.append("        uint64_t z = result == 0;")
+            if subtract:
+                lines.append("        uint64_t carry = a >= b;")
+                lines.append("        uint64_t overflow = ((a ^ b) & (a ^ result) & sign) != 0;")
+            else:
+                lines.append(f"        uint64_t carry = a > ({mask} - b);")
+                lines.append("        uint64_t overflow = (~(a ^ b) & (a ^ result) & sign) != 0;")
+            lines.append("        s->nzcv = (n << 31) | (z << 30) | (carry << 29) | (overflow << 28);")
+            if dest != 31:
+                lines.append(f"        s->x[{dest}] = result;")
+            lines.append("    }")
+            continue
+
         # ADD/SUB immediate, without flags. Register 31 means SP/WSP.
         family = word & 0x7F000000
         if family in (0x11000000, 0x51000000):
