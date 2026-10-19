@@ -16,7 +16,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from mario_leaf_codegen import HEADER, translate
 from mario_a64_reference import InstructionLimitExceeded, run_reference
-from mario_leaf_verify import State, snapshot
+from mario_leaf_verify import State, run_original, snapshot
 
 RET = 0xD65F03C0
 SUB_X0_1 = 0xD1000400
@@ -65,6 +65,17 @@ class TestBoundedLoops(unittest.TestCase):
             run_reference(code, state)
         with self.assertRaises(ValueError):
             run_reference(code, state, allow_backward_branches=True, max_steps=0)
+
+    def test_verifier_reports_timeout_distinct_from_guest_memory_fault(self):
+        state = State()
+        state.x[30] = 0x20000000
+        state.pc = 0x10000000
+        guest = struct.pack("<2I", b(0), RET)
+        result, memory, fault_code = run_original(
+            guest, state, allow_backward_branches=True, max_steps=8)
+        self.assertIsNone(result)
+        self.assertIsNone(memory)
+        self.assertEqual(fault_code, 2)
 
     @unittest.skipUnless(shutil.which("clang"), "clang required")
     def test_bounded_native_loops_and_memory(self):
