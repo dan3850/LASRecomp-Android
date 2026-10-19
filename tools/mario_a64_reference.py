@@ -9,6 +9,9 @@ import struct
 
 MASK64 = (1 << 64) - 1
 
+def levels_mask(bits):
+    return (1 << bits) - 1
+
 
 def run_reference(code, initial, ram=None, ram_base=0):
     if not code or len(code) % 4:
@@ -113,6 +116,37 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 else:
                     raise ValueError("Reserved move-wide op")
                 regs[dest] = result & mask
+            continue
+
+        # Logical immediate: independently reconstruct replicated rotated bitmask.
+        if (op & 0x1F800000) == 0x12000000:
+            width = 64 if op & (1 << 31) else 32
+            opc = (op >> 29) & 3
+            n = (op >> 22) & 1
+            immr = (op >> 16) & 63
+            imms = (op >> 10) & 63
+            if width == 32 and n:
+                raise ValueError("Invalid 32-bit logical immediate")
+            length = ((n << 6) | (63 ^ imms)).bit_length() - 1
+            if length < 1:
+                raise ValueError("Invalid logical immediate")
+            size = 1 << length
+            levels = size - 1
+            ones = imms & levels
+            if ones == levels:
+                raise ValueError("Reserved logical immediate")
+            pattern = (1 << (ones + 1)) - 1
+            rotate = immr & levels
+            pattern = ((pattern >> rotate) | (pattern << (size - rotate))) & levels_mask(size)
+            mask = sum(pattern << pos for pos in range(0, width, size))
+            rd, rn = op & 31, (op >> 5) & 31
+            value = (0 if rn == 31 else regs[rn]) & ((1 << width) - 1)
+            result = ((value & mask) if opc in (0, 3) else
+                      (value | mask) if opc == 1 else (value ^ mask))
+            if opc == 3:
+                nzcv = (int(bool(result & (1 << (width - 1)))) << 31) | (int(result == 0) << 30)
+            elif rd != 31:
+                regs[rd] = result
             continue
 
         # ADDS/SUBS immediate; CMP is SUBS with destination XZR/WZR.
