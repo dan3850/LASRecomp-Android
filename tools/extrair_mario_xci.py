@@ -102,9 +102,13 @@ def choose_packages(
     # DLC, a different title, or an update for a different base game.
     unselected = [p for p in candidates if p != base and p != update]
     if unselected:
-        fail("Existem outros NSPs não selecionados. Selecione os arquivos "
-             "explicitamente ou examine a conversão antes de prosseguir: "
-             + ", ".join(p.name for p in unselected))
+        if requested_base or requested_update:
+            print("AVISO: NSPs extras ignorados por seleção explícita: "
+                  + ", ".join(p.name for p in unselected), file=sys.stderr)
+        else:
+            fail("Existem outros NSPs não selecionados. Selecione os arquivos "
+                 "explicitamente ou examine a conversão antes de prosseguir: "
+                 + ", ".join(p.name for p in unselected))
 
     return base, update
 
