@@ -6,15 +6,6 @@
 
 #define LAS_MOD60_PERIOD_NS UINT64_C(16666667)
 
-// FIFO already applies compositor back-pressure at vkAcquireNextImageKHR.
-// Applying a separate host sleep as well can halve effective throughput.
-// MAILBOX and unavailable/lost swapchains still require host pacing.
-// Explicit diagnostic override allows restoring the old FIFO behavior.
-static inline bool las_mod60_host_pace_enabled(bool mod_active,
-                                               bool fifo_swapchain_ready,
-                                               bool force_fifo_pace) {
-    return mod_active && (!fifo_swapchain_ready || force_fifo_pace);
-}
 typedef struct {
     uint64_t last_present_ns;
 } LasMod60Pacer;
