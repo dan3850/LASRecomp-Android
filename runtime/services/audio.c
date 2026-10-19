@@ -1019,7 +1019,21 @@ SERVICE("audren:u", audren_u) {
         ipc_return_object(resp, service_new("IAudioRenderer", audio_renderer, r));
         break;
     }
-    case 1: OUT(uint64_t, 0) = 0x1000000; resp_size(resp, 8); break;  // GetWorkBufferSize: 16 MB
+    case 1: {  // GetWorkBufferSize
+#ifdef LASRECOMP_MARIO_TEST
+        // This HLE mixer owns its working data in host allocations and never
+        // accesses the supplied transfer-memory workspace. Reserve one page
+        // for the guest SDK's transfer-memory contract, rather than exhausting
+        // Mario's bounded audio heap with an unused fixed 16 MB allocation.
+        uint64_t size = 0x1000;
+        LOG("[audren] HLE work buffer size: %llu bytes\n", (unsigned long long)size);
+#else
+        uint64_t size = 0x1000000;
+#endif
+        OUT(uint64_t, 0) = size;
+        resp_size(resp, 8);
+        break;
+    }
     case 2: case 4: ipc_return_object(resp, service_new("IAudioDevice", audio_device, NULL)); break;
     default: LOG("[audren] cmd %u (ok)\n", req->cmd);
     }
