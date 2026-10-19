@@ -231,11 +231,7 @@ static int vk_counter_mode(void) {
         // Give each presented frame a stable 16 ms step so the next frame's
         // counter no longer inherits the half-rate decision. Does NOT improve GPU speed.
 #ifdef __ANDROID__
-        // One-off A/B experiment: give the game a synthetic 16 ms GPU frame
-        // counter to test whether the observed 30 FPS plateau is a counter
-        // feedback loop rather than actual GPU saturation. An explicit
-        // LARECOMP_VK_COUNTER=gpu always restores normal real GPU queries.
-        const int default_mode = 4;  // virtual: Android 30/60 feedback-loop test
+        const int default_mode = 2;  // gpu: real Vulkan GPU timestamps by default
 #else
         const int default_mode = 2;  // gpu: unchanged on other platforms
 #endif
