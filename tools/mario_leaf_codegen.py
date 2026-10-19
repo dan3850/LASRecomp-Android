@@ -13,10 +13,13 @@ from analyze import discover
 
 def translate(words):
     lines = ["    unsigned long long x[32] = {0};", "    x[0] = arg0;", "    x[1] = arg1;"]
-    for word in words:
+    defined = {0, 1}
+    for index, word in enumerate(words):
         if word == 0xD503201F:  # NOP
             continue
-        if word == 0xD65F03C0:  # RET X30
+        if word == 0xD65F03C0 and index == len(words) - 1:  # RET X30, final instruction
+            if 0 not in defined:
+                return None
             lines.append("    return x[0];")
             return lines
         # MOVZ Xd, #imm16, LSL #(16*hw)
@@ -26,6 +29,7 @@ def translate(words):
             shift = ((word >> 21) & 3) * 16
             if rd != 31:
                 lines.append(f"    x[{rd}] = 0x{imm << shift:x}ULL;")
+                defined.add(rd)
             continue
         # MOVK Xd, #imm16, LSL #(16*hw)
         if (word & 0xFF800000) == 0xF2800000:
@@ -34,6 +38,8 @@ def translate(words):
             shift = ((word >> 21) & 3) * 16
             mask = (0xFFFF << shift) & 0xFFFFFFFFFFFFFFFF
             if rd != 31:
+                if rd not in defined:
+                    return None
                 lines.append(f"    x[{rd}] = (x[{rd}] & ~0x{mask:x}ULL) | 0x{imm << shift:x}ULL;")
             continue
         # ADD/SUB (immediate), 64-bit, without flags
@@ -42,11 +48,12 @@ def translate(words):
                 return None
             rd, rn = word & 31, (word >> 5) & 31
             shift = (word >> 22) & 3
-            if shift > 1 or rd == 31 or rn == 31:
+            if shift > 1 or rd == 31 or rn == 31 or rn not in defined:
                 return None  # SP semantics require dedicated handling
             imm = ((word >> 10) & 0xFFF) << (12 if shift else 0)
             op = "-" if word & (1 << 30) else "+"
             lines.append(f"    x[{rd}] = x[{rn}] {op} {imm}ULL;")
+            defined.add(rd)
             continue
         return None
     return None  # no RET
