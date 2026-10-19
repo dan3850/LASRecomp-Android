@@ -2883,15 +2883,22 @@ static void gmem_write_destroy(GmemWrite *w) {
 }
 
 // No import of the entire guest heap is required; use only bound GMEM ranges.
-// Off switch provides an unchanged, host-visible reference for A/B tests.
+// Android A/B: default to the already-supported mapped writable buffer instead
+// of staging every compute result through a device-local + readback pair.
+// The CPU still waits for its real dependency and invalidates the VMA allocation.
+// LARECOMP_VK_GMEM_DEVICE_WRITES=1 restores the previous device-local path.
 static bool gmem_device_writes_enabled(uint64_t bytes) {
-    if (!bytes || bytes > (8ull << 20)) return false;
-    const char *v = getenv("LARECOMP_VK_GMEM_DEVICE_WRITES");
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("LARECOMP_VK_GMEM_DEVICE_WRITES");
+        enabled = v && atoi(v) != 0;
 #ifdef __ANDROID__
-    return !v || atoi(v) != 0;
-#else
-    return v && atoi(v) != 0;
+        LOG("[vk-gmem] compute writeback A/B: %s (default host-mapped; LARECOMP_VK_GMEM_DEVICE_WRITES=%s)\n",
+            enabled ? "device-local + readback" : "host-mapped (no GPU->CPU copy)",
+            v ? v : "unset");
 #endif
+    }
+    return enabled && bytes && bytes <= (8ull << 20);
 }
 
 // Only completed, invalidated and copied-back allocations enter this pool.
