@@ -25,7 +25,7 @@ public final class GameTouchControls extends View {
     private static final int UP=0, DOWN=1, LEFT=2, RIGHT=3;
     private static final int A=4, B=5, X=6, Y=7, L=8, R=9;
     private static final int ZL=10, ZR=11, PLUS=12, MINUS=13, L3=14, R3=15;
-    private static final int LEFT_STICK=16, RIGHT_STICK=17, BUTTON_COUNT=16;
+    private static final int LEFT_STICK=16, RIGHT_STICK=17, HOME=18, BUTTON_COUNT=16;
     private static final String[] LABELS = {
         "▲", "▼", "◀", "▶", "A", "B", "X", "Y",
         "L", "R", "ZL", "ZR", "+", "−", "L3", "R3"
@@ -50,8 +50,9 @@ public final class GameTouchControls extends View {
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rect = new RectF();
-    private final float[] cx = new float[18], cy = new float[18], radius = new float[18];
+    private final float[] cx = new float[19], cy = new float[19], radius = new float[19];
     private final int[] held = new int[BUTTON_COUNT];
+    private boolean homeHeld;
     private final SparseIntArray pointerToControl = new SparseIntArray();
     private final float[] axes = new float[4];
     private final float density;
@@ -87,7 +88,7 @@ public final class GameTouchControls extends View {
         final float rightY = h*0.72f;
         final float faceY = h*0.30f;
         place(LEFT_STICK, leftX, leftY, analog);
-        place(RIGHT_STICK, rightX, rightY, analog);
+        // Zelda does not use the right stick. Keep its native axes neutral.
         place(UP, dpadX, dpadY-step, button);
         place(DOWN, dpadX, dpadY+step, button);
         place(LEFT, dpadX-step, dpadY, button);
@@ -98,13 +99,14 @@ public final class GameTouchControls extends View {
         place(A, rightX+step, faceY, button);
         final float top = Math.max(button + 6*d, h*0.087f);
         place(L, edge-button*0.28f, top, button*0.82f);
-        place(ZL, edge+button*1.55f, top, button*0.82f);
-        place(ZR, w-edge-button*1.55f, top, button*0.82f);
+
+
         place(R, w-edge+button*0.28f, top, button*0.82f);
-        place(L3, leftX+analog*1.17f, leftY+analog*0.78f, button*0.73f);
-        place(R3, rightX-analog*1.08f, rightY-analog*0.79f, button*0.73f);
+
+
         place(MINUS, w*0.43f, h-button*1.10f, button*0.68f);
         place(PLUS, w*0.57f, h-button*1.10f, button*0.68f);
+        place(HOME, w*0.50f, h-button*1.10f, button*0.68f);
         ready = true;
     }
 
@@ -162,21 +164,39 @@ public final class GameTouchControls extends View {
         super.onDraw(canvas);
         if (!ready) positionControls(getWidth(),getHeight());
         drawStick(canvas, LEFT_STICK, 0);
-        drawStick(canvas, RIGHT_STICK, 2);
-        for (int i=0; i<BUTTON_COUNT; i++) drawButton(canvas,i);
+
+        for (int i=0; i<BUTTON_COUNT; i++) {
+            if (i==ZL || i==ZR || i==L3 || i==R3) continue;
+            drawButton(canvas,i);
+        }
+        drawHome(canvas);
+    }
+
+    private void drawHome(Canvas canvas) {
+        float r=radius[HOME];
+        rect.set(cx[HOME]-r,cy[HOME]-r,cx[HOME]+r,cy[HOME]+r);
+        fill(homeHeld ? 0xB33A85C6 : 0x9A252F40);
+        canvas.drawRoundRect(rect,r*0.55f,r*0.55f,paint);
+        outline(density);
+        canvas.drawRoundRect(rect,r*0.55f,r*0.55f,paint);
+        fill(Color.WHITE);
+        paint.setTextAlign(Paint.Align.CENTER);
+        paint.setTextSize(11f*density);
+        canvas.drawText("HOME",cx[HOME],cy[HOME]-(paint.getFontMetrics().ascent+paint.getFontMetrics().descent)*0.5f,paint);
     }
 
     private int hit(float x, float y) {
         int best = -1;
         float nearest = Float.MAX_VALUE;
         // Buttons always have priority if their bounds touch an analog ring.
-        for (int i=0; i<BUTTON_COUNT; i++) {
+        for (int i=0; i<=HOME; i++) {
+            if (i==ZL || i==ZR || i==L3 || i==R3 || i==RIGHT_STICK || i==LEFT_STICK) continue;
             float dx=x-cx[i], dy=y-cy[i], d2=dx*dx+dy*dy;
             float range=radius[i]*1.10f;
             if (d2<=range*range && d2<nearest) { nearest=d2; best=i; }
         }
         if (best>=0) return best;
-        for (int i=LEFT_STICK; i<=RIGHT_STICK; i++) {
+        for (int i=LEFT_STICK; i<=LEFT_STICK; i++) {
             float dx=x-cx[i],dy=y-cy[i];
             if (dx*dx+dy*dy<=radius[i]*radius[i]) return i;
         }
@@ -185,7 +205,7 @@ public final class GameTouchControls extends View {
 
     private int hitButton(float x, float y) {
         int result=hit(x,y);
-        return result<BUTTON_COUNT ? result : -1;
+        return result>=0 && result<BUTTON_COUNT ? result : -1;
     }
 
     private void press(int control) {
@@ -242,13 +262,14 @@ public final class GameTouchControls extends View {
                 if (pointerToControl.valueAt(i)==control) return;
         }
         pointerToControl.put(pointerId,control);
-        if (control>=LEFT_STICK) moveStick(control,x,y);
+        if (control==HOME) { homeHeld=true; SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_ESCAPE); invalidate(); }
+        else if (control==LEFT_STICK) moveStick(control,x,y);
         else press(control);
     }
 
     private void pointerMove(int pointerId, float x, float y) {
         int control=pointerToControl.get(pointerId,-1);
-        if (control>=LEFT_STICK) {
+        if (control==LEFT_STICK) {
             moveStick(control,x,y);
         } else if (control>=0) {
             int next=hitButton(x,y);
@@ -262,7 +283,8 @@ public final class GameTouchControls extends View {
 
     private void pointerUp(int pointerId) {
         int control=pointerToControl.get(pointerId,-1);
-        if (control>=LEFT_STICK) resetStick(control);
+        if (control==HOME) { homeHeld=false; SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_ESCAPE); invalidate(); }
+        else if (control==LEFT_STICK) resetStick(control);
         else release(control);
         pointerToControl.delete(pointerId);
     }
@@ -271,6 +293,7 @@ public final class GameTouchControls extends View {
         for (int i=0;i<BUTTON_COUNT;i++) {
             if (held[i]>0) { held[i]=1; release(i); }
         }
+        if (homeHeld) { homeHeld=false; SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_ESCAPE); }
         pointerToControl.clear();
         for(int i=0;i<axes.length;i++) axes[i]=0;
         sendAxes();
