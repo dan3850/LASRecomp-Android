@@ -92,6 +92,33 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 ram[offset:offset + width] = value.to_bytes(8, "little")[:width]
             continue
 
+        # Register-offset load/store: UXTW or LSL, optional element shift.
+        if (op & 0xFFE00C00) in (0xB8600800, 0xB8200800,
+                                 0xF8600800, 0xF8200800):
+            option = (op >> 13) & 7
+            if option not in (2, 3):
+                raise ValueError("Unsupported register offset extension")
+            width = 8 if op & 0x40000000 else 4
+            load = bool(op & 0x00400000)
+            rt, rn, rm = op & 31, (op >> 5) & 31, (op >> 16) & 31
+            index_value = 0 if rm == 31 else regs[rm]
+            if option == 2:
+                index_value &= 0xFFFFFFFF
+            shift = (3 if width == 8 else 2) if op & 0x1000 else 0
+            addr = ((stack if rn == 31 else regs[rn]) +
+                    (index_value << shift)) & MASK64
+            pos = addr - ram_base
+            if ram is None or pos < 0 or pos + width > len(ram):
+                raise MemoryError(f"Guest indexed access outside mapped buffer at 0x{addr:x}")
+            if load:
+                value = int.from_bytes(ram[pos:pos + width], "little")
+                if rt != 31:
+                    regs[rt] = value
+            else:
+                value = 0 if rt == 31 else regs[rt]
+                ram[pos:pos + width] = value.to_bytes(8, "little")[:width]
+            continue
+
         # LDP/STP general-purpose register pair, signed scaled offset only.
         family = op & 0xFFC00000
         if family in (0x29000000, 0x29400000, 0xA9000000, 0xA9400000):
