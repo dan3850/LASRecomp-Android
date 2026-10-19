@@ -134,7 +134,8 @@ public final class GameImportActivity extends Activity {
 
     private void showVideoSettings() {
         final String[] sections = {"Resolução interna", "Proporção da tela", "Mostrar FPS", "Diagnóstico de desempenho (CPU/GPU)",
-            "Upscaler (FSR 1 / Bilinear)", "Antisserrilhamento (SMAA)", "Remover desfoque", "Ocultar ícone Hero Mode"};
+            "Upscaler (FSR 1 / Bilinear)", "Forçar velocidade máxima (Adreno)", "Antisserrilhamento (SMAA)",
+            "Remover desfoque", "Ocultar ícone Hero Mode"};
         new AlertDialog.Builder(this).setTitle("Configurações de vídeo")
             .setItems(sections, (dialog, which) -> {
                 if (which == 0) {
@@ -207,6 +208,21 @@ public final class GameImportActivity extends Activity {
                                 android.widget.Toast.LENGTH_SHORT).show();
                         }).setNegativeButton("Cancelar", null).show();
                 } else if (which == 5) {
+                    // Same persisted key as the native in-game Video menu. This is
+                    // a launcher setting: the native AdrenoTools request starts
+                    // when the next game session initializes its Vulkan device.
+                    final String[] labels = {"Ligado — solicitar clock máximo da GPU",
+                        "Desligado (padrão — menos calor e consumo)"};
+                    int selected = "1".equals(videoOption("force_adreno_max", "0")) ? 0 : 1;
+                    new AlertDialog.Builder(this).setTitle("Velocidade máxima da Adreno")
+                        .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
+                            saveVideoOption("force_adreno_max", index == 0 ? "1" : "0");
+                            choiceDialog.dismiss();
+                            android.widget.Toast.makeText(this,
+                                "Configuração salva. Inicie o jogo para aplicar. O Android mantém os limites térmicos.",
+                                android.widget.Toast.LENGTH_LONG).show();
+                        }).setNegativeButton("Cancelar", null).show();
+                } else if (which == 6) {
                     final String[] labels = {"Desligado (mais leve, padrão)", "SMAA (suaviza serrilhados)"};
                     int selected = "smaa".equals(videoOption("antialias", "off")) ? 1 : 0;
                     new AlertDialog.Builder(this).setTitle("Antisserrilhamento (SMAA)")
@@ -216,7 +232,7 @@ public final class GameImportActivity extends Activity {
                             android.widget.Toast.makeText(this, "Reinicie o jogo para aplicar o SMAA.",
                                 android.widget.Toast.LENGTH_SHORT).show();
                         }).setNegativeButton("Cancelar", null).show();
-                } else if (which == 6) {
+                } else if (which == 7) {
                     final String[] labels = {"Manter desfoque original (padrão)", "Remover desfoque"};
                     int selected = "1".equals(videoOption("blur_removal", "0")) ? 1 : 0;
                     new AlertDialog.Builder(this).setTitle("Desfoque do jogo")
@@ -224,7 +240,7 @@ public final class GameImportActivity extends Activity {
                             saveVideoOption("blur_removal", index == 0 ? "0" : "1");
                             choiceDialog.dismiss();
                         }).setNegativeButton("Cancelar", null).show();
-                } else if (which == 7) {
+                } else if (which == 8) {
                     final String[] labels = {"Mostrar ícone Hero Mode (padrão)", "Ocultar ícone Hero Mode"};
                     int selected = "1".equals(videoOption("hide_hero_icon", "0")) ? 1 : 0;
                     new AlertDialog.Builder(this).setTitle("Ícone Hero Mode")
