@@ -26,6 +26,24 @@ JNIEXPORT jboolean JNICALL Java_com_retroaura_lasrecomp_GameSDLActivity_nativeRe
     return fn && fn() ? JNI_TRUE : JNI_FALSE;
 }
 
+// The UI appears before the separate LASRecomp runtime has loaded. Keep the
+// JNI endpoint in libmain.so (already loaded by SDLActivity), and resolve
+// the game HID input function lazily once the engine is available.
+typedef void (*TouchAxesUpdate)(float, float, float, float);
+static _Atomic(TouchAxesUpdate) touch_axes_update;
+JNIEXPORT jboolean JNICALL Java_com_retroaura_lasrecomp_GameTouchControls_nativeSetTouchAxes(
+        JNIEnv *env, jclass cls, jfloat lx, jfloat ly, jfloat rx, jfloat ry) {
+    (void)env; (void)cls;
+    TouchAxesUpdate fn = atomic_load(&touch_axes_update);
+    if (!fn) {
+        fn = (TouchAxesUpdate)dlsym(RTLD_DEFAULT, "lasrecomp_touch_axes");
+        if (fn) atomic_store(&touch_axes_update, fn);
+    }
+    if (!fn) return JNI_FALSE;
+    fn(lx, ly, rx, ry);
+    return JNI_TRUE;
+}
+
 static void document_exception(JNIEnv *env) {
     if (!(*env)->ExceptionCheck(env)) return;
     jthrowable error = (*env)->ExceptionOccurred(env);
