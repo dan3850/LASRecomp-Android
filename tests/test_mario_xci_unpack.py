@@ -176,7 +176,7 @@ class TestYanuXciExtraction(unittest.TestCase):
         self.assertEqual(base.read_bytes(), b"test-base")
         self.assertEqual(update.read_bytes(), b"test-update")
         self.assertTrue((converted.parent / "exefs" / "main").exists())
-        self.assertFalse(any(converted.glob(".yanu-args-*")))
+        self.assertFalse(any(self.root.glob(".yanu-args-*")))
 
     def test_reuses_previously_converted_base_and_update(self):
         output = self.root / "Super Mario 3D World-extraido"
