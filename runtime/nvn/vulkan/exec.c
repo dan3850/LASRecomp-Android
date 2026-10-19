@@ -4086,6 +4086,47 @@ static CsProg *compute_program(NvnProgram *np) {
 
 #include "shader_headstart.inc"
 
+// Android A/B: the portable GMEM compute result used to remain in an unsubmitted
+// command buffer until a later CPU preflight needed it. Submit it early so the
+// GPU can execute it while the CPU prepares subsequent guest commands.
+// Do not wait here: the existing gmem_read_range() range check and timeline
+// wait still enforce every real read-after-write dependency. Throttle optional
+// submissions to avoid turning each dispatch into a separate queue submission.
+// LARECOMP_VK_GMEM_EARLY_SUBMIT=0 restores the preceding behavior.
+static void gmem_compute_early_submit(void) {
+    static int enabled = -1;
+    static uint64_t last_submit_ns, last_log_ns, sent, throttled;
+    if (enabled < 0) {
+        const char *env = getenv("LARECOMP_VK_GMEM_EARLY_SUBMIT");
+#ifdef __ANDROID__
+        enabled = !env || atoi(env) != 0;
+#else
+        enabled = env && atoi(env) != 0;
+#endif
+        LOG("[vk-gmem-early] writeback submission %s (LARECOMP_VK_GMEM_EARLY_SUBMIT=%s)\n",
+            enabled ? "enabled" : "disabled", env ? env : "unset");
+    }
+    if (!enabled || gmem_buf || !atomic_load(&gmem_pending)) return;
+    uint64_t now = SDL_GetTicksNS();
+    if (last_submit_ns && now >= last_submit_ns && now - last_submit_ns < 4000000ull) {
+        ++throttled;
+        return;
+    }
+    // Submission is asynchronous. Guest heap writeback occurs only after
+    // the timeline signals and gmem_resolve_done() invalidates the mapped data.
+    renderer_submit();
+    last_submit_ns = now;
+    ++sent;
+    if (!last_log_ns) last_log_ns = now;
+    if (now >= last_log_ns && now - last_log_ns >= 2000000000ull) {
+        LOG("[vk-gmem-early] submits=%llu throttled=%llu over=%.2fs\n",
+            (unsigned long long)sent, (unsigned long long)throttled,
+            (now - last_log_ns) / 1e9);
+        last_log_ns = now;
+        sent = throttled = 0;
+    }
+}
+
 static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     snap_reason = "compute"; snapshots_invalidate(NULL);
     if (!st.program || !gx || !gy || !gz) return;
@@ -4138,6 +4179,8 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     }
     if (cp->si->uses_gmem_store) vc_mark_sbufs(5);
     stat_dispatches++;
+    if (cp->si->uses_gmem_map && cp->si->uses_gmem_store && !gmem_buf)
+        gmem_compute_early_submit();
 }
 
 // ================================================================== draws
