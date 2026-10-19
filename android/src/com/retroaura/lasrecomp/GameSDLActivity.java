@@ -143,6 +143,9 @@ public final class GameSDLActivity extends SDLActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                 original.bringToFront();
                 markActivity("original RadialGamePad mounted");
+                // Keep the original Android crash handler and save touch-thread
+                // exceptions so the next graphics ZIP contains the Java stack.
+                NeoCrashReporter.install(this);
             } catch (ClassNotFoundException missingOptionalModule) {
                 installLegacyTouchControls();
             } catch (Exception | LinkageError error) {
