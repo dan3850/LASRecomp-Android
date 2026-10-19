@@ -477,11 +477,17 @@ def translate(words, allow_multiple_ret=False, allow_backward_branches=False, ma
             lines.append("            s->fault = 1; return;")
             lines.append("        }")
             if load:
-                lines.append("        uint64_t value0 = 0, value1 = 0;")
-                lines.append(f"        for (size_t i = 0; i < {width}; ++i) {{")
-                lines.append("            value0 |= (uint64_t)s->mem[off0 + i] << (8 * i);")
-                lines.append("            value1 |= (uint64_t)s->mem[off1 + i] << (8 * i);")
-                lines.append("        }")
+                if rt != 31:
+                    lines.append("        uint64_t value0 = 0;")
+                if rt2 != 31:
+                    lines.append("        uint64_t value1 = 0;")
+                if rt != 31 or rt2 != 31:
+                    lines.append(f"        for (size_t i = 0; i < {width}; ++i) {{")
+                    if rt != 31:
+                        lines.append("            value0 |= (uint64_t)s->mem[off0 + i] << (8 * i);")
+                    if rt2 != 31:
+                        lines.append("            value1 |= (uint64_t)s->mem[off1 + i] << (8 * i);")
+                    lines.append("        }")
                 if rt != 31:
                     lines.append(f"        s->x[{rt}] = value0;")
                 if rt2 != 31:
