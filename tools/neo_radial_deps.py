@@ -3,7 +3,7 @@
 
 No Gradle / x86_64 Android SDK executables needed. Files are downloaded once,
 verified as ZIP artifacts, and reused from the persistent Termux cache.
-Manifest format: '<type>\\t<absolute path>\\t<Android resource namespace>'.
+Manifest format: '<type>\t<absolute path>\t<Android resource namespace>'.
 """
 import os
 import pathlib
@@ -116,13 +116,13 @@ def main():
             with zipfile.ZipFile(target) as archive:
                 try:
                     manifest = archive.read("AndroidManifest.xml")
-                    found = re.search(rb'\\bpackage\\s*=\\s*["\\\']([^"\\\']+)', manifest)
+                    found = re.search(rb'\bpackage\s*=\s*["\\']([^"\\']+)', manifest)
                     package = found.group(1).decode("utf-8") if found else group
                 except KeyError:
                     package = group
             if name == "radialgamepad" and package == group:
                 package = "com.swordfish.radialgamepad.library"
-        print(f"{extension}\\t{target}\\t{package}", flush=True)
+        print(f"{extension}\t{target}\t{package}", flush=True)
 
 if __name__ == "__main__":
     try:
