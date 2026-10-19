@@ -996,7 +996,7 @@ void backend_present(NvnTexture *t) {
                 LOG("[zoomtrace] frame=%llu ms=%llu changes=%#x aspect=%s res=%d "
                     "shape=%.4f scale=%.4fx%.4f crop=%.4f,%.4f %.4fx%.4f "
                     "cropW_range=%.4f..%.4f previewport=%.0f,%.0f %.0fx%.0f "
-                    "preW_range=%.0f..%.0f viewport=%.0f,%.0f %.0fx%.0f\\n",
+                    "preW_range=%.0f..%.0f viewport=%.0f,%.0f %.0fx%.0f\n",
                     (unsigned long long)total_frames, (unsigned long long)trace_ms,
                     pending_flags, aspect == (int)ASPECT_ORIGINAL ? "original" : "unlocked", res_mode,
                     shape, sx, sy, crop[0], crop[1], crop[2], crop[3],
