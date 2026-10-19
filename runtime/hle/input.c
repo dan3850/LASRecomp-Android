@@ -25,6 +25,30 @@ _Static_assert(BTN_DOWN == BIND_DOWN && BTN_ZL == BIND_ZL, "bindings follow the 
 
 static _Atomic uint64_t key_buttons, pad_buttons;
 static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, pad_ry;
+#ifdef __ANDROID__
+// The original Ryujinx Neo touch UI supplies continuous -1..+1 stick axes.
+// This small Android-only HID input is combined with the existing keyboard
+// and physical controller axes. It does not replace SDL or the game's HID.
+static _Atomic int32_t touch_lx, touch_ly, touch_rx, touch_ry;
+
+__attribute__((visibility("default")))
+void lasrecomp_android_set_touch_stick(int stick, float x, float y) {
+    // RadialGamePad y is positive down; nn::hid y is positive up.
+    if (!isfinite(x)) x = 0.f;
+    if (!isfinite(y)) y = 0.f;
+    x = fmaxf(-1.f, fminf(1.f, x));
+    y = fmaxf(-1.f, fminf(1.f, y));
+    int32_t sx = (int32_t)lroundf(x * 32767.f);
+    int32_t sy = (int32_t)lroundf(-y * 32767.f);
+    if (stick == 1) {
+        touch_lx = sx;
+        touch_ly = sy;
+    } else if (stick == 2) {
+        touch_rx = sx;
+        touch_ry = sy;
+    }
+}
+#endif
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
 static SDL_Gamepad *pad;
 static _Atomic int64_t sampling;
@@ -72,6 +96,9 @@ static void recompute_pad(void) {
 // Forget held keys (the menu took focus); the gamepad is re-read on its next event.
 void input_reset(void) {
     memset(keys_down, 0, sizeof keys_down);
+#ifdef __ANDROID__
+    touch_lx = touch_ly = touch_rx = touch_ry = 0;
+#endif
     recompute_keyboard();
 }
 
@@ -410,8 +437,14 @@ static void fill_state(Cpu *c) {
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
-    int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
-    int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry) + script_ry);
+    int32_t tx = 0, ty = 0, trx = 0, try_ = 0;
+#ifdef __ANDROID__
+    tx = touch_lx, ty = touch_ly, trx = touch_rx, try_ = touch_ry;
+#endif
+    int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx + tx) + script_lx);
+    int32_t ly = clamp_axis((menu ? 0 : key_ly + pad_ly + ty) + script_ly);
+    int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx + trx) + script_rx);
+    int32_t ry = clamp_axis((menu ? 0 : key_ry + pad_ry + try_) + script_ry);
     extern bool mirror_input(void);  // mirror mode, the world on screen (runtime/hle/mirror.c): left and right swap
     bool mirrored = !menu && mirror_input();
     if (mirrored) {
