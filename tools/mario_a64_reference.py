@@ -1,7 +1,7 @@
 """Independent tiny AArch64 reference interpreter for restricted Mario leaf tests.
 
 It is intentionally separate from the C code generator. Supports only NOP,
-RET X30, move-wide immediates, ADD/SUB immediate and bounded LDR/STR. Invalid
+RET X30, move-wide immediates, ADD/SUB immediate and bounded LDR/STR and signed-offset LDP/STP. Invalid
 or unsupported guest instruction encodings cause a hard error.
 This is an *approximate secondary oracle*, not a substitute for Unicorn.
 """
@@ -90,6 +90,34 @@ def run_reference(code, initial, ram=None, ram_base=0):
             else:
                 value = 0 if rt == 31 else regs[rt]
                 ram[offset:offset + width] = value.to_bytes(8, "little")[:width]
+            continue
+
+        # LDP/STP general-purpose register pair, signed scaled offset only.
+        family = op & 0xFFC00000
+        if family in (0x29000000, 0x29400000, 0xA9000000, 0xA9400000):
+            width = 8 if (op >> 31) & 1 else 4
+            is_load = bool(op & 0x00400000)
+            rt = op & 31
+            rn = (op >> 5) & 31
+            rt2 = (op >> 10) & 31
+            imm7 = (op >> 15) & 127
+            signed_offset = (imm7 - 128 if imm7 >= 64 else imm7) * width
+            addr = ((stack if rn == 31 else regs[rn]) + signed_offset) & MASK64
+            pos = addr - ram_base
+            if ram is None or pos < 0 or pos + width * 2 > len(ram):
+                raise MemoryError(f"Guest pair access outside mapped buffer at 0x{addr:x}")
+            if is_load:
+                first = int.from_bytes(ram[pos:pos + width], "little")
+                second = int.from_bytes(ram[pos + width:pos + width * 2], "little")
+                if rt != 31:
+                    regs[rt] = first
+                if rt2 != 31:
+                    regs[rt2] = second
+            else:
+                first = 0 if rt == 31 else regs[rt]
+                second = 0 if rt2 == 31 else regs[rt2]
+                ram[pos:pos + width] = first.to_bytes(8, "little")[:width]
+                ram[pos + width:pos + width * 2] = second.to_bytes(8, "little")[:width]
             continue
 
         raise ValueError(f"Unsupported instruction: {op:08x}")
