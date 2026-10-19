@@ -130,6 +130,34 @@ def translate(words):
             lines.append("    }")
             continue
 
+        # Register-offset LDR/STR (LSL Xm or UXTW Wm), W/X only.
+        # Reject other extend options and writeback forms.
+        if (word & 0xFFE00C00) in (0xB8600800, 0xB8200800,
+                                   0xF8600800, 0xF8200800):
+            option = (word >> 13) & 7
+            if option not in (2, 3):
+                return None
+            width = 8 if word & 0x40000000 else 4
+            load = bool(word & 0x00400000)
+            rt, rn, rm = word & 31, (word >> 5) & 31, (word >> 16) & 31
+            base = "s->sp" if rn == 31 else f"s->x[{rn}]"
+            index = "0ULL" if rm == 31 else f"s->x[{rm}]"
+            if option == 2:
+                index = f"(uint32_t)({index})"
+            shift = (3 if width == 8 else 2) if word & 0x1000 else 0
+            lines.append("    {")
+            lines.append(f"        uint64_t addr = {base} + ((uint64_t)({index}) << {shift});")
+            if load:
+                lines.append("        uint64_t value;")
+                lines.append(f"        if (!mario_read(s, addr, {width}, &value)) {{ s->fault = 1; return; }}")
+                if rt != 31:
+                    lines.append(f"        s->x[{rt}] = value;")
+            else:
+                value = "0ULL" if rt == 31 else f"s->x[{rt}]"
+                lines.append(f"        if (!mario_write(s, addr, {width}, {value})) {{ s->fault = 1; return; }}")
+            lines.append("    }")
+            continue
+
         # Signed scaled-offset STP/LDP, W/X general-purpose registers only.
         # Pre/post-index and SIMD variants remain unsupported.
         family = word & 0xFFC00000
