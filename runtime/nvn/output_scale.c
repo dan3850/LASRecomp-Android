@@ -69,6 +69,7 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     double h;
     int mode = g_settings.res_mode;
     if (forced > 0) h = forced;
+    else if (mode == RES_720P) h = 720.0 / 1080.0;  // fixed 720p: 1280x720 at 16:9
     else if (mode >= 1 && mode <= 8) h = mode;
     else {
         h = reshape ? dh / 1080.0 : fit;  // Match display
