@@ -13,8 +13,8 @@ MIT da referência encontra-se em `third_party/kenjinx-android/LICENSE.txt`.
 
 | Comando visual | Mecanismo | Saída |
 |---|---|---|
-| Analógico esquerdo | JNI -> libmain -> runtime/hle/input.c | eje `leftX,leftY`, -32767..32767 |
-| Analógico direito | JNI -> libmain -> runtime/hle/input.c | eje `rightX,rightY`, -32767..32767 |
+| Analógico esquerdo | JNI -> libmain -> runtime/hle/input.c | eixo `leftX,leftY`, -32767..32767 |
+| Analógico direito | JNI -> libmain -> runtime/hle/input.c | eixo `rightX,rightY`, -32767..32767 |
 | D-Pad | SDL Android keyboard | Up/Down/Left/Right independentes |
 | L3 / R3 | SDL Android keyboard | F / Numpad 0 (defaults do motor) |
 | A/B/X/Y | SDL Android keyboard | K/J/L/I |
