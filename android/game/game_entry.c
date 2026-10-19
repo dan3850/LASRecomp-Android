@@ -20,6 +20,16 @@
 static void boot_mark(const char *files, const char *stage, int value);
 typedef int (*GraphicsCaptureRequest)(void);
 static _Atomic(GraphicsCaptureRequest) graphics_capture_request;
+// Game runtime supplies this optional Android-only input callback after
+// dlopen(); JNI never calls directly into an unloaded runtime library.
+typedef void (*NeoStickSetter)(int stick, float x, float y);
+static _Atomic(NeoStickSetter) neo_stick_setter;
+JNIEXPORT void JNICALL Java_com_retroaura_lasrecomp_GameSDLActivity_nativeSetNeoStick(
+        JNIEnv *env, jclass cls, jint stick, jfloat x, jfloat y) {
+    (void)env; (void)cls;
+    NeoStickSetter fn = atomic_load(&neo_stick_setter);
+    if (fn) fn((int)stick, (float)x, (float)y);
+}
 JNIEXPORT jboolean JNICALL Java_com_retroaura_lasrecomp_GameSDLActivity_nativeRequestGraphicsCapture(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
     GraphicsCaptureRequest fn = atomic_load(&graphics_capture_request);
@@ -284,8 +294,10 @@ int SDL_main(int argc, char **argv) {
     }
 
     boot_mark(files, "entering engine", 0);
+    atomic_store(&neo_stick_setter, (NeoStickSetter)dlsym(engine, "lasrecomp_android_set_touch_stick"));
     atomic_store(&graphics_capture_request, (GraphicsCaptureRequest)dlsym(engine, "lasrecomp_graphics_capture_request"));
     int result = start(files);
+    atomic_store(&neo_stick_setter, NULL);
     atomic_store(&graphics_capture_request, NULL);
     boot_mark(files, "engine returned", result);
     dlclose(engine);
