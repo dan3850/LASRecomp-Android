@@ -210,7 +210,7 @@ def translate(words):
             levels = (1 << length) - 1
             s = imms & levels
             r = immr & levels
-            if s == levels and opc != 3:
+            if s == levels:
                 return None
             element_width = 1 << length
             element = (1 << (s + 1)) - 1
