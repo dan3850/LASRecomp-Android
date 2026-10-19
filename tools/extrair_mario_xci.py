@@ -20,7 +20,6 @@ import argparse
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -161,43 +160,26 @@ def run(args: argparse.Namespace) -> Path:
     if update is not None:
         print(f"== Aplicando atualização: {update.name} ==", flush=True)
 
-    # The upstream Termux 'yanu' wrapper forwards all arguments via
-    # bash -c 'yanu '"$*" rather than safely quoting "$@".
-    # Therefore an NSP filename with spaces is split into extra CLI
-    # arguments inside proot ('unexpected argument Mario'). Work around
-    # the installed wrapper without modifying/reinstalling it or copying
-    # the multi-gigabyte NSP: create temporary symlinks with safe names.
-    # The real source files remain untouched. If Yanu returns 0 despite
-    # failing (the wrapper's EXIT trap can mask its status), the existing
-    # exefs/main + romfs postcondition still catches the failure.
-    if Path(yanu).name == "yanu":
-        # The *whole* argument path must be free of spaces, including
-        # its parent directory and --outdir. Place the aliases next to the
-        # original XCI (not inside 'Super Mario ...-extraido').
-        alias_parent = source.parent
-        if any(char.isspace() for char in str(alias_parent)):
-            fail("O caminho da pasta que contém o XCI tem espaços; "
-                 "o wrapper do Yanu não consegue encaminhar esses argumentos: "
-                 + str(alias_parent))
-        with tempfile.TemporaryDirectory(prefix=".yanu-args-", dir=alias_parent) as tmp:
-            temp = Path(tmp)
-            safe_base = temp / "base.nsp"
-            safe_base.symlink_to(base.resolve())
-            unpack_command = [yanu, "unpack", "--base", str(safe_base)]
-            if update is not None:
-                safe_update = temp / "update.nsp"
-                safe_update.symlink_to(update.resolve())
-                unpack_command.extend(["--update", str(safe_update)])
-            safe_output = temp / "output"
-            safe_output.symlink_to(dest.resolve(), target_is_directory=True)
-            unpack_command.extend(["--outdir", str(safe_output)])
-            subprocess.run(unpack_command, check=True)
+    # The official Termux wrapper uses unquoted $* inside bash -c, splitting
+    # filenames containing spaces. Calling the installed Yanu binary inside
+    # proot directly preserves argument boundaries, with no symlinks on
+    # Android shared storage and no copying the large NSPs.
+    if Path(yanu).name == "yanu" and shutil.which("proot-distro"):
+        unpack_command = [
+            shutil.which("proot-distro"), "login", "ubuntu",
+            "--termux-home", "--bind", "/storage/emulated/0", "--",
+            "yanu", "unpack", "--base", str(base),
+        ]
     else:
         unpack_command = [yanu, "unpack", "--base", str(base)]
-        if update is not None:
-            unpack_command.extend(["--update", str(update)])
-        unpack_command.extend(["--outdir", str(dest)])
-        subprocess.run(unpack_command, check=True)
+        if Path(yanu).name == "yanu":
+            fail("O wrapper do Yanu no Termux perde caminhos com espaços. "
+                 "É necessário ter proot-distro instalado para chamar o "
+                 "binário diretamente, sem alterar arquivos ou copiar NSPs.")
+    if update is not None:
+        unpack_command.extend(["--update", str(update)])
+    unpack_command.extend(["--outdir", str(dest)])
+    subprocess.run(unpack_command, check=True)
     if not has_game_data(dest):
         fail("A extração terminou mas exefs/main e romfs não estão completos. "
              "Verifique a versão do Yanu, o log e as chaves da sua própria "
