@@ -138,6 +138,24 @@ class TestMemory(unittest.TestCase):
         self.assertEqual(s.fault, 1)
         self.assertEqual(ram, bytes(range(64)))
 
+    def test_indexed_load_store(self):
+        # LDR X2, [X0, X1, LSL #3]; STR X2, [X0, X1, LSL #3].
+        ldr = 0xF8600800 | (1 << 16) | (3 << 13) | (1 << 12) | 2
+        str_ = 0xF8200800 | (1 << 16) | (3 << 13) | (1 << 12) | 2
+        s, _ = compare([ldr, RET], {0: BASE + 8, 1: 2})
+        self.assertEqual(s.x[2], int.from_bytes(bytes(range(24, 32)), "little"))
+        s, ram = compare([str_, RET], {0: BASE + 8, 1: 2, 2: 0x123456789ABCDEF0})
+        self.assertEqual(ram[24:32], bytes.fromhex("f0debc9a78563412"))
+
+    def test_indexed_uxtw_and_oob(self):
+        # W1 zero-extends; high 32 bits must not affect the address.
+        ldr = 0xB8600800 | (1 << 16) | (2 << 13) | 2
+        s, _ = compare([ldr, RET], {0: BASE + 8, 1: 0x100000004})
+        self.assertEqual(s.x[2], int.from_bytes(bytes(range(12, 16)), "little"))
+        s, ram = compare([ldr, RET], {0: BASE + 60, 1: 8})
+        self.assertEqual(s.fault, 1)
+        self.assertEqual(ram, bytes(range(64)))
+
     def test_reject_indexed_pair_and_sign_extended(self):
         for invalid in (0xF8408400, 0xB9800000, 0xF8400400):
             with self.subTest(opcode=hex(invalid)):
