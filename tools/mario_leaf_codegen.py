@@ -193,6 +193,45 @@ def translate(words):
                 lines.append(f"    s->x[{dest}] = {value};")
             continue
 
+        # AND/ORR/EOR immediate, AArch64 logical bitmask encoding.
+        if (word & 0x1F800000) == 0x12000000:
+            sf = bool(word & 0x80000000)
+            opc = (word >> 29) & 3
+            n = (word >> 22) & 1
+            immr = (word >> 16) & 63
+            imms = (word >> 10) & 63
+            width = 64 if sf else 32
+            if not sf and n:
+                return None
+            packed = (n << 6) | ((~imms) & 63)
+            length = packed.bit_length() - 1
+            if length < 1:
+                return None
+            levels = (1 << length) - 1
+            s = imms & levels
+            r = immr & levels
+            if s == levels and opc != 3:
+                return None
+            element_width = 1 << length
+            element = (1 << (s + 1)) - 1
+            r %= element_width
+            element = ((element >> r) | (element << (element_width - r))) & ((1 << element_width) - 1)
+            mask = 0
+            for shift in range(0, width, element_width):
+                mask |= element << shift
+            rd, rn = word & 31, (word >> 5) & 31
+            source = "0ULL" if rn == 31 else f"s->x[{rn}]"
+            operation = ("&", "|", "^", "&")[opc]
+            expression = f"({source} {operation} 0x{mask:x}ULL)"
+            if width == 32:
+                expression = f"(uint32_t){expression}"
+            if opc == 3:
+                lines.append(f"    {{ uint64_t result = {expression};")
+                lines.append(f"      s->nzcv = ((result >> {width - 1}) << 31) | ((result == 0) << 30); }}")
+            elif rd != 31:
+                lines.append(f"    s->x[{rd}] = {expression};")
+            continue
+
         # ADDS/SUBS immediate, including CMP alias (SUBS with Rd=31).
         family = word & 0x7F000000
         if family in (0x31000000, 0x71000000):
