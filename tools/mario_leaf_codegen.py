@@ -53,6 +53,28 @@ static inline __attribute__((unused)) int mario_write(
         s->mem[off + i] = (uint8_t)(value >> (8 * i));
     return 1;
 }
+/* Conditional select predicate (ARM cond 0..13; AL/NV rejected by subset). */
+static inline __attribute__((unused)) int mario_condition(uint64_t flags, unsigned cond) {
+    int n = (int)((flags >> 31) & 1), z = (int)((flags >> 30) & 1);
+    int c = (int)((flags >> 29) & 1), v = (int)((flags >> 28) & 1);
+    switch (cond) {
+    case 0: return z;
+    case 1: return !z;
+    case 2: return c;
+    case 3: return !c;
+    case 4: return n;
+    case 5: return !n;
+    case 6: return v;
+    case 7: return !v;
+    case 8: return c && !z;
+    case 9: return !c || z;
+    case 10: return n == v;
+    case 11: return n != v;
+    case 12: return !z && n == v;
+    case 13: return z || n != v;
+    default: return 0;
+    }
+}
 """
 
 
@@ -245,6 +267,24 @@ def translate(words):
                 lines.append(f"      s->nzcv = ((result >> {width - 1}) << 31) | ((result == 0) << 30); }}")
             elif rd != 31:
                 lines.append(f"    s->x[{rd}] = {expression};")
+            continue
+
+        # Conditional select/increment: CSEL, CSINC (including CSET alias).
+        # Preserve NZCV; reject AL/NV until their behavior is independently tested.
+        family = word & 0x7FE00C00
+        if family in (0x1A800000, 0x1A800400):
+            cond = (word >> 12) & 15
+            if cond >= 14:
+                return None
+            width = 64 if word & 0x80000000 else 32
+            mask = "UINT64_MAX" if width == 64 else "UINT32_MAX"
+            rd, rn, rm = word & 31, (word >> 5) & 31, (word >> 16) & 31
+            first = "0ULL" if rn == 31 else f"s->x[{rn}]"
+            second = "0ULL" if rm == 31 else f"s->x[{rm}]"
+            increment = 1 if family == 0x1A800400 else 0
+            if rd != 31:
+                lines.append(f"    s->x[{rd}] = (mario_condition(s->nzcv, {cond}) ? ")
+                lines.append(f"                   ({first}) : (({second}) + {increment}ULL)) & {mask};")
             continue
 
         # ADD/SUB shifted register, LSL only, with optional NZCV update.
