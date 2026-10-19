@@ -1,9 +1,9 @@
 package com.retroaura.lasrecomp
 
 import android.content.Context
-import android.view.Gravity
 import android.view.KeyEvent
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import com.swordfish.radialgamepad.library.RadialGamePad
 import com.swordfish.radialgamepad.library.config.*
 import com.swordfish.radialgamepad.library.event.Event
@@ -51,14 +51,10 @@ class NeoRadialController(context: Context) : FrameLayout(context) {
     init {
         val leftHolder = FrameLayout(context)
         val rightHolder = FrameLayout(context)
-        addView(leftHolder, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f).apply { gravity = Gravity.LEFT })
-        addView(rightHolder, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f).apply { gravity = Gravity.RIGHT })
-        // Width weights only work in LinearLayout; size each half on layout.
-        addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ ->
-            val half = (r - l) / 2
-            leftHolder.layoutParams = (leftHolder.layoutParams as LayoutParams).apply { width = half; height = b-t }
-            rightHolder.layoutParams = (rightHolder.layoutParams as LayoutParams).apply { width = half; height = b-t }
-        }
+        val halves = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        addView(halves, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        halves.addView(leftHolder, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+        halves.addView(rightHolder, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
         leftHolder.addView(left)
         rightHolder.addView(right)
         left.primaryDialMaxSizeDp = 200f
