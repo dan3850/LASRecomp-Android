@@ -134,13 +134,19 @@ public final class GameImportActivity extends Activity {
 
     private void showVideoSettings() {
         final String[] sections = {"Resolução interna", "Proporção da tela", "Mostrar FPS", "Diagnóstico de desempenho (CPU/GPU)",
-            "Upscaler (FSR 1 / Bilinear)", "Antisserrilhamento (SMAA)", "Remover desfoque", "Ocultar ícone Hero Mode"};
+            "Upscaler (FSR 1 / Bilinear)", "Antisserrilhamento (SMAA)", "Remover desfoque", "Ocultar ícone Hero Mode",
+            "Modo Switch (Portátil / Dock)"};
         new AlertDialog.Builder(this).setTitle("Configurações de vídeo")
             .setItems(sections, (dialog, which) -> {
                 if (which == 0) {
                     final String[] labels = {"Igual à tela (padrão)", "25% da tela", "50% da tela",
-                        "75% da tela", "Dinâmica", "1x (1080p)", "2x", "3x", "4x"};
-                    final String[] values = {"match", "25%", "50%", "75%", "dynamic", "1x", "2x", "3x", "4x"};
+                        "75% da tela", "Dinâmica", "1x (1080p)", "2x", "3x", "4x",
+                        "720p fixo (teste Portátil / Dock)",
+                        "Eden 0,25x", "Eden 0,5x", "Eden 0,75x", "Eden 1x",
+                        "Eden 1,25x", "Eden 1,5x", "Eden 2x", "Eden 3x", "Eden 4x"};
+                    final String[] values = {"match", "25%", "50%", "75%", "dynamic", "1x", "2x", "3x", "4x",
+                        "720p", "eden_0.25x", "eden_0.5x", "eden_0.75x", "eden_1x",
+                        "eden_1.25x", "eden_1.5x", "eden_2x", "eden_3x", "eden_4x"};
                     String current = videoOption("resolution", "match");
                     int selected = 0;
                     for (int i = 0; i < values.length; i++) if (values[i].equals(current)) selected = i;
@@ -231,6 +237,18 @@ public final class GameImportActivity extends Activity {
                         .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
                             saveVideoOption("hide_hero_icon", index == 0 ? "0" : "1");
                             choiceDialog.dismiss();
+                        }).setNegativeButton("Cancelar", null).show();
+                } else if (which == 8) {
+                    // Use the same ini key consumed by native AM/APM and the resolution scaler.
+                    final String[] labels = {"Portátil (1280 x 720)", "Dock / TV (1920 x 1080)"};
+                    int selected = "handheld".equals(videoOption("switch_mode", "docked")) ? 0 : 1;
+                    new AlertDialog.Builder(this).setTitle("Modo Switch")
+                        .setSingleChoiceItems(labels, selected, (choiceDialog, index) -> {
+                            saveVideoOption("switch_mode", index == 0 ? "handheld" : "docked");
+                            choiceDialog.dismiss();
+                            android.widget.Toast.makeText(this,
+                                "Reinicie o jogo para aplicar o modo Switch.",
+                                android.widget.Toast.LENGTH_LONG).show();
                         }).setNegativeButton("Cancelar", null).show();
                 }
             }).setPositiveButton("Fechar", null).show();
