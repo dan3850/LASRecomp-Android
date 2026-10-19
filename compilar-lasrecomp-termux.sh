@@ -520,6 +520,10 @@ fi
 # renderer, compiled objects, private game module or Gradle caches.
 LICENSE_STAGE="$STAGE/assets/licenses"
 mkdir -p "$LICENSE_STAGE"
+# Record the exact app source revision included in this APK. This pointer
+# alone is not a substitute for complete corresponding source on distribution.
+printf 'LASRecomp-Android source: https://github.com/dan3850/LASRecomp-Android/tree/%s\nRadialGamePad source (Neo): https://github.com/Swordfish90/RadialGamePad/tree/2.0.0\nDo not include privately recompiled game code or Nintendo assets in public releases.\n' \
+ "$(git -C "$ROOT" rev-parse HEAD)" > "$LICENSE_STAGE/SOURCE_VERSION.txt"
 cp LICENSE "$LICENSE_STAGE/LASRecomp-MIT.txt"
 for name in THIRD_PARTY_NOTICES.txt AndroidX-Apache-2.0.txt SDL3-zlib.txt \
             FFmpeg-LGPL-2.1.txt AdrenoTools-BSD-2-Clause.txt \
@@ -618,6 +622,7 @@ import zipfile
 apk, neo = sys.argv[1], sys.argv[2] == "1"
 required = {
     "assets/licenses/LASRecomp-MIT.txt",
+    "assets/licenses/SOURCE_VERSION.txt",
     "assets/licenses/THIRD_PARTY_NOTICES.txt",
     "assets/licenses/AndroidX-Apache-2.0.txt",
     "assets/licenses/SDL3-zlib.txt",
