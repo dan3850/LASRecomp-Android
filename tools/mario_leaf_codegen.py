@@ -8,7 +8,7 @@ import struct
 from pathlib import Path
 
 from nso import Nso
-from analyze import discover
+from analyze import discover, eh_frame_intervals
 
 HEADER = """/* Experimental Mario ARM64 leaf translation; no game data embedded. */
 #include <stdint.h>
@@ -316,15 +316,16 @@ def translate(words):
     return None  # missing RET
 
 
-def candidates(nso, limit, min_instructions=2, allow_memory=False):
-    """Conservatively treat the next discovered start as a candidate boundary."""
+def candidates(nso, limit, min_instructions=2, allow_memory=False, use_fde=False):
+    """Select bounded candidate spans; optionally prefer validated FDE ranges."""
     funcs, _ = discover(nso)
     starts = sorted(funcs)
+    fde_ranges = eh_frame_intervals(nso)[0] if use_fde else {}
     lo, size = nso.text
     hi = lo + size
     count = 0
     for index, start in enumerate(starts):
-        end = starts[index + 1] if index + 1 < len(starts) else hi
+        end = fde_ranges.get(start, starts[index + 1] if index + 1 < len(starts) else hi)
         span = end - start
         if span < min_instructions * 4 or span > 128 or span % 4:
             continue
@@ -362,6 +363,8 @@ def main():
                         help="minimum instructions per candidate (default: 2, excludes bare RET)")
     parser.add_argument("--with-memory", action="store_true",
                         help="include bounded 32/64-bit LDR/STR and offset LDP/STP functions")
+    parser.add_argument("--use-fde", action="store_true",
+                        help="use validated FDE spans when available (experimental)")
     args = parser.parse_args()
     if not 1 <= args.limit <= 1000:
         parser.error("--limit must be between 1 and 1000")
@@ -369,7 +372,7 @@ def main():
         parser.error("--min-instructions must be between 1 and 32")
     nso = Nso(args.nso)
     matches = list(candidates(nso, args.limit, args.min_instructions,
-                              allow_memory=args.with_memory))
+                              allow_memory=args.with_memory, use_fde=args.use_fde))
     if not matches:
         raise SystemExit("No functions match the conservative instruction subset; no C emitted")
     args.output.parent.mkdir(parents=True, exist_ok=True)
