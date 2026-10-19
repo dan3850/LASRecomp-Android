@@ -146,26 +146,32 @@ class TestYanuXciExtraction(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.calls(), ["convert", "unpack"])
 
-    def test_termux_yanu_wrapper_receives_safe_paths_with_spaces_in_nsp_names(self):
-        # The actual Yanu Termux wrapper uses bash -c with unquoted $*.
-        # Simulate that exact unsafe behavior and verify that the helper
-        # passes temporary, space-free symlink paths without copying NSPs.
+    def test_termux_yanu_uses_direct_proot_and_preserves_spaces(self):
         converted = self.root / "Super Mario 3D World-extraido" / "_yanu_converted"
         converted.mkdir(parents=True)
         base = converted / "Super Mario 3D World + Bowser's Fury.nsp"
         update = converted / "Super Mario 3D World + Bowser's Fury[UPD][1.2.0].nsp"
         base.write_bytes(b"test-base")
         update.write_bytes(b"test-update")
+        # The installed wrapper must never run. Direct proot-distro calls
+        # the inner Yanu CLI without bash -c or argument splitting.
         wrapper = self.root / "yanu"
-        wrapper.write_text(
-            "#!/bin/bash\n"
-            + sys.executable + " " + str(self.fake)
-            + " $*\n"
-        )
+        wrapper.write_text("#!/bin/sh\\nexit 71\n")
         wrapper.chmod(0o755)
+        proot = self.root / "proot-distro"
+        proot.write_text(
+            "#!" + sys.executable + "\n"
+            + "import os, sys\n"
+            + "a = sys.argv[1:]\n"
+            + "assert a[:3] == ['login', 'ubuntu', '--termux-home'], a\n"
+            + "assert '--' in a, a\n"
+            + "os.execv(" + repr(sys.executable) + ", ["
+            + repr(sys.executable) + ", " + repr(str(self.fake))
+            + "] + a[a.index('--') + 2:])\n"
+        )
+        proot.chmod(0o755)
         env = os.environ.copy()
         env["FAKE_YANU_LOG"] = str(self.log)
-        env["FAKE_REQUIRE_UPDATE"] = "1"
         env["PATH"] = str(self.root) + os.pathsep + env.get("PATH", "")
         result = subprocess.run(
             [sys.executable, str(TOOL), str(self.xci)],
@@ -176,7 +182,6 @@ class TestYanuXciExtraction(unittest.TestCase):
         self.assertEqual(base.read_bytes(), b"test-base")
         self.assertEqual(update.read_bytes(), b"test-update")
         self.assertTrue((converted.parent / "exefs" / "main").exists())
-        self.assertFalse(any(self.root.glob(".yanu-args-*")))
 
     def test_reuses_previously_converted_base_and_update(self):
         output = self.root / "Super Mario 3D World-extraido"
