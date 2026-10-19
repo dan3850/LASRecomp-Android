@@ -9,36 +9,50 @@ import struct
 
 MASK64 = (1 << 64) - 1
 
+
+class InstructionLimitExceeded(RuntimeError):
+    """Guest loop exceeded the caller's instruction execution budget."""
+
+
+
 def levels_mask(bits):
     return (1 << bits) - 1
 
 
-def run_reference(code, initial, ram=None, ram_base=0, allow_multiple_ret=False):
+def run_reference(code, initial, ram=None, ram_base=0, allow_multiple_ret=False,
+                  allow_backward_branches=False, max_steps=1024):
     if not code or len(code) % 4:
         raise ValueError("AArch64 code must contain whole 4-byte instructions")
+    if allow_backward_branches and not 1 <= max_steps <= 1000000:
+        raise ValueError("Loop instruction budget must be 1..1000000")
     regs = [int(initial.x[i]) for i in range(31)]
     stack = int(initial.sp)
     nzcv = int(initial.nzcv) & 0xF0000000
     words = struct.unpack("<" + "I" * (len(code) // 4), code)
 
     index = 0
+    steps = 0
     while index < len(words):
+        if allow_backward_branches:
+            if steps >= max_steps:
+                raise InstructionLimitExceeded("AArch64 loop instruction budget exhausted")
+            steps += 1
         op = words[index]
         index += 1
         if (op & 0xFC000000) == 0x14000000:
             imm = op & 0x03FFFFFF
             displacement = imm - 0x04000000 if imm & 0x02000000 else imm
             target = index - 1 + displacement
-            if target < index or target >= len(words):
-                raise ValueError("Unsupported backward or external B")
+            if not (0 <= target < len(words)) or (target < index and not allow_backward_branches):
+                raise ValueError("Unsupported external or disabled-backward B")
             index = target
             continue
         if (op & 0x7E000000) == 0x36000000:
             imm = (op >> 5) & 0x3FFF
             displacement = imm - 0x4000 if imm & 0x2000 else imm
             target = index - 1 + displacement
-            if target < index or target >= len(words):
-                raise ValueError("Unsupported backward or external TBZ/TBNZ")
+            if not (0 <= target < len(words)) or (target < index and not allow_backward_branches):
+                raise ValueError("Unsupported external or disabled-backward TBZ/TBNZ")
             rt = op & 31
             bit = ((op >> 31) << 5) | ((op >> 19) & 31)
             value = 0 if rt == 31 else regs[rt]
@@ -51,7 +65,7 @@ def run_reference(code, initial, ram=None, ram_base=0, allow_multiple_ret=False)
             imm = (op >> 5) & 0x7FFFF
             displacement = imm - 0x80000 if imm & 0x40000 else imm
             target = index - 1 + displacement
-            if cond >= 14 or target < index or target >= len(words):
+            if cond >= 14 or not (0 <= target < len(words)) or (target < index and not allow_backward_branches):
                 raise ValueError("Unsupported B.cond encoding or destination")
             n, z = bool(nzcv & (1 << 31)), bool(nzcv & (1 << 30))
             carry, overflow = bool(nzcv & (1 << 29)), bool(nzcv & (1 << 28))
@@ -66,8 +80,8 @@ def run_reference(code, initial, ram=None, ram_base=0, allow_multiple_ret=False)
             imm = (op >> 5) & 0x7FFFF
             displacement = imm - 0x80000 if imm & 0x40000 else imm
             target = index - 1 + displacement
-            if target < index or target >= len(words):
-                raise ValueError("Unsupported backward or external CBZ/CBNZ")
+            if not (0 <= target < len(words)) or (target < index and not allow_backward_branches):
+                raise ValueError("Unsupported external or disabled-backward CBZ/CBNZ")
             rt = op & 31
             value = 0 if rt == 31 else regs[rt]
             if not (op & 0x80000000):
