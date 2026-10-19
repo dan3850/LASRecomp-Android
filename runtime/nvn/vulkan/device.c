@@ -926,6 +926,11 @@ void backend_present(NvnTexture *t) {
         extern void widescreen_present_crop(uint64_t, double, float *, double *, double *, double *, double *);
         float crop[4];  // uv origin and size
         widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
+#ifdef __ANDROID__
+        // Capture the crop-produced rectangle before unlocked Android presentation
+        // overrides it with a full-surface destination. UV cropping remains intact.
+        const double crop_vx = vx, crop_vy = vy, crop_vw = vw, crop_vh = vh;
+#endif
         widescreen_set_factor((float)shape);
 #ifdef __ANDROID__
         // The widescreen crop can reduce the final presentation rectangle back to
@@ -937,6 +942,71 @@ void backend_present(NvnTexture *t) {
             vy = 0.0;
             vw = dw;
             vh = dh;
+        }
+#endif
+#ifdef __ANDROID__
+        // Android zoom investigation. Observe per-frame changes, but emit at most
+        // one report each 80ms. The accumulated min/max widths preserve even a
+        // fast crop pulse that has already returned before a report is written.
+        // Diagnostic only: does not change rendering, frame pacing or GPU counters.
+        {
+            static bool initialized;
+            static double prior[15];
+            static int prior_aspect, prior_mode;
+            static unsigned pending_flags;
+            static uint64_t next_trace_ms;
+            static double min_crop_width, max_crop_width, min_crop_view_width, max_crop_view_width;
+            const double snap[15] = {
+                sx, sy, shape, vx, vy, vw, vh,
+                crop[0], crop[1], crop[2], crop[3],
+                crop_vx, crop_vy, crop_vw, crop_vh
+            };
+            const int aspect = (int)g_settings.aspect, res_mode = (int)g_settings.res_mode;
+            unsigned changes = initialized ? 0u : 31u;
+            if (initialized) {
+                if (fabs(snap[0] - prior[0]) > 0.001 || fabs(snap[1] - prior[1]) > 0.001 ||
+                    fabs(snap[2] - prior[2]) > 0.001) changes |= 1u; // scale/shape
+                for (int i = 3; i <= 6; i++)
+                    if (fabs(snap[i] - prior[i]) > 0.5) changes |= 2u; // final viewport
+                for (int i = 7; i <= 10; i++)
+                    if (fabs(snap[i] - prior[i]) > 0.0005) changes |= 4u; // UV crop
+                for (int i = 11; i <= 14; i++)
+                    if (fabs(snap[i] - prior[i]) > 0.5) changes |= 8u; // crop rectangle
+                if (aspect != prior_aspect || res_mode != prior_mode) changes |= 16u;
+            }
+            if (changes) {
+                if (!pending_flags) {
+                    min_crop_width = max_crop_width = initialized ? prior[9] : crop[2];
+                    min_crop_view_width = max_crop_view_width = initialized ? prior[13] : crop_vw;
+                }
+                pending_flags |= changes;
+            }
+            if (pending_flags) {
+                if (crop[2] < min_crop_width) min_crop_width = crop[2];
+                if (crop[2] > max_crop_width) max_crop_width = crop[2];
+                if (crop_vw < min_crop_view_width) min_crop_view_width = crop_vw;
+                if (crop_vw > max_crop_view_width) max_crop_view_width = crop_vw;
+            }
+            memcpy(prior, snap, sizeof prior);
+            prior_aspect = aspect;
+            prior_mode = res_mode;
+            initialized = true;
+            uint64_t trace_ms = SDL_GetTicks();
+            if (pending_flags && trace_ms >= next_trace_ms) {
+                LOG("[zoomtrace] frame=%llu ms=%llu changes=%#x aspect=%s res=%d "
+                    "shape=%.4f scale=%.4fx%.4f crop=%.4f,%.4f %.4fx%.4f "
+                    "cropW_range=%.4f..%.4f previewport=%.0f,%.0f %.0fx%.0f "
+                    "preW_range=%.0f..%.0f viewport=%.0f,%.0f %.0fx%.0f\\n",
+                    (unsigned long long)total_frames, (unsigned long long)trace_ms,
+                    pending_flags, aspect == (int)ASPECT_ORIGINAL ? "original" : "unlocked", res_mode,
+                    shape, sx, sy, crop[0], crop[1], crop[2], crop[3],
+                    min_crop_width, max_crop_width,
+                    crop_vx, crop_vy, crop_vw, crop_vh,
+                    min_crop_view_width, max_crop_view_width,
+                    vx, vy, vw, vh);
+                pending_flags = 0;
+                next_trace_ms = trace_ms + 80;
+            }
         }
 #endif
 #ifdef __ANDROID__
