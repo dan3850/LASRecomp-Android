@@ -11,7 +11,7 @@ from mario_leaf_codegen import translate
 from nso import Nso
 
 
-def analyze(nso, max_bytes=128, examples=5):
+def analyze(nso, max_bytes=128, examples=5, allow_multiple_ret=False):
     funcs, _ = discover(nso)
     starts = sorted(funcs)
     fde_ranges, fde_stats = eh_frame_intervals(nso)
@@ -41,7 +41,7 @@ def analyze(nso, max_bytes=128, examples=5):
             if 8 <= fde_size <= max_bytes:
                 fde_counts["eligible"] += 1
                 fde_words = struct.unpack_from("<" + "I" * (fde_size // 4), nso.image, start)
-                if translate(fde_words) is not None:
+                if translate(fde_words, allow_multiple_ret=allow_multiple_ret) is not None:
                     fde_counts["accepted"] += 1
         size = end - start
         if not (text_lo <= start < end <= text_hi) or size % 4:
@@ -61,7 +61,7 @@ def analyze(nso, max_bytes=128, examples=5):
             first = words.index(0xD65F03C0)
             if first >= 1 and translate(words[:first + 1]) is not None:
                 prefix_accepted += 1
-        if translate(words) is not None:
+        if translate(words, allow_multiple_ret=allow_multiple_ret) is not None:
             counts["accepted"] += 1
             source_accepted[funcs[start]] += 1
             accepted_instructions += len(words)
@@ -114,13 +114,16 @@ def main():
     parser.add_argument("--max-bytes", type=int, default=128)
     parser.add_argument("--top", type=int, default=30)
     parser.add_argument("--examples", type=int, default=3)
+    parser.add_argument("--multi-ret", action="store_true",
+                        help="diagnostic count for opt-in multiple-RET candidates")
     args = parser.parse_args()
     if args.max_bytes < 8 or args.max_bytes % 4 or args.top < 1 or args.examples < 0:
         parser.error("invalid max-bytes, top or examples")
     nso = Nso(args.nso)
     counts, blockers, samples, total, accepted = analyze(
-        nso, args.max_bytes, args.examples)
+        nso, args.max_bytes, args.examples, allow_multiple_ret=args.multi_ret)
     print(f"Build ID: {nso.build_id}")
+    print(f"Early RET support: {'opt-in enabled' if args.multi_ret else 'disabled (legacy)'}")
     print(f"Discovered starts: {counts['discovered']}")
     print(f"Candidate span: 8..{args.max_bytes} bytes (next discovered start as boundary)")
     print(f"Eligible: {counts['eligible']}; accepted: {counts['accepted']}; rejected: {counts['rejected']}")
