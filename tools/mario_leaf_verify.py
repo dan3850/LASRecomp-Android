@@ -56,7 +56,7 @@ def run_original(code, initial):
     mu.reg_write(A.UC_ARM64_REG_X30, initial.x[30])
     mu.reg_write(A.UC_ARM64_REG_SP, initial.sp)
     mu.reg_write(A.UC_ARM64_REG_NZCV, initial.nzcv)
-    mu.emu_start(CODE_BASE, CODE_BASE + len(code), count=len(code) // 4)
+    mu.emu_start(CODE_BASE, initial.x[30], count=len(code) // 4)
     x = [mu.reg_read(A.UC_ARM64_REG_X0 + i) for i in range(29)]
     x += [mu.reg_read(A.UC_ARM64_REG_X29), mu.reg_read(A.UC_ARM64_REG_X30)]
     return (tuple(x), mu.reg_read(A.UC_ARM64_REG_SP),
