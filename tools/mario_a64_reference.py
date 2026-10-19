@@ -279,6 +279,42 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 ram[offset:offset + width] = value.to_bytes(8, "little")[:width]
             continue
 
+        # Signed-imm9 unscaled and pre/post-index scalar LDR/STR.
+        family = op & 0xFFC00C00
+        if (family & ~0xC00) in (0x38000000, 0x38400000,
+                                 0x78000000, 0x78400000,
+                                 0xB8000000, 0xB8400000,
+                                 0xF8000000, 0xF8400000):
+            mode = (op >> 10) & 3
+            if mode not in (0, 1, 3):
+                raise ValueError("Unsupported scalar single mode")
+            width = 1 << ((op >> 30) & 3)
+            is_load = bool(op & 0x00400000)
+            rt, rn = op & 31, (op >> 5) & 31
+            if mode != 0 and rn != 31 and rt == rn:
+                raise ValueError("Constrained unpredictable scalar writeback overlap")
+            imm9 = (op >> 12) & 511
+            signed_offset = imm9 - 512 if imm9 & 256 else imm9
+            base = stack if rn == 31 else regs[rn]
+            addr = (base + (0 if mode == 1 else signed_offset)) & MASK64
+            pos = addr - ram_base
+            if ram is None or pos < 0 or pos + width > len(ram):
+                raise MemoryError(f"Guest unscaled/writeback access outside mapped buffer at 0x{addr:x}")
+            if is_load:
+                value = int.from_bytes(ram[pos:pos + width], "little")
+                if rt != 31:
+                    regs[rt] = value
+            else:
+                value = 0 if rt == 31 else regs[rt]
+                ram[pos:pos + width] = (value & ((1 << (width * 8)) - 1)).to_bytes(width, "little")
+            if mode != 0:
+                updated_base = (base + signed_offset) & MASK64
+                if rn == 31:
+                    stack = updated_base
+                else:
+                    regs[rn] = updated_base
+            continue
+
         # Register-offset load/store: UXTW or LSL, optional element shift.
         if (op & 0xFFE00C00) in (0xB8600800, 0xB8200800,
                                  0xF8600800, 0xF8200800):
