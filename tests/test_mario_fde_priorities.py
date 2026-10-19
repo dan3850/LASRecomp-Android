@@ -14,18 +14,24 @@ class TestMarioFdePriorities(unittest.TestCase):
         self.md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
 
     def test_single_missing_family_nop_proxy(self):
-        words = [0x90000000, RET]  # ADRP X0, #0
+        words = [0x1E2703E0, RET]  # FMOV S0, WZR (currently unsupported)
         original = words.copy()
         missing, rescued, samples = inspect_candidate(words, 0x1000, self.md)
-        self.assertEqual(missing, {"adrp"})
-        self.assertEqual(rescued, {"adrp"})
-        self.assertEqual(samples["adrp"], (0x1000, 0x90000000))
+        self.assertEqual(missing, {"fmov"})
+        self.assertEqual(rescued, {"fmov"})
+        self.assertEqual(samples["fmov"], (0x1000, 0x1E2703E0))
         self.assertEqual(words, original)  # Diagnostic must not mutate guest code
 
     def test_two_missing_families_not_rescued(self):
-        words = [0x90000000, 0xD61F0000, RET]  # ADRP, BR X0, RET
+        words = [0x1E2703E0, 0xD61F0000, RET]  # FMOV, BR X0, RET
         missing, rescued, _ = inspect_candidate(words, 0x1000, self.md)
-        self.assertEqual(missing, {"adrp", "br"})
+        self.assertEqual(missing, {"fmov", "br"})
+        self.assertEqual(rescued, set())
+
+    def test_adrp_now_supported_not_ranked(self):
+        words = [0x90000000, RET]  # ADRP X0, #0
+        missing, rescued, _ = inspect_candidate(words, 0x1000, self.md)
+        self.assertEqual(missing, set())
         self.assertEqual(rescued, set())
 
     def test_supported_opcodes_not_ranked(self):
