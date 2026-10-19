@@ -405,10 +405,24 @@ python3 tools/android-font-fallback.py \
  third_party/imgui/misc/fonts/Roboto-Medium.ttf "$STAGE/assets/lasrecomp_font.ttf"
 mapfile -d '' -t SDLJAVA < <(find "$SDL_JAVA" -type f -name '*.java' -print0)
 (( ${#SDLJAVA[@]} > 0 )) || fail "SDL Java nao encontrado"
-javac -source 8 -target 8 -encoding UTF-8 -cp "$ANDROID_JAR" \
+# Optional original RadialGamePad AAR. Never silently download or substitute
+# a lookalike. All runtime dependencies must be supplied and audited separately.
+RADIAL_AAR="${LASRECOMP_RADIAL_AAR:-}"
+RADIAL_JARS=()
+RADIAL_CP="$ANDROID_JAR"
+if [[ -n "$RADIAL_AAR" ]]; then
+ [[ -s "$RADIAL_AAR" ]] || fail "RadialGamePad AAR nao encontrado: $RADIAL_AAR"
+ mkdir -p "$STAGE/radial"
+ unzip -p "$RADIAL_AAR" classes.jar > "$STAGE/radial/radial-classes.jar" || fail "AAR invalido"
+ [[ -s "$STAGE/radial/radial-classes.jar" ]] || fail "AAR sem classes.jar"
+ RADIAL_JARS+=("$STAGE/radial/radial-classes.jar")
+ RADIAL_CP="$RADIAL_CP:$STAGE/radial/radial-classes.jar"
+ echo "RadialGamePad AAR externo habilitado (dependencias Kotlin/AndroidX exigidas)."
+fi
+javac -source 8 -target 8 -encoding UTF-8 -cp "$RADIAL_CP" \
  -d "$STAGE/classes" android/src/com/retroaura/lasrecomp/*.java "${SDLJAVA[@]}"
 jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
-"${D8_CMD[@]}" --min-api 26 --lib "$ANDROID_JAR" --output "$STAGE/dex" "$STAGE/classes.jar"
+"${D8_CMD[@]}" --min-api 26 --lib "$ANDROID_JAR" --output "$STAGE/dex" "$STAGE/classes.jar" "${RADIAL_JARS[@]}"
 [[ -s "$STAGE/dex/classes.dex" ]] || fail "D8 nao gerou classes.dex"
 # libc++ ARM64 do NDK, necessaria para simbolos C++ do runtime.
 TERMUX_CXX="$PREFIX/lib/libc++_shared.so"
