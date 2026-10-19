@@ -15,6 +15,9 @@
 #include "../nvn/renderer.h"
 #include "../settings.h"
 #include "../input_bind.h"
+#ifdef __ANDROID__
+#include "touch_axis_policy.h"
+#endif
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -34,19 +37,13 @@ static _Atomic int64_t sampling;
 // JNI writes atomically on Android's UI thread; the emulated HID poll reads
 // on the game thread. Never overwrite physical gamepad or keyboard input.
 static _Atomic int32_t touch_lx, touch_ly, touch_rx, touch_ry;
-static int32_t touch_axis(float value) {
-    if (!isfinite(value)) value = 0;
-    if (value > 1.f) value = 1.f;
-    if (value < -1.f) value = -1.f;
-    return (int32_t)(value * 32767.f);
-}
 __attribute__((visibility("default")))
 void lasrecomp_touch_axes(float lx, float ly, float rx, float ry) {
     // Android canvas grows downward; Switch/nn::hid analog Y grows upward.
-    atomic_store(&touch_lx, touch_axis(lx));
-    atomic_store(&touch_ly, touch_axis(-ly));
-    atomic_store(&touch_rx, touch_axis(rx));
-    atomic_store(&touch_ry, touch_axis(-ry));
+    atomic_store(&touch_lx, las_touch_axis(lx));
+    atomic_store(&touch_ly, las_touch_axis(-ly));
+    atomic_store(&touch_rx, las_touch_axis(rx));
+    atomic_store(&touch_ry, las_touch_axis(-ry));
 }
 #endif
 
