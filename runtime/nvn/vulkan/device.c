@@ -670,7 +670,43 @@ bool vk_frame_begin(const float clear[4]) {
         if (surface_rebuild_needed || !g_vk.surface || !g_vk.swapchain) return false;
     }
     if (!android_window_surface_ready("frame begin")) return false;
-    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
+#ifdef __ANDROID__
+    // Keep a single, authoritative surface extent for the Vulkan presentation
+    // pass, as Android presentation managers do: the compositor's VkSurfaceKHR
+    // extent, not an intermediate SDL size during rotation or inset updates.
+    // SDL can disagree with the native surface without a genuine resize.
+    // The old check recreated the swapchain (vkDeviceWaitIdle included) on
+    // every such frame, even though create_swapchain() selected currentExtent.
+    if (!g_vk.swapchain) {
+        recreate_swapchain();
+    } else if ((uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) {
+        // Query only when SDL disagrees, at most four times a second. Real
+        // out-of-date surfaces are still handled immediately by acquire/present.
+        static uint64_t next_extent_check_ms;
+        uint64_t now_ms = SDL_GetTicks();
+        if (now_ms >= next_extent_check_ms) {
+            next_extent_check_ms = now_ms + 250;
+            VkSurfaceCapabilitiesKHR caps;
+            VkResult cr = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
+            if (cr == VK_ERROR_SURFACE_LOST_KHR) {
+                mark_surface_lost("frame extent query");
+                return false;
+            }
+            if (cr == VK_SUCCESS) {
+                VkExtent2D actual = caps.currentExtent.width != UINT32_MAX
+                    ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
+                if (actual.width && actual.height &&
+                    (actual.width != g_vk.sc_extent.width || actual.height != g_vk.sc_extent.height))
+                    recreate_swapchain();
+            } else {
+                LOG("[vk] surface extent query failed: %d\n", cr);
+            }
+        }
+    }
+#else
+    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height)
+        recreate_swapchain();
+#endif
     if (surface_rebuild_needed || !g_vk.swapchain) return false;
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
