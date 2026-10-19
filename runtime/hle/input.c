@@ -25,6 +25,26 @@ _Static_assert(BTN_DOWN == BIND_DOWN && BTN_ZL == BIND_ZL, "bindings follow the 
 
 static _Atomic uint64_t key_buttons, pad_buttons;
 static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, pad_ry;
+#ifdef __ANDROID__
+// True independent analog axes from the Android touch overlay. JNI forwards
+// these through libmain only after the native runtime is loaded. Never
+// synthesize keyboard keys: analog magnitude and diagonals must be preserved.
+static _Atomic int32_t touch_lx, touch_ly, touch_rx, touch_ry;
+__attribute__((visibility("default")))
+void lasrecomp_touch_set_axis(int stick, int32_t x, int32_t y) {
+    if (x > 32767) x = 32767;
+    if (x < -32767) x = -32767;
+    if (y > 32767) y = 32767;
+    if (y < -32767) y = -32767;
+    if (stick == 0) {
+        atomic_store(&touch_lx, x);
+        atomic_store(&touch_ly, y);
+    } else if (stick == 1) {
+        atomic_store(&touch_rx, x);
+        atomic_store(&touch_ry, y);
+    }
+}
+#endif
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
 static SDL_Gamepad *pad;
 static _Atomic int64_t sampling;
@@ -412,6 +432,14 @@ static void fill_state(Cpu *c) {
     }
     int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
     int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry) + script_ry);
+#ifdef __ANDROID__
+    if (!menu) {
+        lx = clamp_axis(lx + atomic_load(&touch_lx));
+        ly = clamp_axis(ly + atomic_load(&touch_ly));
+        rx = clamp_axis(rx + atomic_load(&touch_rx));
+        ry = clamp_axis(ry + atomic_load(&touch_ry));
+    }
+#endif
     extern bool mirror_input(void);  // mirror mode, the world on screen (runtime/hle/mirror.c): left and right swap
     bool mirrored = !menu && mirror_input();
     if (mirrored) {
