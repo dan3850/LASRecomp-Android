@@ -47,6 +47,14 @@ void plat_thread_perf_core(int role);
 static inline void plat_thread_perf_core(int role) { (void)role; }
 #endif
 
+// Optional Adreno clock boost (Android: libadrenotools, no root, thermal limits apply).
+// Returns false if the Adreno interface/library cannot be opened; the driver API itself has no success return.
+#ifdef __ANDROID__
+bool plat_adreno_turbo_set(bool enabled);
+#else
+static inline bool plat_adreno_turbo_set(bool enabled) { return !enabled; }
+#endif
+
 // ---- process
 void plat_init(void);                                // first thing in main()
 bool plat_exe_path(char *buf, size_t size);
