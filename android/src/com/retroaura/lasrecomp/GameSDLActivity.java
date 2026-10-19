@@ -24,6 +24,9 @@ import java.nio.charset.StandardCharsets;
  */
 public final class GameSDLActivity extends SDLActivity {
     private static native boolean nativeRequestGraphicsCapture();
+    // Routed by libmain.so to the existing nn::hid input engine. SDL keyboard
+    // codes cannot represent partial stick deflection, so these stay analog.
+    static native void nativeSetNeoStick(int stick, float x, float y);
     /** Exact native-library folder required by AdrenoTools hooks. */
     public String getVulkanDriverFilesDirectory() {
         return getFilesDir().getAbsolutePath();
