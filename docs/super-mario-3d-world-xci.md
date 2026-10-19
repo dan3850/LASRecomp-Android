@@ -3,13 +3,15 @@
 **Branch:** `android/super-mario-3d-world-port`.
 
 O Yanu original já suporta XCI **via conversão XCI -> NSP** usando 4NXCI,
-seguida de `yanu-cli unpack --base`. Esta branch fornece um orquestrador
+seguida de `yanu unpack --base` (ou o antigo `yanu-cli`). Esta branch fornece um orquestrador
 local para fazer as duas etapas, sem modificar o Yanu, sem baixar conteúdo
 do jogo e sem copiar chaves privadas para o repositório.
 
 - Yanu: https://github.com/nozwock/yanu (GPL-2.0).
-- Comandos upstream: `yanu-cli convert --kind nsp`, `yanu-cli unpack`.
-- Requisitos: `python3`, `yanu-cli` funcional no Termux, espaço suficiente e
+- Comandos upstream: `yanu convert --kind nsp`, `yanu unpack`.
+- O instalador oficial do Yanu para Termux cria o comando **`yanu`**; o nome
+  `yanu-cli` foi descontinuado. O script detecta automaticamente ambos.
+- Requisitos: `python3`, `yanu` ou `yanu-cli` funcional no Termux, espaço suficiente e
   os próprios arquivos de autorização/chaves locais que seu Yanu já utiliza.
   O repositório **não inclui nem fornece chaves de terceiros**.
 
@@ -20,11 +22,11 @@ Termux; não coloque XCI, NSP, EXEFS, ROMFS ou `prod.keys` no GitHub.
 
 ```bash
 cd "$HOME/LASRecomp-Android"
-python3 tools/extrair_mario_xci.py "/storage/emulated/0/SwitchRoms/Super Mario 3D World.xci"
+python3 tools/extrair_mario_xci.py "/storage/emulated/0/SwitchRoms/Super.xci"
 ```
 
 O caminho de saída padrão será:
-`/storage/emulated/0/SwitchRoms/Super Mario 3D World-extraido/`, com
+`/storage/emulated/0/SwitchRoms/Super-extraido/`, com
 `exefs/main`, `exefs/` e `romfs/`.
 
 Se o XCI gerar **vários NSPs** (por exemplo, base e patch), a ferramenta não
@@ -43,6 +45,16 @@ python3 tests/test_mario_xci_unpack.py
 
 Os testes utilizam um `yanu-cli` falso e arquivos fictícios, não executam
 descriptografia nem distribuem material protegido.
+
+Se o script não encontrar Yanu, verifique qual comando existe antes de
+instalar ou baixar qualquer ferramenta novamente:
+
+```bash
+command -v yanu || command -v yanu-cli
+```
+
+Se você já usa o comando `yanu`, a branch corrigida funciona sem opções extras.
+Se o Yanu estiver fora do PATH, utilize `--yanu-cli /caminho/do/executavel`.
 
 ## Limitações
 
