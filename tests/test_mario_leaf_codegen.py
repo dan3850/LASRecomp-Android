@@ -76,6 +76,64 @@ class TestMarioCodegen(unittest.TestCase):
         # Reserved shift
         self.assertIsNone(translate([0x7100001F | (2 << 22), RET]))
 
+    @unittest.skipUnless(shutil.which("clang"), "Clang required for NZCV native tests")
+    def test_nzcv_native_edge_cases_and_branches(self):
+        # Independent expected results, including unsigned carry and signed overflow.
+        cases = [
+            (32, False, 0xFFFFFFFF, 1, 0x0, 0x60000000),
+            (32, False, 0x7FFFFFFF, 1, 0x80000000, 0x90000000),
+            (32, True, 0, 1, 0xFFFFFFFF, 0x80000000),
+            (32, True, 0x80000000, 1, 0x7FFFFFFF, 0x30000000),
+            (64, False, 0xFFFFFFFFFFFFFFFF, 1, 0, 0x60000000),
+            (64, False, 0x7FFFFFFFFFFFFFFF, 1, 0x8000000000000000, 0x90000000),
+            (64, True, 0, 1, 0xFFFFFFFFFFFFFFFF, 0x80000000),
+            (64, True, 0x8000000000000000, 1, 0x7FFFFFFFFFFFFFFF, 0x30000000),
+            (64, True, 10, 10, 0, 0x60000000),
+            (64, True, 9, 10, 0xFFFFFFFFFFFFFFFF, 0x80000000),
+        ]
+        generated = [HEADER]
+        for i, (width, subtract, _, immediate, _, _) in enumerate(cases):
+            opcode = (0x71000000 if subtract else 0x31000000)
+            if width == 64:
+                opcode |= 0x80000000
+            opcode |= immediate << 10
+            statements = translate([opcode, RET])
+            self.assertIsNotNone(statements)
+            generated.extend([f"void flags_{i}(MarioA64State *s) {{",
+                              *statements, "}"])
+        # CMP X0,#10 ; B.EQ skip ADD X1,#1 ; RET
+        branch_words = [0xF100281F, 0x54000040, add_imm(1, 1, 1), RET]
+        statements = translate(branch_words)
+        self.assertIsNotNone(statements)
+        generated.extend(["void cmp_branch(MarioA64State *s) {", *statements, "}"])
+        with tempfile.TemporaryDirectory(prefix="mario-nzcv-") as tmp:
+            source, library = Path(tmp) / "flags.c", Path(tmp) / "flags.so"
+            source.write_text("\n".join(generated) + "\n", encoding="utf-8")
+            subprocess.run(["clang", "-std=c11", "-O2", "-shared", "-fPIC",
+                            "-Wall", "-Wextra", "-Werror", str(source), "-o", str(library)],
+                           check=True)
+            lib = ctypes.CDLL(str(library))
+            for i, (_, _, operand, _, expected_result, expected_flags) in enumerate(cases):
+                with self.subTest(case=i):
+                    state = State()
+                    state.x[0] = operand
+                    state.x[30] = 0x12345678
+                    fn = getattr(lib, f"flags_{i}")
+                    fn.argtypes = [ctypes.POINTER(State)]
+                    fn(ctypes.byref(state))
+                    self.assertEqual(state.x[0], expected_result)
+                    self.assertEqual(state.nzcv, expected_flags)
+                    self.assertEqual(state.pc, 0x12345678)
+            for operand, expected_x1 in ((10, 0), (9, 1)):
+                state = State()
+                state.x[0] = operand
+                state.x[30] = 0x12345678
+                fn = lib.cmp_branch
+                fn.argtypes = [ctypes.POINTER(State)]
+                fn(ctypes.byref(state))
+                self.assertEqual(state.x[1], expected_x1)
+                self.assertEqual(state.nzcv, 0x60000000 if operand == 10 else 0x80000000)
+
     def test_supported_translation(self):
         self.assertIsNotNone(translate([add_imm(0, 0, 0x180), RET]))
         self.assertIsNotNone(translate([add_imm(31, 31, 16), RET]))
