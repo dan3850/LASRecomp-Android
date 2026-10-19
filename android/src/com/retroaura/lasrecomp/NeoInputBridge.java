@@ -4,97 +4,117 @@ import android.view.KeyEvent;
 import org.libsdl.app.SDLActivity;
 
 /**
- * Maps ORIGINAL Ryujinx Neo GamePadButtonInputId ordinal values to LASRecomp.
- * Event dispatch is deliberately independent of RadialGamePad's Kotlin Flow API.
- * This class does not install or imitate the original UI components.
+ * Ryujinx Neo GamePadButtonInputId -> actual LASRecomp Switch HID bindings.
+ *
+ * Source of truth: runtime/hle/bindings.c and runtime/hle/input.c.
+ * - Buttons / D-pad are SDL keyboard events and honor the game's bindings.
+ * - Both touch sticks send continuous float axes via JNI into nn::hid.
+ * - Nintendo A=east, B=south, X=north, Y=west (not Xbox face positions).
+ * Home is an app-owned menu shortcut: SDL F1, NOT the game's Plus button.
  */
 public final class NeoInputBridge {
-    // Ordinals from upstream GamePadButtonInputId.kt, including None at index 0.
+    // Exact ordinal values in Ryujinx Neo GamePadButtonInputId.kt.
     public static final int A=1, B=2, X=3, Y=4;
     public static final int LEFT_STICK_BUTTON=5, RIGHT_STICK_BUTTON=6;
     public static final int L=7, R=8, ZL=9, ZR=10, DPAD_UP=11, DPAD_DOWN=12;
     public static final int DPAD_LEFT=13, DPAD_RIGHT=14;
     public static final int MINUS=15, PLUS=16, LEFT_STICK=17, RIGHT_STICK=18;
+
     private static final int[] KEY = new int[19];
     private final boolean[] down = new boolean[19];
-    private boolean stickUp, stickDown, stickLeft, stickRight;
-    private boolean rightUp, rightDown, rightLeft, rightRight;
+    private final boolean[] pressedKeys = new boolean[256];
+    private boolean homeDown;
+    private float leftX, leftY, rightX, rightY;
+
     static {
+        // Exact default SDL keyboard bindings from runtime/hle/bindings.c.
         KEY[A]=KeyEvent.KEYCODE_K;
         KEY[B]=KeyEvent.KEYCODE_J;
         KEY[X]=KeyEvent.KEYCODE_L;
         KEY[Y]=KeyEvent.KEYCODE_I;
-        KEY[LEFT_STICK_BUTTON]=KeyEvent.KEYCODE_BUTTON_THUMBL;
-        KEY[RIGHT_STICK_BUTTON]=KeyEvent.KEYCODE_BUTTON_THUMBR;
+        KEY[LEFT_STICK_BUTTON]=KeyEvent.KEYCODE_F;
+        KEY[RIGHT_STICK_BUTTON]=KeyEvent.KEYCODE_NUMPAD_0;
         KEY[L]=KeyEvent.KEYCODE_Q;
         KEY[R]=KeyEvent.KEYCODE_E;
         KEY[ZL]=KeyEvent.KEYCODE_1;
         KEY[ZR]=KeyEvent.KEYCODE_3;
-        KEY[DPAD_UP]=KeyEvent.KEYCODE_W;
-        KEY[DPAD_DOWN]=KeyEvent.KEYCODE_S;
-        KEY[DPAD_LEFT]=KeyEvent.KEYCODE_A;
-        KEY[DPAD_RIGHT]=KeyEvent.KEYCODE_D;
+        KEY[DPAD_UP]=KeyEvent.KEYCODE_DPAD_UP;
+        KEY[DPAD_DOWN]=KeyEvent.KEYCODE_DPAD_DOWN;
+        KEY[DPAD_LEFT]=KeyEvent.KEYCODE_DPAD_LEFT;
+        KEY[DPAD_RIGHT]=KeyEvent.KEYCODE_DPAD_RIGHT;
         KEY[MINUS]=KeyEvent.KEYCODE_DEL;
         KEY[PLUS]=KeyEvent.KEYCODE_ENTER;
     }
+
     public synchronized void button(int id, boolean pressed) {
         if (id <= 0 || id >= KEY.length || KEY[id] == 0 || down[id] == pressed) return;
-        down[id]=pressed;
-        updateKey(KEY[id]);
+        down[id] = pressed;
+        updateKey(KEY[id], pressed);
     }
-    // Maintain shared key state when stick and D-pad overlap.
-    private void updateKey(int code) {
-        boolean active=false;
-        for (int i=0;i<KEY.length;i++) if (KEY[i]==code && down[i]) active=true;
-        if (code==KeyEvent.KEYCODE_W) active |= stickUp;
-        if (code==KeyEvent.KEYCODE_S) active |= stickDown;
-        if (code==KeyEvent.KEYCODE_A) active |= stickLeft;
-        if (code==KeyEvent.KEYCODE_D) active |= stickRight;
-        if (code==KeyEvent.KEYCODE_DPAD_UP) active |= rightUp;
-        if (code==KeyEvent.KEYCODE_DPAD_DOWN) active |= rightDown;
-        if (code==KeyEvent.KEYCODE_DPAD_LEFT) active |= rightLeft;
-        if (code==KeyEvent.KEYCODE_DPAD_RIGHT) active |= rightRight;
-        boolean prior=pressedKeys[code];
-        if (prior==active) return;
-        pressedKeys[code]=active;
-        if (active) SDLActivity.onNativeKeyDown(code);
-        else SDLActivity.onNativeKeyUp(code);
+
+    private void updateKey(int key, boolean pressed) {
+        if (key < 0 || key >= pressedKeys.length || pressedKeys[key] == pressed) return;
+        pressedKeys[key] = pressed;
+        if (pressed) SDLActivity.onNativeKeyDown(key);
+        else SDLActivity.onNativeKeyUp(key);
     }
-    private final boolean[] pressedKeys=new boolean[256];
+
+    /** Independent app menu key; F1 toggles the real in-game LASRecomp menu. */
+    public synchronized void home(boolean pressed) {
+        if (homeDown == pressed) return;
+        homeDown = pressed;
+        updateKey(KeyEvent.KEYCODE_F1, pressed);
+    }
+
     public synchronized void direction(int id, float x, float y) {
-        if (id==DPAD_UP) {
-            // Original RadialGamePad Cross emits a Direction event, not
-            // four separate Button events. Preserve simultaneous diagonals.
+        if (id == DPAD_UP) {
+            // Neo's Cross emits one Direction with two axes, including diagonals.
+            // The guest D-pad is independent of the left stick.
             button(DPAD_LEFT, x < -0.35f);
             button(DPAD_RIGHT, x > 0.35f);
             button(DPAD_UP, y < -0.35f);
             button(DPAD_DOWN, y > 0.35f);
             return;
         }
-        if (id==RIGHT_STICK) {
-            rightLeft=x < -0.35f; rightRight=x > 0.35f;
-            rightUp=y < -0.35f; rightDown=y > 0.35f;
-            updateKey(KeyEvent.KEYCODE_DPAD_LEFT);
-            updateKey(KeyEvent.KEYCODE_DPAD_RIGHT);
-            updateKey(KeyEvent.KEYCODE_DPAD_UP);
-            updateKey(KeyEvent.KEYCODE_DPAD_DOWN);
-            return;
+        if (id != LEFT_STICK && id != RIGHT_STICK) return;
+        if (!Float.isFinite(x)) x = 0f;
+        if (!Float.isFinite(y)) y = 0f;
+        x = Math.max(-1f, Math.min(1f, x));
+        y = Math.max(-1f, Math.min(1f, y));
+        if (id == LEFT_STICK) {
+            if (leftX == x && leftY == y) return;
+            leftX = x;
+            leftY = y;
+        } else {
+            if (rightX == x && rightY == y) return;
+            rightX = x;
+            rightY = y;
         }
-        if (id!=LEFT_STICK) return;
-        boolean l=x < -0.35f, r=x > 0.35f, u=y < -0.35f, d=y > 0.35f;
-        stickLeft=l; stickRight=r; stickUp=u; stickDown=d;
-        updateKey(KeyEvent.KEYCODE_A); updateKey(KeyEvent.KEYCODE_D);
-        updateKey(KeyEvent.KEYCODE_W); updateKey(KeyEvent.KEYCODE_S);
+        // The original Neo uses inputSetStickAxis(1/2, x, -y).
+        // In LASRecomp, libmain JNI -> runtime/hle/input.c performs -y
+        // and writes the full-scale Switch nn::hid analog values.
+        try {
+            GameSDLActivity.nativeSetNeoStick(id == LEFT_STICK ? 1 : 2, x, y);
+        } catch (UnsatisfiedLinkError error) {
+            android.util.Log.e("LASRecomp-Neo", "Native touch stick bridge unavailable", error);
+        }
     }
+
     public synchronized void releaseAll() {
-        for (int i=0;i<down.length;i++) down[i]=false;
-        stickLeft=stickRight=stickUp=stickDown=false;
-        rightLeft=rightRight=rightUp=rightDown=false;
-        for (int code=0;code<pressedKeys.length;code++) {
-            if (pressedKeys[code]) {
-                pressedKeys[code]=false;
-                SDLActivity.onNativeKeyUp(code);
+        for (int i = 0; i < down.length; i++) down[i] = false;
+        homeDown = false;
+        leftX = leftY = rightX = rightY = 0f;
+        for (int key = 0; key < pressedKeys.length; key++) {
+            if (pressedKeys[key]) {
+                pressedKeys[key] = false;
+                SDLActivity.onNativeKeyUp(key);
             }
+        }
+        try {
+            GameSDLActivity.nativeSetNeoStick(1, 0f, 0f);
+            GameSDLActivity.nativeSetNeoStick(2, 0f, 0f);
+        } catch (UnsatisfiedLinkError error) {
+            android.util.Log.e("LASRecomp-Neo", "Native touch stick release unavailable", error);
         }
     }
 }
