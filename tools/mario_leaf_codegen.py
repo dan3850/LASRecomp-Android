@@ -381,6 +381,41 @@ def translate(words):
             lines.append("    }")
             continue
 
+        # Unscaled signed-imm9 LDUR/STUR plus pre/post-index LDR/STR.
+        # All sizes 8/16/32/64-bit, zero-extending loads.
+        family = word & 0xFFC00C00
+        unscaled_families = (
+            0x38000000, 0x38400000, 0x78000000, 0x78400000,
+            0xB8000000, 0xB8400000, 0xF8000000, 0xF8400000,
+        )
+        if (family & ~0xC00) in unscaled_families:
+            mode = (word >> 10) & 3  # 0=unscaled, 1=post, 3=pre
+            if mode not in (0, 1, 3):
+                return None
+            width = 1 << ((word >> 30) & 3)
+            load = bool(word & 0x00400000)
+            rt, rn = word & 31, (word >> 5) & 31
+            if mode != 0 and rn != 31 and rn == rt:
+                return None  # writeback overlap is constrained unpredictable
+            imm9 = (word >> 12) & 0x1FF
+            offset = imm9 - 512 if imm9 & 0x100 else imm9
+            base = "s->sp" if rn == 31 else f"s->x[{rn}]"
+            lines.append("    {")
+            lines.append(f"        uint64_t base_value = {base};")
+            lines.append(f"        uint64_t addr = base_value + (uint64_t)({0 if mode == 1 else offset}LL);")
+            if load:
+                lines.append("        uint64_t value;")
+                lines.append(f"        if (!mario_read(s, addr, {width}, &value)) {{ s->fault = 1; return; }}")
+                if rt != 31:
+                    lines.append(f"        s->x[{rt}] = value;")
+            else:
+                value = "0ULL" if rt == 31 else f"s->x[{rt}]"
+                lines.append(f"        if (!mario_write(s, addr, {width}, {value})) {{ s->fault = 1; return; }}")
+            if mode != 0:
+                lines.append(f"        {base} = base_value + (uint64_t)({offset}LL);")
+            lines.append("    }")
+            continue
+
         # Register-offset LDR/STR (LSL Xm or UXTW Wm), W/X only.
         # Reject other extend options and writeback forms.
         if (word & 0xFFE00C00) in (0xB8600800, 0xB8200800,
@@ -482,7 +517,9 @@ def candidates(nso, limit, min_instructions=2, allow_memory=False, use_fde=False
                  0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000,
                  0x29000000, 0x29400000, 0xA9000000, 0xA9400000,
                  0x29800000, 0x29C00000, 0xA9800000, 0xA9C00000,
-                 0x28800000, 0x28C00000, 0xA8800000, 0xA8C00000)
+                 0x28800000, 0x28C00000, 0xA8800000, 0xA8C00000,
+                 0x38000000, 0x38400000, 0x78000000, 0x78400000,
+                 0xB8000000, 0xB8400000, 0xF8000000, 0xF8400000)
                 for w in words):
             continue
         code = translate(words)
