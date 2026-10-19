@@ -1,7 +1,8 @@
-"""Compare Mario leaf C against original AArch64 instructions with Unicorn.
+"""Validate Mario leaf C against guest ARM64 via Unicorn or a limited Python reference.
 
-Runs a native temporary .so compiled from the conservative generated C, and
-Unicorn emulation of the original bytes, across reproducible random CPU states.
+Compiles the generated C to a temporary native shared library and compares
+reproducible CPU states. Without Unicorn, the separate Python interpreter
+validates only the supported instruction subset, not full CPU equivalence.
 No game assets or generated objects are checked into Git.
 """
 import argparse
@@ -15,7 +16,7 @@ from pathlib import Path
 try:
     import unicorn as uc
     from unicorn import arm64_const as A
-except ImportError:
+except (ImportError, OSError):
     uc = None
     A = None
 
