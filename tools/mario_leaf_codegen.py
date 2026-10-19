@@ -78,15 +78,18 @@ static inline __attribute__((unused)) int mario_condition(uint64_t flags, unsign
 """
 
 
-def translate(words, allow_multiple_ret=False):
+def translate(words, allow_multiple_ret=False, allow_backward_branches=False, max_steps=1024):
     """Translate only supported functions ending in RET X30.
 
-    Multi-RET is opt-in. Branches remain strictly forward-only and in-range.
-    Every supported RET terminates native execution with the guest LR.
+    Multi-RET and backward branches are separate opt-ins. Branches must
+    remain inside the candidate. Backward-branch mode uses an instruction
+    budget to prevent unbounded loops in the native code.
     """
-    if not words or words[-1] != 0xD65F03C0:
+    if not words or words[-1] != 0xD65F03C0 or (allow_backward_branches and not 1 <= max_steps <= 1000000):
         return None
     lines = ["    s->fault = 0;"]
+    if allow_backward_branches:
+        lines.append("    uint64_t mario_steps = 0;")
     targets = set()
     for index, word in enumerate(words):
         if (word & 0xFF000010) == 0x54000000:
@@ -95,39 +98,35 @@ def translate(words, allow_multiple_ret=False):
             imm = (word >> 5) & 0x7FFFF
             displacement = imm - 0x80000 if imm & 0x40000 else imm
             target = index + displacement
-            if target <= index or target >= len(words):
+            if not (0 <= target < len(words)) or (target <= index and not allow_backward_branches):
                 return None
             targets.add(target)
         if (word & 0x7E000000) == 0x34000000:
             imm = (word >> 5) & 0x7FFFF
             displacement = imm - 0x80000 if imm & 0x40000 else imm
             target = index + displacement
-            if target <= index or target >= len(words):
-                return None  # forward-only, inside this function
+            if not (0 <= target < len(words)) or (target <= index and not allow_backward_branches):
+                return None  # branch must stay within function
             targets.add(target)
         if (word & 0x7E000000) == 0x36000000:
             imm = (word >> 5) & 0x3FFF
             displacement = imm - 0x4000 if imm & 0x2000 else imm
             target = index + displacement
-            if target <= index or target >= len(words):
+            if not (0 <= target < len(words)) or (target <= index and not allow_backward_branches):
                 return None
             targets.add(target)
         if (word & 0xFC000000) == 0x14000000:
             imm = word & 0x03FFFFFF
             displacement = imm - 0x04000000 if imm & 0x02000000 else imm
             target = index + displacement
-            if target <= index or target >= len(words):
-                return None  # forward-only; never jump outside the candidate
+            if not (0 <= target < len(words)) or (target <= index and not allow_backward_branches):
+                return None  # never jump outside candidate
             targets.add(target)
     for index, word in enumerate(words):
         if index in targets:
             lines.append(f"mario_label_{index}: ;")
-        if (word & 0xFC000000) == 0x14000000:
-            imm = word & 0x03FFFFFF
-            displacement = imm - 0x04000000 if imm & 0x02000000 else imm
-            target = index + displacement
-            lines.append(f"    goto mario_label_{target};")
-            continue
+        if allow_backward_branches:
+            lines.append(f"    if (mario_steps++ >= {max_steps}ULL) {{ s->fault = 2; return; }}")
         if (word & 0xFC000000) == 0x14000000:
             imm = word & 0x03FFFFFF
             displacement = imm - 0x04000000 if imm & 0x02000000 else imm
@@ -149,7 +148,7 @@ def translate(words, allow_multiple_ret=False):
             displacement = imm - 0x80000 if imm & 0x40000 else imm
             target = index + displacement
             cond = word & 15
-            if cond >= 14 or target <= index or target >= len(words):
+            if cond >= 14 or not (0 <= target < len(words)) or (target <= index and not allow_backward_branches):
                 return None
             # Reuse the same tested predicate as CSEL/CSINC. Token-based
             # variable extraction broke composite conditions (e.g. GT: N==V).
@@ -159,7 +158,7 @@ def translate(words, allow_multiple_ret=False):
             imm = (word >> 5) & 0x7FFFF
             displacement = imm - 0x80000 if imm & 0x40000 else imm
             target = index + displacement
-            if target <= index or target >= len(words):
+            if not (0 <= target < len(words)) or (target <= index and not allow_backward_branches):
                 return None
             rt = word & 31
             value = "0ULL" if rt == 31 else f"s->x[{rt}]"
@@ -505,7 +504,8 @@ def translate(words, allow_multiple_ret=False):
 
 
 def candidates(nso, limit, min_instructions=2, allow_memory=False,
-               use_fde=False, allow_multiple_ret=False):
+               use_fde=False, allow_multiple_ret=False,
+               allow_backward_branches=False, max_steps=1024):
     """Select bounded candidate spans; optionally prefer validated FDE ranges."""
     funcs, _ = discover(nso)
     starts = sorted(funcs)
@@ -529,7 +529,9 @@ def candidates(nso, limit, min_instructions=2, allow_memory=False,
                  0xB8000000, 0xB8400000, 0xF8000000, 0xF8400000)
                 for w in words):
             continue
-        code = translate(words, allow_multiple_ret=allow_multiple_ret)
+        code = translate(words, allow_multiple_ret=allow_multiple_ret,
+                         allow_backward_branches=allow_backward_branches,
+                         max_steps=max_steps)
         if code is None:
             continue
         yield start, end, code
@@ -560,16 +562,24 @@ def main():
     parser.add_argument("--use-fde", action="store_true",
                         help="use validated FDE spans when available (experimental)")
     parser.add_argument("--multi-ret", action="store_true",
-                        help="opt in to forward-only functions with multiple RET X30")
+                        help="opt in to functions with multiple RET X30")
+    parser.add_argument("--loops", action="store_true",
+                        help="opt in to internal backward branches with an instruction watchdog")
+    parser.add_argument("--max-steps", type=int, default=1024,
+                        help="instruction budget per function when --loops is enabled")
     args = parser.parse_args()
     if not 1 <= args.limit <= 1000:
         parser.error("--limit must be between 1 and 1000")
     if not 1 <= args.min_instructions <= 32:
         parser.error("--min-instructions must be between 1 and 32")
+    if not 1 <= args.max_steps <= 1000000:
+        parser.error("--max-steps must be between 1 and 1000000")
     nso = Nso(args.nso)
     matches = list(candidates(nso, args.limit, args.min_instructions,
                               allow_memory=args.with_memory, use_fde=args.use_fde,
-                              allow_multiple_ret=args.multi_ret))
+                              allow_multiple_ret=args.multi_ret,
+                              allow_backward_branches=args.loops,
+                              max_steps=args.max_steps))
     if not matches:
         raise SystemExit("No functions match the conservative instruction subset; no C emitted")
     args.output.parent.mkdir(parents=True, exist_ok=True)
