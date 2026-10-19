@@ -405,6 +405,12 @@ python3 tools/android-font-fallback.py \
  third_party/imgui/misc/fonts/Roboto-Medium.ttf "$STAGE/assets/lasrecomp_font.ttf"
 mapfile -d '' -t SDLJAVA < <(find "$SDL_JAVA" -type f -name '*.java' -print0)
 (( ${#SDLJAVA[@]} > 0 )) || fail "SDL Java nao encontrado"
+# Reuse existing Maven/Gradle caches and optionally fetch the original published
+# RadialGamePad binary and transitive AndroidX/Kotlin dependencies.
+# This mode is opt-in until AAR Android resource merging is implemented.
+if [[ "${LASRECOMP_NEO_AUTO:-0}" == 1 ]]; then
+ fail "LASRECOMP_NEO_AUTO ainda nao suportado: o APK exige mesclagem dos recursos AAR AndroidX. Nao produzir APK com controles antigos silenciosamente."
+fi
 # Optional original RadialGamePad. Explicit local dependencies only; no download.
 RADIAL_AAR="${LASRECOMP_RADIAL_AAR:-}"
 RADIAL_DEPS="${LASRECOMP_RADIAL_DEPS_DIR:-}"
