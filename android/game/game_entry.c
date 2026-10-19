@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdatomic.h>
+#include <pthread.h>
 #ifdef __ANDROID__
 #include <jni.h>
 #include <SDL3/SDL_system.h>
@@ -20,6 +21,18 @@
 static void boot_mark(const char *files, const char *stage, int value);
 typedef int (*GraphicsCaptureRequest)(void);
 static _Atomic(GraphicsCaptureRequest) graphics_capture_request;
+// SDL's Java overlay must not call a stale engine pointer during shutdown.
+// A short lock protects both native input dispatch and dlclose().
+typedef void (*TouchAxisSetter)(int stick, int32_t x, int32_t y);
+static pthread_mutex_t touch_axis_lock = PTHREAD_MUTEX_INITIALIZER;
+static TouchAxisSetter touch_axis_setter;
+JNIEXPORT void JNICALL Java_com_retroaura_lasrecomp_GameTouchControls_nativeSetTouchStick(
+        JNIEnv *env, jclass cls, jint stick, jint x, jint y) {
+    (void)env; (void)cls;
+    pthread_mutex_lock(&touch_axis_lock);
+    if (touch_axis_setter) touch_axis_setter(stick, x, y);
+    pthread_mutex_unlock(&touch_axis_lock);
+}
 JNIEXPORT jboolean JNICALL Java_com_retroaura_lasrecomp_GameSDLActivity_nativeRequestGraphicsCapture(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
     GraphicsCaptureRequest fn = atomic_load(&graphics_capture_request);
@@ -260,6 +273,13 @@ int SDL_main(int argc, char **argv) {
 
     boot_mark(files, "motor loaded", 0);
 #ifdef __ANDROID__
+    pthread_mutex_lock(&touch_axis_lock);
+    touch_axis_setter = (TouchAxisSetter)dlsym(engine, "lasrecomp_touch_set_axis");
+    pthread_mutex_unlock(&touch_axis_lock);
+    if (!touch_axis_setter) {
+        boot_mark(files, "engine lacks native touchscreen axes", 0);
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LASRecomp: touch sticks unavailable in runtime");
+    }
     typedef void (*SetDocumentBridge)(LasOpenDocument, LasRomfsManifest);
     SetDocumentBridge set_documents = (SetDocumentBridge)dlsym(engine, "lasrecomp_android_set_document_bridge");
     if (!set_documents) {
@@ -287,6 +307,15 @@ int SDL_main(int argc, char **argv) {
     atomic_store(&graphics_capture_request, (GraphicsCaptureRequest)dlsym(engine, "lasrecomp_graphics_capture_request"));
     int result = start(files);
     atomic_store(&graphics_capture_request, NULL);
+#ifdef __ANDROID__
+    pthread_mutex_lock(&touch_axis_lock);
+    if (touch_axis_setter) {
+        touch_axis_setter(0, 0, 0);
+        touch_axis_setter(1, 0, 0);
+    }
+    touch_axis_setter = NULL;
+    pthread_mutex_unlock(&touch_axis_lock);
+#endif
     boot_mark(files, "engine returned", result);
     dlclose(engine);
     return result;
