@@ -2,6 +2,10 @@ package com.retroaura.lasrecomp
 
 import android.app.Activity
 import android.view.Gravity
+import android.view.MotionEvent
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.widget.Button
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -100,6 +104,50 @@ class NeoRadialControls(private val activity: Activity, private val input: NeoIn
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         rightHost.addView(right, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // Neo itself has no HOME in GamePadButtonInputId. This small host
+        // control opens the actual LASRecomp in-game settings with SDL F1.
+        // Keep it outside both radial areas to avoid stealing gamepad touches.
+        val d = activity.resources.displayMetrics.density
+        val home = Button(activity).apply {
+            text = "HOME"
+            textSize = 12f
+            isAllCaps = false
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                setColor(Color.argb(196, 37, 43, 52))
+                cornerRadius = 15f * d
+                setStroke((1f * d).toInt().coerceAtLeast(1),
+                    Color.argb(208, 188, 200, 212))
+            }
+            setOnTouchListener { v, ev ->
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        input.home(true)
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        input.home(false)
+                        v.performClick()
+                        true
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        input.home(false)
+                        true
+                    }
+                    else -> true
+                }
+            }
+        }
+        val homeLayout = FrameLayout.LayoutParams(
+            (76f * d).toInt(), (38f * d).toInt(),
+            Gravity.TOP or Gravity.RIGHT
+        ).apply {
+            topMargin = (10f * d).toInt()
+            rightMargin = (16f * d).toInt()
+        }
+        view.addView(home, homeLayout)
+
         scope.launch { left.events().collect { dispatch(it) } }
         scope.launch { right.events().collect { dispatch(it) } }
     }
