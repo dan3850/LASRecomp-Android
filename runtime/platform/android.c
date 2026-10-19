@@ -89,7 +89,7 @@ void plat_thread_perf_core(int role) {
     if (role < PLAT_PERF_GAME || role > PLAT_PERF_VSYNC) return;
     const char *opt = getenv("LARECOMP_ANDROID_PERF_THREADS");
     if (opt && strcmp(opt, "0") == 0) {
-        LOG("[perf-thread] %s disabled tid=%ld cpu=%d\\n",
+        LOG("[perf-thread] %s disabled tid=%ld cpu=%d\n",
             names[role], (long)gettid(), sched_getcpu());
         return;
     }
@@ -102,7 +102,7 @@ void plat_thread_perf_core(int role) {
         saved_errno = errno; // Android may refuse negative nice without privilege
     }
     int after = getpriority(PRIO_PROCESS, 0);
-    LOG("[perf-thread] %s tid=%ld cpu=%d nice=%d->%d target=%d status=%s errno=%d\\n",
+    LOG("[perf-thread] %s tid=%ld cpu=%d nice=%d->%d target=%d status=%s errno=%d\n",
         names[role], (long)gettid(), sched_getcpu(), before, after,
         target_nice, status ? "denied" : "ok", saved_errno);
 }
