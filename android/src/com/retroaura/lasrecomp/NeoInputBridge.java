@@ -11,19 +11,25 @@ import org.libsdl.app.SDLActivity;
 public final class NeoInputBridge {
     // Ordinals from upstream GamePadButtonInputId.kt, including None at index 0.
     public static final int A=1, B=2, X=3, Y=4;
-    public static final int L=7, R=8, DPAD_UP=11, DPAD_DOWN=12;
+    public static final int LEFT_STICK_BUTTON=5, RIGHT_STICK_BUTTON=6;
+    public static final int L=7, R=8, ZL=9, ZR=10, DPAD_UP=11, DPAD_DOWN=12;
     public static final int DPAD_LEFT=13, DPAD_RIGHT=14;
-    public static final int MINUS=15, PLUS=16, LEFT_STICK=17;
+    public static final int MINUS=15, PLUS=16, LEFT_STICK=17, RIGHT_STICK=18;
     private static final int[] KEY = new int[19];
     private final boolean[] down = new boolean[19];
     private boolean stickUp, stickDown, stickLeft, stickRight;
+    private boolean rightUp, rightDown, rightLeft, rightRight;
     static {
         KEY[A]=KeyEvent.KEYCODE_K;
         KEY[B]=KeyEvent.KEYCODE_J;
         KEY[X]=KeyEvent.KEYCODE_L;
         KEY[Y]=KeyEvent.KEYCODE_I;
+        KEY[LEFT_STICK_BUTTON]=KeyEvent.KEYCODE_BUTTON_THUMBL;
+        KEY[RIGHT_STICK_BUTTON]=KeyEvent.KEYCODE_BUTTON_THUMBR;
         KEY[L]=KeyEvent.KEYCODE_Q;
         KEY[R]=KeyEvent.KEYCODE_E;
+        KEY[ZL]=KeyEvent.KEYCODE_1;
+        KEY[ZR]=KeyEvent.KEYCODE_3;
         KEY[DPAD_UP]=KeyEvent.KEYCODE_W;
         KEY[DPAD_DOWN]=KeyEvent.KEYCODE_S;
         KEY[DPAD_LEFT]=KeyEvent.KEYCODE_A;
@@ -44,6 +50,10 @@ public final class NeoInputBridge {
         if (code==KeyEvent.KEYCODE_S) active |= stickDown;
         if (code==KeyEvent.KEYCODE_A) active |= stickLeft;
         if (code==KeyEvent.KEYCODE_D) active |= stickRight;
+        if (code==KeyEvent.KEYCODE_DPAD_UP) active |= rightUp;
+        if (code==KeyEvent.KEYCODE_DPAD_DOWN) active |= rightDown;
+        if (code==KeyEvent.KEYCODE_DPAD_LEFT) active |= rightLeft;
+        if (code==KeyEvent.KEYCODE_DPAD_RIGHT) active |= rightRight;
         boolean prior=pressedKeys[code];
         if (prior==active) return;
         pressedKeys[code]=active;
@@ -61,6 +71,15 @@ public final class NeoInputBridge {
             button(DPAD_DOWN, y > 0.35f);
             return;
         }
+        if (id==RIGHT_STICK) {
+            rightLeft=x < -0.35f; rightRight=x > 0.35f;
+            rightUp=y < -0.35f; rightDown=y > 0.35f;
+            updateKey(KeyEvent.KEYCODE_DPAD_LEFT);
+            updateKey(KeyEvent.KEYCODE_DPAD_RIGHT);
+            updateKey(KeyEvent.KEYCODE_DPAD_UP);
+            updateKey(KeyEvent.KEYCODE_DPAD_DOWN);
+            return;
+        }
         if (id!=LEFT_STICK) return;
         boolean l=x < -0.35f, r=x > 0.35f, u=y < -0.35f, d=y > 0.35f;
         stickLeft=l; stickRight=r; stickUp=u; stickDown=d;
@@ -70,6 +89,7 @@ public final class NeoInputBridge {
     public synchronized void releaseAll() {
         for (int i=0;i<down.length;i++) down[i]=false;
         stickLeft=stickRight=stickUp=stickDown=false;
+        rightLeft=rightRight=rightUp=rightDown=false;
         for (int code=0;code<pressedKeys.length;code++) {
             if (pressedKeys[code]) {
                 pressedKeys[code]=false;
