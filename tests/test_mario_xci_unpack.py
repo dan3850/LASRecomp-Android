@@ -34,7 +34,8 @@ if args[0] == "convert":
 elif args[0] == "unpack":
     if os.environ.get("FAKE_REQUIRE_UPDATE"):
         assert "--update" in args, "Update argument must be forwarded to Yanu"
-        assert "game-base[UPD][1.2.0].nsp" in args[args.index("--update") + 1]
+        patch = Path(args[args.index("--update") + 1])
+        assert patch.resolve().name.endswith("[UPD][1.2.0].nsp"), patch
     (output / "exefs").mkdir(exist_ok=True)
     (output / "romfs").mkdir(exist_ok=True)
     if not os.environ.get("FAKE_NO_MAIN"):
