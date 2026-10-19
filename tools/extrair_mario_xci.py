@@ -2,13 +2,14 @@
 """Extract owned Switch XCI to exefs/ + romfs/ with the installed Yanu CLI.
 
 The original Yanu (https://github.com/nozwock/yanu, GPL-2.0) supports XCI
-via 'convert --kind nsp' followed by 'unpack --base'. This is a subprocess
+via 'convert --kind nsp' followed by 'unpack --base [--update ...]'. This is a subprocess
 orchestrator: no Yanu code, game assets, keys or binaries are bundled here.
 
 Usage:
  python3 tools/extrair_mario_xci.py "/storage/emulated/0/SwitchRoms/Mario.xci"
  python3 tools/extrair_mario_xci.py ROM.xci --output /path/to/extracted
  python3 tools/extrair_mario_xci.py ROM.xci --base-nsp converted-name.nsp
+ python3 tools/extrair_mario_xci.py ROM.xci --update-nsp "title[UPD][1.2.0].nsp"
 
 The converted NSP is cached inside <output>/_yanu_converted/ so interrupted
 extractions may be resumed without converting the XCI repeatedly.
@@ -37,24 +38,75 @@ def converted_nsps(directory: Path) -> list[Path]:
     return sorted(p for p in directory.glob("*.nsp") if p.is_file() and p.stat().st_size > 0)
 
 
-def choose_base(candidates: list[Path], requested: str | None) -> Path:
-    if requested:
-        name = Path(requested).name
-        if Path(requested).name != requested or not name.lower().endswith(".nsp"):
-            fail("--base-nsp deve conter somente o nome do NSP gerado (sem caminhos).")
-        chosen = next((p for p in candidates if p.name == name), None)
-        if chosen is None:
-            fail(f"NSP '{name}' não encontrado na conversão. Disponíveis: "
-                 + ", ".join(p.name for p in candidates))
-        return chosen
-    if not candidates:
-        fail("Yanu não gerou NSP válido. Verifique os avisos do 4NXCI e suas chaves locais.")
-    if len(candidates) > 1:
-        fail("O XCI gerou vários NSPs; não é seguro escolher um automaticamente. "
-             "Execute novamente com --base-nsp NOME.nsp. Arquivos: "
-             + ", ".join(p.name for p in candidates))
-    return candidates[0]
+def choose_packages(
+    candidates: list[Path], requested_base: str | None,
+    requested_update: str | None,
+) -> tuple[Path, Path | None]:
+    """Select unambiguous base and its official [UPD] package.
 
+    XCI/4NXCI may produce multiple unrelated games, patches or DLCs. Never
+    guess a package based on size, ordering or title substring alone.
+    """
+    if not candidates:
+        fail("Yanu não gerou NSP válido. Verifique o 4NXCI e suas chaves locais.")
+
+    by_name = {p.name: p for p in candidates}
+
+    def selected(option: str, flag: str) -> Path:
+        if Path(option).name != option or not option.lower().endswith(".nsp"):
+            fail(f"{flag} deve conter somente o nome do NSP convertido.")
+        if option not in by_name:
+            fail(f"{flag}={option!r} não encontrado. Disponíveis: "
+                 + ", ".join(p.name for p in candidates))
+        return by_name[option]
+
+    def patch_base_name(path: Path) -> str | None:
+        import re
+        # Format produced by Yanu/4NXCI: GAME[UPD][1.2.0].nsp
+        match = re.fullmatch(
+            r"(.+)\[UPD\](?:\[[^\[\]]+\])?\.nsp", path.name, re.IGNORECASE
+        )
+        return match.group(1).casefold() if match else None
+
+    updates = [p for p in candidates if patch_base_name(p) is not None]
+    normal = [p for p in candidates if p not in updates]
+
+    if requested_base:
+        base = selected(requested_base, "--base-nsp")
+        if base in updates:
+            fail("O arquivo escolhido com --base-nsp é uma atualização [UPD].")
+    elif len(normal) == 1:
+        base = normal[0]
+    else:
+        fail("Não foi possível determinar um único NSP base. Utilize "
+             "--base-nsp NOME.nsp. Arquivos: "
+             + ", ".join(p.name for p in candidates))
+
+    matching = [p for p in updates
+                if patch_base_name(p) == base.stem.casefold()]
+
+    if requested_update:
+        update = selected(requested_update, "--update-nsp")
+        if update not in updates or update not in matching:
+            fail("--update-nsp deve identificar uma atualização [UPD] "
+                 "correspondente ao NSP base escolhido.")
+    elif len(matching) == 1:
+        update = matching[0]
+    elif len(matching) > 1:
+        fail("Há várias atualizações do jogo base. Informe "
+             "--update-nsp NOME.nsp: " + ", ".join(p.name for p in matching))
+    else:
+        update = None
+
+    # Do not ignore any extra packages in the converted XCI. They may be
+    # DLC, a different title, or an update for a different base game.
+    unselected = [p for p in candidates if p != base and p != update]
+    if unselected:
+        fail("Existem outros NSPs não selecionados. Selecione os arquivos "
+             "explicitamente ou examine a conversão antes de prosseguir: "
+             + ", ".join(p.name for p in unselected))
+
+    return base, update
 
 def run(args: argparse.Namespace) -> Path:
     source = Path(args.xci).expanduser().resolve()
@@ -99,10 +151,14 @@ def run(args: argparse.Namespace) -> Path:
         nsps = converted_nsps(convdir)
     else:
         print("== Reaproveitando NSP já convertido; sem reconverter XCI ==", flush=True)
-    base = choose_base(nsps, args.base_nsp)
-    print(f"== Extraindo ExeFS/RomFS com Yanu: {base.name} ==", flush=True)
-    subprocess.run([yanu, "unpack", "--base", str(base),
-                    "--outdir", str(dest)], check=True)
+    base, update = choose_packages(nsps, args.base_nsp, args.update_nsp)
+    print(f"== NSP base: {base.name} ==", flush=True)
+    unpack_command = [yanu, "unpack", "--base", str(base)]
+    if update is not None:
+        print(f"== Aplicando atualização: {update.name} ==", flush=True)
+        unpack_command.extend(["--update", str(update)])
+    unpack_command.extend(["--outdir", str(dest)])
+    subprocess.run(unpack_command, check=True)
     if not has_game_data(dest):
         fail("A extração terminou mas exefs/main e romfs não estão completos. "
              "Verifique a versão do Yanu, o log e as chaves da sua própria "
@@ -116,9 +172,13 @@ def run(args: argparse.Namespace) -> Path:
         # Remove only the selected NSP produced/staged by this helper,
         # and only after verifying that both game data directories exist.
         base.unlink()
-        print("NSP temporário selecionado excluído após extração verificada.")
+        if update is not None:
+            update.unlink()
+        print("NSPs intermediários utilizados excluídos após extração verificada.")
     else:
-        print("NSP intermediário preservado: " + str(base))
+        print("NSP base preservado: " + str(base))
+        if update is not None:
+            print("NSP da atualização preservado: " + str(update))
         print("Use --delete-intermediate numa nova extração, se preferir "
               "removê-lo após a validação.")
     return dest
@@ -130,7 +190,8 @@ def main() -> int:
     parser.add_argument("xci", help="Caminho do arquivo .xci da sua própria cópia")
     parser.add_argument("--output", help="Pasta de saída; padrão: NOME-extraido ao lado do XCI")
     parser.add_argument("--yanu-cli", default="auto", help="Comando instalado; padrão: detecta yanu (Termux) ou yanu-cli")
-    parser.add_argument("--base-nsp", help="Nome do NSP base quando um XCI gera vários NSPs")
+    parser.add_argument("--base-nsp", help="Nome do NSP base, se seleção automática for ambígua")
+    parser.add_argument("--update-nsp", help="Nome do NSP [UPD] desejado, se houver várias atualizações")
     parser.add_argument("--delete-intermediate", action="store_true",
                         help="Excluir apenas o NSP intermediário selecionado após extração válida")
     args = parser.parse_args()
