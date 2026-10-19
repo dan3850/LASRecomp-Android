@@ -8,7 +8,11 @@
 
 #include "cpu.h"
 
-#if defined(_WIN32)
+#if defined(LASRECOMP_MARIO_TEST)
+#include "mario_profile_config.h"
+#define GAMELIB_NAME "libmario_test.so"
+#define GAMELIB_EXPORT __attribute__((visibility("default")))
+#elif defined(_WIN32)
 #define GAMELIB_NAME "lasgame.dll"
 #define GAMELIB_EXPORT __declspec(dllexport)
 #elif defined(__APPLE__)
@@ -36,7 +40,12 @@ typedef struct {
 
 // The library's one exported function (tools/gamelib_entry.c).
 typedef const GameLibTables *(*GameLibEntry)(void);
+#ifndef GAMELIB_ENTRY
 #define GAMELIB_ENTRY "lasgame_tables"
+#endif
+#ifndef GAMELIB_ANDROID_NAME
+#define GAMELIB_ANDROID_NAME "liblasgame.so"
+#endif
 
 #ifdef __cplusplus
 extern "C" {

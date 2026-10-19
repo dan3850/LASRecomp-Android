@@ -70,9 +70,13 @@ void warp_request(const char *level, const char *locator) {
 int g_start_screen;  // runtime/ui/launcher.mm: the start screen is up - before the first boot nothing is loaded here
 
 int game_in_play(void) {
+#ifdef LASRECOMP_MARIO_TEST
+    return 0;  // Zelda's player/scene layout does not describe Mario.
+#else
     if (g_start_screen) return 0;
     uint64_t gm = LD64(MAIN_BASE + 0x1c97188);
     return gm && LD64(gm + 0x4b8) != 0;
+#endif
 }
 
 int warp_available(void) { return game_in_play(); }

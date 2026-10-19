@@ -38,7 +38,13 @@ float widescreen_effect_stretch(uint64_t fs_hash) {
 // Off in rooms that should keep 16:9 framing (interiors, dungeons) -- see widescreen_update.
 static bool g_allowed = true;
 static bool g_indoor;
-bool widescreen_allowed(void) { return g_allowed && g_settings.aspect == ASPECT_UNLOCKED && !ENV("LARECOMP_NO_WIDESCREEN"); }
+bool widescreen_allowed(void) {
+#ifdef LASRECOMP_MARIO_TEST
+    return false;
+#else
+    return g_allowed && g_settings.aspect == ASPECT_UNLOCKED && !ENV("LARECOMP_NO_WIDESCREEN");
+#endif
+}
 void widescreen_set_allowed(bool on) { g_allowed = on; }
 
 // Interiors and dungeons use cameras that never load the patched overworld aspect (site 0). Count
@@ -121,6 +127,10 @@ static bool level_is_interior(void) {
 }
 
 bool widescreen_frame_boxed(uint64_t frame) {
+#ifdef LASRECOMP_MARIO_TEST
+    (void)frame;
+    return false;
+#endif
     static bool last;
     static uint64_t interior_until;  // keep boxing briefly after leaving: the first (dark) frames still show stale sides
     bool in = level_is_interior();
@@ -263,7 +273,11 @@ void widescreen_present_crop(uint64_t frame, double shape, float crop[4], double
 
 // Current level name for logs ("-" when not in play).
 const char *game_level_name(void) {
+#ifdef LASRECOMP_MARIO_TEST
+    return "Mario";
+#else
     extern int game_in_play(void);
     uint64_t ps = LD64(MAIN_BASE + 0x1CC1368);
     return game_in_play() && ps && *(const char *)(uintptr_t)ps ? (const char *)(uintptr_t)ps : "-";
+#endif
 }

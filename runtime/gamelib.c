@@ -47,7 +47,7 @@ static bool android_private_game_path(char *out, size_t capacity) {
     const char *files = getenv("LARECOMP_DATA_ROOT");
     if (!files || files[0] != '/') return false;
     // Both files/ and code_cache/ are siblings in the package-private directory.
-    int n = snprintf(out, capacity, "%s/../code_cache/liblasgame.so", files);
+    int n = snprintf(out, capacity, "%s/../code_cache/%s", files, GAMELIB_ANDROID_NAME);
     if (n <= 0 || (size_t)n >= capacity) return false;
     struct stat st;
     return stat(out, &st) == 0 && S_ISREG(st.st_mode) &&
@@ -74,7 +74,7 @@ bool gamelib_present(const char *game_dir) {
     // Probe the private library first; preserve signed-APK fallback.
     char private_path[PATH_MAX];
     const char *path = android_private_game_path(private_path, sizeof private_path)
-                       ? private_path : "liblasgame.so";
+                       ? private_path : GAMELIB_ANDROID_NAME;
     void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!lib) return false;
     GameLibEntry entry = (GameLibEntry)(void *)dlsym(lib, GAMELIB_ENTRY);
@@ -134,7 +134,7 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
         if (!g_tables) {
             char prior_error[256];
             snprintf(prior_error, sizeof prior_error, "%s", g_error);
-            g_tables = open_lib("liblasgame.so");
+            g_tables = open_lib(GAMELIB_ANDROID_NAME);
             if (!g_tables && !strstr(g_error, "was built for another version"))
                 snprintf(g_error, sizeof g_error, "%.235s", prior_error);
         }

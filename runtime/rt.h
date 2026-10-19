@@ -6,6 +6,9 @@
 
 #include "cpu.h"
 #include "platform.h"
+#ifdef LASRECOMP_MARIO_TEST
+#include "mario_profile_config.h"
+#endif
 
 #define LOG(...) fprintf(stderr, __VA_ARGS__)
 #define FATAL(...) (fprintf(stderr, "FATAL: " __VA_ARGS__), rt_fatal_trace())
@@ -15,8 +18,12 @@
 // guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
 #define GUEST_LO     0x7000000000ull
 #define GUEST_HI     0x7320000000ull
+#ifndef MAIN_BASE
 #define MAIN_BASE    0x7000000000ull
+#endif
+#ifndef SDK_BASE
 #define SDK_BASE     0x7004000000ull
+#endif
 #define HLE_BASE     0x7080000000ull   // fake addresses for host-implemented functions
 #define HLE_SIZE     0x0000100000ull
 #define TLS_BASE     0x7090000000ull

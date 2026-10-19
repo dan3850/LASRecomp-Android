@@ -4,6 +4,9 @@
 #include <string.h>
 
 #include "rt.h"
+#ifdef LASRECOMP_MARIO_TEST
+#include "mario_boot.h"
+#endif
 
 Module g_modules[4];
 int g_nmodules;
@@ -73,7 +76,11 @@ static uint8_t *read_file(const char *path, size_t *len) {
 static void load_nso(Module *m, const char *path, uint64_t base) {
     size_t len;
     uint8_t *raw = read_file(path, &len);
-    if (!raw || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
+    if (!raw || len < 0x100 || memcmp(raw, "NSO0", 4)) FATAL("cannot load %s\n", path);
+#ifdef LASRECOMP_MARIO_TEST
+    if (!mario_nso_matches(m->name, raw, len))
+        FATAL("[mario-boot] NSO Build ID mismatch: %s; select the folder used to compile this library\n", m->name);
+#endif
     uint32_t flags = *(uint32_t *)(raw + 0xC);
     uint32_t seg[3][3];  // file_off, mem_off, size
     for (int i = 0; i < 3; i++) memcpy(seg[i], raw + 0x10 + i * 0x10, 12);

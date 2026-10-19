@@ -72,10 +72,14 @@ static __thread uint64_t unimpl_pc;
 static int unimpl_counts[MAX_HLE];
 static void hle_unimplemented(Cpu *c) {
     int i = (int)((unimpl_pc - HLE_BASE) / 16);
+#ifdef LASRECOMP_MARIO_TEST
+    FATAL("[mario-hle] unimplemented %s (lr=%llx pc=%llx)\n", hle_slots[i].name, c->x[30], c->pc);
+#else
     if (unimpl_counts[i]++ < 3)
         LOG("[hle] UNIMPLEMENTED %s (x0=%llx x1=%llx lr=%llx) -> returning 0\n", hle_slots[i].name, c->x[0],
             c->x[1], c->x[30]);
     c->x[0] = 0;
+#endif
 }
 
 uint64_t guest_sym(const char *name) {
@@ -131,7 +135,7 @@ GuestFn dispatch_lookup(uint64_t addr) {
     return NULL;
 }
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(LASRECOMP_MARIO_TEST)
 // Guest-main v1.0.0 child-pointer lifecycle trace.
 //
 // The same NULL virtual call occurs consistently when Field begins:
@@ -231,7 +235,7 @@ static GuestFn dispatch_slow(Cpu *c) {
     }
     for (int i = 0; i < override_count; i++)
         if (overrides[i].addr == pc) return overrides[i].fn;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(LASRECOMP_MARIO_TEST)
     // Do not fabricate a return for these Zelda guest virtual thunks.
     // An earlier mitigation skipped a NULL child; it stopped the crash but
     // hung the guest coroutine at the exact same point. Keep the original
@@ -274,7 +278,7 @@ static GuestFn dispatch_slow(Cpu *c) {
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(LASRECOMP_MARIO_TEST)
     // This must run BEFORE the fast-cache lookup; dispatch_slow() is
     // intentionally bypassed on warm virtual method calls.
     guest_child_trace_before(c);
@@ -462,7 +466,7 @@ void rt_fault_report(const char *what, uint64_t fa, uint64_t pc, uint64_t lr) {
                     (unsigned long long)c->x[2],
                     (unsigned long long)c->sp);
             }
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(LASRECOMP_MARIO_TEST)
             guest_child_trace_dump(object);
 #endif
         }

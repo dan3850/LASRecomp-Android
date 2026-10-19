@@ -90,6 +90,9 @@ static void load_pchtxt(const char *path) {
 }
 
 static void init(void) {
+#ifdef LASRECOMP_MARIO_TEST
+    return;
+#endif
     settings_load();
     const char *seed = getenv("LARECOMP_RANDO_SEED") ? getenv("LARECOMP_RANDO_SEED") : g_settings.rando_seed;
     if (!seed || !seed[0]) return;

@@ -1043,12 +1043,17 @@ void backend_present(NvnTexture *t) {
     if (slow_ms > 0 && total_frames > 2600 && (!slow_until || (long)total_frames < slow_until)) SDL_Delay((Uint32)slow_ms);
     extern void fnprof_frame(uint64_t frame);
     fnprof_frame(total_frames);
+#ifndef LASRECOMP_MARIO_TEST
     extern void warp_frame(uint64_t frame);
     warp_frame(total_frames);
     extern void reboot_test_frame(uint64_t frame);  // runtime/main.c (LARECOMP_REBOOT_AT)
     reboot_test_frame(total_frames);
     extern void save_editor_frame(uint64_t frame);
     save_editor_frame(total_frames);
+#else
+    extern void reboot_test_frame(uint64_t frame);
+    reboot_test_frame(total_frames);
+#endif
     extern void vk_level_change_check(void);
     vk_level_change_check();
     static long shot_every = -1;

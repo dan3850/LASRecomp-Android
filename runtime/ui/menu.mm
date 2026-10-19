@@ -77,7 +77,9 @@ static void set_open(bool open) {
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
     if (open) {
+#ifndef LASRECOMP_MARIO_TEST
         save_editor_on_open();
+#endif
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
         menu_tabs_focus(!opened);  // selected one
         opened = true;
@@ -438,10 +440,12 @@ static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
     opt_section("Display");
+#ifndef LASRECOMP_MARIO_TEST
     const char *aspects[] = {"Unlocked", "Original 16:9"};
     opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
                "Unlocked: the view fills the window, so wider (or taller) windows show more of the island - up to "
                "ultrawide; houses and dungeons keep their framing. Original 16:9: the game's own framing, with bars.");
+#endif
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -506,11 +510,13 @@ static void tab_display(void) {
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
                "blends only along them, so textures stay sharp. Most useful at a lower internal resolution.");
 
+#ifndef LASRECOMP_MARIO_TEST
     opt_section("Game");
     opt_toggle("Remove blur", &g_settings.blur_removal, false,
                "Turns off the tilt-shift blur at the top and bottom of the screen.");
     opt_toggle("Hide Hero Mode icon", &g_settings.hide_hero_icon, false,
                "Hides the Hero Mode emblem in the corner of the screen while playing a Hero Mode file.");
+#endif
     opt_end();
 }
 
@@ -557,8 +563,10 @@ static void tab_quit(float scale, bool in_game) {
     opt_begin("##quit", scale);
     opt_section("Quit");
     if (!ask) {
+#ifndef LASRECOMP_MARIO_TEST
         if (!in_game) opt_disable_next();  // (already on it)
         if (opt_action("Quit to Start Screen", "", in_game ? d1 : "You're on the start screen.")) ask = 1;
+#endif
         if (opt_action("Quit to Desktop", "", d2)) ask = 2;
     } else {
         if (opt_action(ask == 1 ? "Yes, quit to Start Screen" : "Yes, quit to Desktop", "", ask == 1 ? d1 : d2)) {
@@ -579,6 +587,7 @@ static void tab_quit(float scale, bool in_game) {
 }
 
 static void tab_about(void) {
+#ifndef LASRECOMP_MARIO_TEST
     header("Movement");
     toggle("D-pad moves Link", &g_settings.dpad_move);
     toggle("360-degree movement", &g_settings.move_360);
@@ -593,6 +602,7 @@ static void tab_about(void) {
         choice("Button icons", &g_settings.prompts, names, 4);
     }
     ImGui::Spacing();
+#endif
     header("System language");
     {
         // what the game is told the console's language is: its text follows this (runtime/settings.c)
@@ -603,8 +613,12 @@ static void tab_about(void) {
         for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_names[i];
         if (choice("Language", &g_settings.language, names, N_LANGUAGES)) settings_save();
     }
+#ifdef LASRECOMP_MARIO_TEST
+    hint("Restart the app to apply a language change.");
+#else
     hint("The game's text language, as its own system setting. Applies when the game restarts: Quit -> Title "
          "screen, then Play.");
+#endif
     ImGui::Spacing();
     header("Controls");
     controls_bindings_draw(ImGui::GetFontSize() / 34);
@@ -700,6 +714,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     static const int order[] = {8, 0, 1, 6, 7, 3, 5, 4, 2, 9};  // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer,
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
     for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
+#ifdef LASRECOMP_MARIO_TEST
+        if (i == 8 || i == 0 || i == 1 || i == 9)
+#endif
         if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, in_game || (i != 2 && i != 4 && i != 5)};
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
@@ -827,9 +844,13 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     const double tw = target_w, th = target_h;
 #endif
     bool open = g_open.load();
+#ifdef LASRECOMP_MARIO_TEST
+    bool inv = false, trk = false, chaos = false;
+#else
     bool inv = !open && inventory_overlay_wanted();
     bool trk = !open && tracker_overlay_wanted();
     bool chaos = !open && chaos_overlay_wanted();
+#endif
     bool kbd = g_kbd.load() == 1;
     if (!open && !kbd && !g_settings.show_fps && !inv && !trk && !chaos) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }

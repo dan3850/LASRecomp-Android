@@ -146,7 +146,11 @@ static void boot(const char *root) {
 #ifdef __ANDROID__
     fprintf(stderr, "[boot] NSO modules loaded\n");
 #endif
+#ifndef LASRECOMP_MARIO_TEST
     rando_boot();  // the chosen seed's data patches go into the freshly loaded module
+#else
+    LOG("[mario-boot] main=%llx sdk=%llx library=%s\n", MAIN_BASE, SDK_BASE, GAMELIB_ID);
+#endif
     { extern void settings_load(void); settings_load(); }
     kernel_init();
     dispatch_init();

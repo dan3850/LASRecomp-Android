@@ -5,7 +5,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 CACHE="${LASRECOMP_CACHE:-$HOME/.cache/lasrecomp-termux}"
-OUT="$ROOT/build/termux-native"
+OUT="${LASRECOMP_BUILD_OUT:-$ROOT/build/termux-native}"
+MANIFEST="${LASRECOMP_MANIFEST:-$ROOT/android/bootstrap/AndroidManifest.xml}"
+APK_FILENAME="${LASRECOMP_APK_FILENAME:-LASRecomp-Android-Termux.apk}"
+DOWNLOAD_FOLDER="${LASRECOMP_DOWNLOAD_FOLDER:-LASRecomp}"
+PROFILE_FLAGS=()
+GAME_ENTRY=lasgame_tables
+GAME_NAME=liblasgame.so
 DEPS="$CACHE/src"
 WORK="$CACHE/build"
 JOBS="${LASRECOMP_JOBS:-3}"
@@ -13,6 +19,14 @@ mkdir -p "$OUT" "$DEPS" "$WORK"
 exec > >(tee -a "$OUT/compilacao.log") 2>&1
 fail(){ echo "ERRO: $*" >&2; exit 1; }
 step(){ printf '\n== %s ==\n' "$*"; }
+[[ -s "$MANIFEST" ]] || fail "Manifesto Android ausente: $MANIFEST"
+[[ "$APK_FILENAME" =~ ^[A-Za-z0-9._-]+\.apk$ && "$DOWNLOAD_FOLDER" =~ ^[A-Za-z0-9_-]+$ ]] || fail "Nome de saida Android invalido"
+if [[ -n "${LASRECOMP_MARIO_PROFILE:-}" ]]; then
+ [[ -s "$LASRECOMP_MARIO_PROFILE" ]] || fail "Perfil Mario ausente"
+ PROFILE_FLAGS=(-DLASRECOMP_MARIO_TEST=1 -I"$(dirname "$LASRECOMP_MARIO_PROFILE")" -include "$LASRECOMP_MARIO_PROFILE")
+ GAME_ENTRY=mario_test_tables
+ GAME_NAME=libmario_test.so
+fi
 [[ "$(uname -m)" == aarch64 && "$PREFIX" == /data/data/com.termux/files/usr ]] || fail "Execute no Termux ARM64, fora de proot."
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || fail "LASRECOMP_JOBS invalido"
 # Ferramentas do SDK podem existir sem comandos no PATH.
@@ -191,6 +205,9 @@ OBJ="$OUT/obj"; LIB="$OUT/lib"
 mkdir -p "$OBJ" "$LIB"
 STAMP="$OUT/flags.stamp"
 HASH="$(python3 tools/termux_compile_id.py "$0")"
+if [[ -n "${LASRECOMP_MARIO_PROFILE:-}" ]]; then
+ HASH="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(sys.argv[1].encode() + pathlib.Path(sys.argv[2]).read_bytes()).hexdigest())' "$HASH" "$LASRECOMP_MARIO_PROFILE")"
+fi
 if [[ ! -f "$OUT/flags.id" || "$(cat "$OUT/flags.id")" != "$HASH" ]]; then
  printf '%s' "$HASH" > "$OUT/flags.id"; touch "$STAMP"
 fi
@@ -206,7 +223,7 @@ compile(){
   echo "CC ${src#"$ROOT"/}"
   "$compiler" -O2 -fPIC -fno-strict-aliasing \
    -Wno-nullability-completeness -MMD -MP -MF "$dep.tmp" -MQ "$obj" \
-   "$@" -c "$src" -o "$obj.tmp"
+   "${PROFILE_FLAGS[@]}" "$@" -c "$src" -o "$obj.tmp"
   mv -f "$dep.tmp" "$dep"
   mv -f "$obj.tmp" "$obj"
  fi
@@ -309,7 +326,7 @@ mv -f "$RUNTIME.tmp" "$RUNTIME"
 step "Compilando SDL_main e bibliotecas do app"
 clang -shared -fPIC -O2 -Wl,-z,max-page-size=16384 \
  -Wl,-soname,libmain.so -I"$SDL_HEADERS" -L"$(dirname "$SDL_SO")" \
- -o "$LIB/libmain.so" android/game/game_entry.c -lSDL3 -ldl -llog
+ "${PROFILE_FLAGS[@]}" -o "$LIB/libmain.so" android/game/game_entry.c -lSDL3 -ldl -llog
 # The original Neo analog controller needs an exported real Switch HID bridge.
 # Validate both libraries before producing a signed APK.
 if [[ "${LASRECOMP_NEO_CONTROLS:-1}" == 1 ]]; then
@@ -323,7 +340,7 @@ if [[ "${LASRECOMP_NEO_CONTROLS:-1}" == 1 ]]; then
 fi
 clang -shared -fPIC -O2 -fvisibility=hidden -Wl,-z,max-page-size=16384 \
  -Wl,-soname,liblasrecomp_prepare.so -o "$LIB/liblasrecomp_prepare.so" \
- android/prepare/game_prepare.c android/prepare/local_code_probe.c \
+ "${PROFILE_FLAGS[@]}" android/prepare/game_prepare.c android/prepare/local_code_probe.c \
  android/prepare/private_game_code.c runtime/romfs_build.c -llog -ldl
 clang -shared -fPIC -O2 -fvisibility=hidden -Wl,-z,max-page-size=16384 \
  -Wl,-soname,liblasrecomp_probe.so -o "$LIB/liblasrecomp_probe.so" \
@@ -381,6 +398,9 @@ STAGE="$OUT/stage"
 # Evita que uma liblasgame.so privada de uma rodada anterior vaze no APK atual.
 rm -rf -- "$STAGE"
 mkdir -p "$STAGE/lib/arm64-v8a" "$STAGE/assets" "$STAGE/dex" "$STAGE/classes"
+if [[ -n "${LASRECOMP_MARIO_PROFILE:-}" ]]; then
+ cp "$(dirname "$LASRECOMP_MARIO_PROFILE")/mario_boot_profile.json" "$STAGE/assets/mario_boot_profile.json"
+fi
 # Hooks must be extracted to Android nativeLibraryDir (manifest extractNativeLibs=true).
 for name in libadrenotools.so libmain_hook.so libhook_impl.so libfile_redirect_hook.so libgsl_alloc_hook.so; do
  source_so="$(find "$ADRENO_BUILD" -type f -name "$name" -print -quit)"
@@ -400,8 +420,8 @@ fi
 if [[ -n "${LASRECOMP_GAME_SO:-}" ]]; then
  [[ -s "$LASRECOMP_GAME_SO" ]] || fail "LASRECOMP_GAME_SO ausente"
  llvm-nm -D --defined-only "$LASRECOMP_GAME_SO" \
-  | grep -Eq '[[:space:]]lasgame_tables$' || fail "lasgame_tables ausente"
- cp -L "$LASRECOMP_GAME_SO" "$STAGE/lib/arm64-v8a/liblasgame.so"
+  | grep -Eq "[[:space:]]${GAME_ENTRY}$" || fail "$GAME_ENTRY ausente"
+ cp -L "$LASRECOMP_GAME_SO" "$STAGE/lib/arm64-v8a/$GAME_NAME"
 fi
 NDK="${ANDROID_NDK_HOME:-}"
 if [[ -z "$NDK" ]]; then
@@ -488,7 +508,7 @@ if [[ "$NEO_ENABLE" == 1 ]]; then
   package_list="$(printf '%s\n' "${NEO_PACKAGES[@]}" | sort -u | paste -sd: -)"
   resource_args+=(--extra-packages "$package_list")
  fi
- aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml \
+ aapt2 link -I "$ANDROID_JAR" --manifest "$MANIFEST" \
   --auto-add-overlay --java "$NEO_JAVA_RES" "${resource_args[@]}" -o "$NEO_BASE_APK" ||
   fail "Falha ao mesclar recursos AndroidX / RadialGamePad"
  mapfile -d '' -t NEO_RJAVA < <(find "$NEO_JAVA_RES" -type f -name 'R.java' -print0)
@@ -588,12 +608,12 @@ for so in "$LIBDIR"/*.so; do
   fail "Dependencia Android ausente: $(basename "$so") -> $dep"
  done < <(llvm-readelf -d "$so" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
 done
-APK="$OUT/LASRecomp-Android-Termux.apk"
+APK="$OUT/$APK_FILENAME"
 rm -f -- "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 if [[ "$NEO_ENABLE" == 1 ]]; then
  cp "$NEO_BASE_APK" "$OUT/unsigned.apk"
 else
- aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml -o "$OUT/unsigned.apk"
+ aapt2 link -I "$ANDROID_JAR" --manifest "$MANIFEST" -o "$OUT/unsigned.apk"
 fi
 (cd "$STAGE" && zip -q -r "$OUT/unsigned.apk" lib assets)
 (cd "$STAGE/dex" && zip -q "$OUT/unsigned.apk" classes*.dex)
@@ -650,9 +670,9 @@ print("LICENCAS APK: verificados", len(required), "arquivos obrigatorios")
 PY
 # END LICENSE_ASSET_PACKAGING
 if [[ -d "$HOME/storage/downloads" ]]; then
- mkdir -p "$HOME/storage/downloads/LASRecomp"
- cp -f "$APK" "$HOME/storage/downloads/LASRecomp/LASRecomp-Android-Termux.apk"
- echo "APK: $HOME/storage/downloads/LASRecomp/LASRecomp-Android-Termux.apk"
+ mkdir -p "$HOME/storage/downloads/$DOWNLOAD_FOLDER"
+ cp -f "$APK" "$HOME/storage/downloads/$DOWNLOAD_FOLDER/$APK_FILENAME"
+ echo "APK: $HOME/storage/downloads/$DOWNLOAD_FOLDER/$APK_FILENAME"
 else
  echo "APK: $APK"
 fi
