@@ -927,23 +927,11 @@ void backend_present(NvnTexture *t) {
         float crop[4];  // uv origin and size
         widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
 #ifdef __ANDROID__
-        // Capture the crop-produced rectangle before unlocked Android presentation
-        // overrides it with a full-surface destination. UV cropping remains intact.
+        // Retain the crop-derived rectangle for the Android zoom diagnostic.
+        // As in Nycolazs's Vulkan port, it is also the final presentation rectangle.
         const double crop_vx = vx, crop_vy = vy, crop_vw = vw, crop_vh = vh;
 #endif
         widescreen_set_factor((float)shape);
-#ifdef __ANDROID__
-        // The widescreen crop can reduce the final presentation rectangle back to
-        // a centred 16:9 box (notably indoors). In Android's unlocked mode, the
-        // user explicitly requests a stretched full-surface presentation.
-        // Preserve the UV crop above: only change the destination rectangle.
-        if (g_settings.aspect != ASPECT_ORIGINAL) {
-            vx = 0.0;
-            vy = 0.0;
-            vw = dw;
-            vh = dh;
-        }
-#endif
 #ifdef __ANDROID__
         // Android zoom investigation. Observe per-frame changes, but emit at most
         // one report each 80ms. The accumulated min/max widths preserve even a
