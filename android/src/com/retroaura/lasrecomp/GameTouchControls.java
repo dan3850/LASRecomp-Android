@@ -85,7 +85,6 @@ public final class GameTouchControls extends View {
         final float dpadX = edge + analog*1.30f;
         final float dpadY = h - step*1.84f;
         final float rightX = w - edge;
-        final float rightY = h*0.72f;
         final float faceY = h*0.30f;
         place(LEFT_STICK, leftX, leftY, analog);
         // Zelda does not use the right stick. Keep its native axes neutral.
@@ -104,8 +103,8 @@ public final class GameTouchControls extends View {
         place(R, w-edge+button*0.28f, top, button*0.82f);
 
 
-        place(MINUS, w*0.43f, h-button*1.10f, button*0.68f);
-        place(PLUS, w*0.57f, h-button*1.10f, button*0.68f);
+        place(MINUS, w*0.40f, h-button*1.10f, button*0.68f);
+        place(PLUS, w*0.60f, h-button*1.10f, button*0.68f);
         place(HOME, w*0.50f, h-button*1.10f, button*0.68f);
         ready = true;
     }
@@ -130,10 +129,17 @@ public final class GameTouchControls extends View {
     private void drawButton(Canvas canvas, int i) {
         float r = radius[i];
         rect.set(cx[i]-r, cy[i]-r, cx[i]+r, cy[i]+r);
-        fill(held[i]>0 ? 0xB33A85C6 : 0x9A252F40);
-        canvas.drawRoundRect(rect, r*0.55f, r*0.55f, paint);
-        outline(density);
-        canvas.drawRoundRect(rect, r*0.55f, r*0.55f, paint);
+        fill(held[i]>0 ? 0xD85B83B6 : 0xA3262D3A);
+        if (i==L || i==R) {
+            rect.inset(-r*0.38f, r*0.18f);
+            canvas.drawRoundRect(rect, r*0.42f, r*0.42f, paint);
+            outline(density);
+            canvas.drawRoundRect(rect, r*0.42f, r*0.42f, paint);
+        } else {
+            canvas.drawCircle(cx[i], cy[i], r, paint);
+            outline(density);
+            canvas.drawCircle(cx[i], cy[i], r, paint);
+        }
         fill(Color.WHITE);
         paint.setTextAlign(Paint.Align.CENTER);
         paint.setTypeface(android.graphics.Typeface.create(
@@ -152,12 +158,16 @@ public final class GameTouchControls extends View {
         canvas.drawCircle(x,y,r,paint);
         fill(0x4CFFFFFF);
         canvas.drawCircle(x,y,r*0.71f,paint);
+        fill(0x68212B3C);
+        canvas.drawCircle(x,y,r*0.62f,paint);
         float dx = axes[offset]*r*0.56f;
         float dy = axes[offset+1]*r*0.56f;
         fill((dx!=0 || dy!=0) ? 0xD856ABE0 : 0xC04A5B73);
-        canvas.drawCircle(x+dx,y+dy,r*0.38f,paint);
+        canvas.drawCircle(x+dx,y+dy,r*0.43f,paint);
         outline(density);
-        canvas.drawCircle(x+dx,y+dy,r*0.38f,paint);
+        canvas.drawCircle(x+dx,y+dy,r*0.43f,paint);
+        fill(0x36FFFFFF);
+        canvas.drawCircle(x+dx,y+dy,r*0.27f,paint);
     }
 
     @Override protected void onDraw(Canvas canvas) {
