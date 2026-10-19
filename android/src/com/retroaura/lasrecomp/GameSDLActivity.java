@@ -34,6 +34,8 @@ public final class GameSDLActivity extends SDLActivity {
     private android.widget.Button captureButton;
     private final android.os.Handler captureHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private GameTouchControls touchControls;
+    private NeoInputBridge neoInput;
+    private Object neoControls;
     private android.net.Uri selectedGameTree;
     private GameDocumentBridge.RomfsIndex romfsIndex;
 
@@ -128,10 +130,27 @@ public final class GameSDLActivity extends SDLActivity {
         super.onCreate(state);
         enforceLandscapeFullscreen();
         if (mLayout != null) {
-            touchControls = new GameTouchControls(this);
-            mLayout.addView(touchControls, new ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            touchControls.bringToFront();
+            // Prefer the original RadialGamePad UI when the optional Kotlin
+            // implementation and all its runtime dependencies are packaged.
+            // Retain the existing working controls for ordinary Java builds.
+            try {
+                Class<?> type = Class.forName("com.retroaura.lasrecomp.NeoRadialControls");
+                neoInput = new NeoInputBridge();
+                neoControls = type.getConstructor(android.app.Activity.class, NeoInputBridge.class)
+                        .newInstance(this, neoInput);
+                View original = (View) type.getMethod("getView").invoke(neoControls);
+                mLayout.addView(original, new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                original.bringToFront();
+                markActivity("original RadialGamePad mounted");
+            } catch (ClassNotFoundException missingOptionalModule) {
+                installLegacyTouchControls();
+            } catch (Exception | LinkageError error) {
+                markActivity("RadialGamePad unavailable: " + error);
+                neoControls = null;
+                neoInput = null;
+                installLegacyTouchControls();
+            }
             captureButton = new android.widget.Button(this);
             captureButton.setText("CAPTURAR LOG");
             captureButton.setTextSize(10);
@@ -143,6 +162,23 @@ public final class GameSDLActivity extends SDLActivity {
             mLayout.addView(captureButton, cp);
             captureButton.setOnClickListener(v -> requestGraphicsCapture());
         }
+    }
+    private void installLegacyTouchControls() {
+        touchControls = new GameTouchControls(this);
+        mLayout.addView(touchControls, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        touchControls.bringToFront();
+    }
+    private void releaseNeoControls() {
+        if (neoInput != null) neoInput.releaseAll();
+    }
+    private void closeNeoControls() {
+        if (neoControls != null) {
+            try { neoControls.getClass().getMethod("close").invoke(neoControls); }
+            catch (Exception error) { markActivity("RadialGamePad close: " + error); }
+            neoControls = null;
+        }
+        releaseNeoControls();
     }
     private void requestGraphicsCapture() {
         new File(getFilesDir(), "graphics/capture.state").delete();
@@ -194,12 +230,14 @@ public final class GameSDLActivity extends SDLActivity {
     @Override
     protected void onPause() {
         if (touchControls != null) touchControls.releaseAll();
+        releaseNeoControls();
         super.onPause();
     }
     @Override
     protected void onDestroy() {
         captureHandler.removeCallbacksAndMessages(null);
         if (touchControls != null) touchControls.releaseAll();
+        closeNeoControls();
         markActivity("onDestroy");
         super.onDestroy();
     }
