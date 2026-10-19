@@ -233,9 +233,11 @@ static int vk_counter_mode(void) {
         // Give each presented frame a stable 16 ms step so the next frame's
         // counter no longer inherits the half-rate decision. Does NOT improve GPU speed.
 #ifdef __ANDROID__
-        // Android default: read actual Vulkan GPU timestamps. The synthetic
-        // virtual counter remains available only by explicit diagnostic opt-in.
-        const int default_mode = 2;  // gpu: real Vulkan GPU timestamps
+        // A/B test: keep guest-visible virtual 16 ms timing, without issuing
+        // Vulkan timestamp queries. Distinguishes query overhead from the
+        // real GPU/CPU frame budget; not a guaranteed 60 FPS optimization.
+        // LARECOMP_VK_COUNTER=gpu still enables the real GPU query path.
+        const int default_mode = 4;  // virtual: no GPU queries
 #else
         const int default_mode = 2;  // gpu: unchanged on other platforms
 #endif
