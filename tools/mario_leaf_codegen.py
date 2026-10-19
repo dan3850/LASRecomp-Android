@@ -61,7 +61,31 @@ def translate(words):
     if not words:
         return None
     lines = ["    s->fault = 0;"]
+    targets = set()
     for index, word in enumerate(words):
+        if (word & 0x7E000000) == 0x34000000:
+            imm = (word >> 5) & 0x7FFFF
+            displacement = imm - 0x80000 if imm & 0x40000 else imm
+            target = index + displacement
+            if target <= index or target >= len(words):
+                return None  # forward-only, inside this function
+            targets.add(target)
+    for index, word in enumerate(words):
+        if index in targets:
+            lines.append(f"mario_label_{index}: ;")
+        if (word & 0x7E000000) == 0x34000000:
+            imm = (word >> 5) & 0x7FFFF
+            displacement = imm - 0x80000 if imm & 0x40000 else imm
+            target = index + displacement
+            if target <= index or target >= len(words):
+                return None
+            rt = word & 31
+            value = "0ULL" if rt == 31 else f"s->x[{rt}]"
+            if not (word & 0x80000000):
+                value = f"(uint32_t)({value})"
+            op = "!=" if word & 0x01000000 else "=="
+            lines.append(f"    if ({value} {op} 0ULL) goto mario_label_{target};")
+            continue
         if word == 0xD503201F:  # NOP
             continue
         if word == 0xD65F03C0 and index == len(words) - 1:  # RET X30
