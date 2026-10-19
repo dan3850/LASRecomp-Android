@@ -48,7 +48,7 @@ def testbit(delta, bit, nonzero=False, rt=0):
 
 class TestBoundedLoops(unittest.TestCase):
     def test_opt_in_and_bad_targets(self):
-        loop = [cb(-1, nonzero=True), RET]
+        loop = [SUB_X0_1, cb(-1, nonzero=True), RET]
         self.assertIsNone(translate(loop))
         self.assertIsNotNone(translate(loop, allow_backward_branches=True))
         self.assertIsNone(translate([b(-1), RET]))
@@ -60,7 +60,7 @@ class TestBoundedLoops(unittest.TestCase):
                                     allow_backward_branches=True))
         state = State()
         state.x[0] = 1
-        code = struct.pack("<2I", *loop)
+        code = struct.pack("<3I", *loop)
         with self.assertRaises(ValueError):
             run_reference(code, state)
         with self.assertRaises(ValueError):
