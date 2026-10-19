@@ -99,6 +99,11 @@ Mario registram prontidão em `x2`, inicializam SDK e main em `x3` e, na variant
 de cinco argumentos, finalizam main e SDK em `x4`. `DT_INIT`/`DT_FINI` têm
 precedência sobre a execução direta dos respectivos arrays.
 
+O perfil Mario anuncia NVN 53.313, exigida pelo bootstrap de dispositivo do
+jogo antes de publicar seu objeto gráfico global. O perfil Zelda mantém
+53.207. Isso libera a verificação de versão; não comprova suporte completo
+às funções NVN nem a renderização do Mario.
+
 A correção da entrada não exige regenerar a biblioteca: o perfil de compilação
 nativa mantém as mesmas flags e os objetos sem alterações continuam em cache.
 
