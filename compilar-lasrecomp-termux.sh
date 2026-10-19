@@ -405,52 +405,82 @@ python3 tools/android-font-fallback.py \
  third_party/imgui/misc/fonts/Roboto-Medium.ttf "$STAGE/assets/lasrecomp_font.ttf"
 mapfile -d '' -t SDLJAVA < <(find "$SDL_JAVA" -type f -name '*.java' -print0)
 (( ${#SDLJAVA[@]} > 0 )) || fail "SDL Java nao encontrado"
-# Reuse existing Maven/Gradle caches and optionally fetch the original published
-# RadialGamePad binary and transitive AndroidX/Kotlin dependencies.
-# This mode is opt-in until AAR Android resource merging is implemented.
-if [[ "${LASRECOMP_NEO_AUTO:-0}" == 1 ]]; then
- fail "LASRECOMP_NEO_AUTO ainda nao suportado: o APK exige mesclagem dos recursos AAR AndroidX. Nao produzir APK com controles antigos silenciosamente."
-fi
-# Optional original RadialGamePad. Explicit local dependencies only; no download.
-RADIAL_AAR="${LASRECOMP_RADIAL_AAR:-}"
-RADIAL_DEPS="${LASRECOMP_RADIAL_DEPS_DIR:-}"
+# Original Ryujinx Neo touch controller: package the real Swordfish90 GPL
+# RadialGamePad library, its Kotlin/AndroidX dependencies, and Android assets.
+# Defaults ON. Set LASRECOMP_NEO_CONTROLS=0 to explicitly use legacy controls.
+NEO_ENABLE="${LASRECOMP_NEO_CONTROLS:-1}"
+[[ "$NEO_ENABLE" == 0 || "$NEO_ENABLE" == 1 ]] || fail "LASRECOMP_NEO_CONTROLS deve ser 0 ou 1"
 RADIAL_JARS=()
 RADIAL_CP="$ANDROID_JAR"
-if [[ -n "$RADIAL_AAR" ]]; then
- [[ -s "$RADIAL_AAR" ]] || fail "RadialGamePad AAR nao encontrado: $RADIAL_AAR"
- [[ -d "$RADIAL_DEPS" ]] || fail "Configure LASRECOMP_RADIAL_DEPS_DIR com os JAR/AAR Kotlin, coroutines e AndroidX"
- mkdir -p "$STAGE/radial"
- unzip -p "$RADIAL_AAR" classes.jar > "$STAGE/radial/radial-classes.jar" || fail "AAR invalido"
- [[ -s "$STAGE/radial/radial-classes.jar" ]] || fail "AAR sem classes.jar"
- RADIAL_JARS+=("$STAGE/radial/radial-classes.jar")
- RADIAL_CP="$RADIAL_CP:$STAGE/radial/radial-classes.jar"
- # Android resources in an AAR cannot be linked by the current manifest-only aapt2 call.
- # Refuse silent packaging of a resource-dependent AAR until resource merging exists.
- if unzip -Z1 "$RADIAL_AAR" | grep -qE "^(res/|R.txt$)"; then
-  fail "RadialGamePad AAR contem recursos Android: integrar compilacao aapt2 de recursos antes de ativar"
- fi
- mapfile -d '' -t RADIAL_DEP_FILES < <(find "$RADIAL_DEPS" -maxdepth 1 -type f \( -name '*.jar' -o -name '*.aar' \) -print0 | sort -z)
- (( ${#RADIAL_DEP_FILES[@]} > 0 )) || fail "Diretorio de dependencias RadialGamePad vazio"
- index=0
- for dep in "${RADIAL_DEP_FILES[@]}"; do
-  if [[ "$dep" == *.aar ]]; then
-   index=$((index+1))
-   extracted="$STAGE/radial/dep-$index.jar"
-   unzip -p "$dep" classes.jar > "$extracted" || fail "AAR de dependencia invalido: $dep"
-   [[ -s "$extracted" ]] || fail "AAR sem classes.jar: $dep"
-   RADIAL_JARS+=("$extracted")
-  else
-   RADIAL_JARS+=("$dep")
+NEO_RES_ZIPS=()
+NEO_PACKAGES=()
+NEO_BASE_APK="$STAGE/neo-resources.apk"
+NEO_JAVA_RES="$STAGE/neo-rjava"
+if [[ "$NEO_ENABLE" == 1 ]]; then
+ step "Preparando dependencias originais do controle Ryujinx Neo"
+ command -v kotlinc >/dev/null 2>&1 || fail "Kotlin nao encontrado. No Termux instale: pkg install kotlin"
+ command -v unzip >/dev/null 2>&1 || fail "unzip nao encontrado. Instale: pkg install unzip"
+ mkdir -p "$STAGE/radial" "$NEO_JAVA_RES"
+ # Delete only generated module intermediates: never invalidate native caches.
+ rm -rf "$STAGE/radial/extracted"
+ mkdir -p "$STAGE/radial/extracted"
+ python3 tools/neo_radial_deps.py "$CACHE/neo-radial-maven" > "$STAGE/radial/artifacts.tsv" ||
+  fail "Falha ao preparar as dependencias do RadialGamePad"
+ artifact_index=0
+ while IFS=$'\\t' read -r kind artifact namespace; do
+  [[ -s "$artifact" ]] || fail "Artefato Neo ausente: $artifact"
+  artifact_index=$((artifact_index+1))
+  if [[ "$kind" == jar ]]; then
+   RADIAL_JARS+=("$artifact")
+   RADIAL_CP="$RADIAL_CP:$artifact"
+   continue
   fi
- done
- for dep in "${RADIAL_JARS[@]}"; do RADIAL_CP="$RADIAL_CP:$dep"; done
- echo "RadialGamePad: ${#RADIAL_JARS[@]} arquivos Java/Kotlin incluidos no DEX"
+  [[ "$kind" == aar ]] || fail "Tipo de dependencia desconhecido: $kind"
+  module="$STAGE/radial/extracted/$artifact_index"
+  mkdir -p "$module"
+  unzip -p "$artifact" classes.jar > "$module/classes.jar" ||
+   fail "AAR sem classes.jar: $artifact"
+  [[ -s "$module/classes.jar" ]] || fail "AAR com classes.jar vazio: $artifact"
+  RADIAL_JARS+=("$module/classes.jar")
+  RADIAL_CP="$RADIAL_CP:$module/classes.jar"
+  if unzip -Z1 "$artifact" | grep -q '^res/'; then
+   (cd "$module" && unzip -q "$artifact" 'res/*') ||
+    fail "Nao foi possivel extrair os recursos de $artifact"
+   aapt2 compile --dir "$module/res" -o "$module/compiled-resources.zip" ||
+    fail "aapt2 nao compilou os recursos de $artifact"
+   NEO_RES_ZIPS+=("$module/compiled-resources.zip")
+  fi
+  if unzip -Z1 "$artifact" | grep -q '^assets/'; then
+   (cd "$STAGE" && unzip -qo "$artifact" 'assets/*') ||
+    fail "Nao foi possivel extrair os assets de $artifact"
+  fi
+  if [[ -n "$namespace" && "$namespace" != "-" ]]; then
+   NEO_PACKAGES+=("$namespace")
+  fi
+ done < "$STAGE/radial/artifacts.tsv"
+ (( ${#RADIAL_JARS[@]} > 0 )) || fail "RadialGamePad nao baixado"
+ # Resource IDs must match the app's merged resource table. Generate R.java
+ # for all AndroidX packages (and RadialGamePad) before javac / kotlinc.
+ resource_args=()
+ for compiled in "${NEO_RES_ZIPS[@]}"; do resource_args+=(-R "$compiled"); done
+ if (( ${#NEO_PACKAGES[@]} > 0 )); then
+  package_list="$(printf '%s\\n' "${NEO_PACKAGES[@]}" | sort -u | paste -sd: -)"
+  resource_args+=(--extra-packages "$package_list")
+ fi
+ aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml \\
+  --auto-add-overlay --java "$NEO_JAVA_RES" "${resource_args[@]}" -o "$NEO_BASE_APK" ||
+  fail "Falha ao mesclar recursos AndroidX / RadialGamePad"
+ mapfile -d '' -t NEO_RJAVA < <(find "$NEO_JAVA_RES" -type f -name 'R.java' -print0)
+ echo "Neo original: ${#RADIAL_JARS[@]} bibliotecas, ${#NEO_RES_ZIPS[@]} pacotes de recursos, ${#NEO_RJAVA[@]} namespaces"
+else
+ NEO_RJAVA=()
+ echo "AVISO: controles antigos selecionados explicitamente (LASRECOMP_NEO_CONTROLS=0)"
 fi
 javac -source 8 -target 8 -encoding UTF-8 -cp "$RADIAL_CP" \
- -d "$STAGE/classes" android/src/com/retroaura/lasrecomp/*.java "${SDLJAVA[@]}"
+ -d "$STAGE/classes" android/src/com/retroaura/lasrecomp/*.java "${SDLJAVA[@]}" "${NEO_RJAVA[@]}"
 # Compile the actual original RadialGamePad integration Kotlin module only
 # when explicitly enabled. Do not silently generate a legacy-looking APK.
-if [[ -n "$RADIAL_AAR" ]]; then
+if [[ "$NEO_ENABLE" == 1 ]]; then
  command -v kotlinc >/dev/null 2>&1 || fail "kotlinc nao instalado no Termux (necessario para NeoRadialControls.kt)"
  KOTLIN_SRC="android/kotlin/com/retroaura/lasrecomp/NeoRadialControls.kt"
  [[ -s "$KOTLIN_SRC" ]] || fail "Modulo Kotlin NeoRadialControls.kt ausente"
@@ -503,7 +533,11 @@ for so in "$LIBDIR"/*.so; do
 done
 APK="$OUT/LASRecomp-Android-Termux.apk"
 rm -f -- "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
-aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml -o "$OUT/unsigned.apk"
+if [[ "$NEO_ENABLE" == 1 ]]; then
+ cp "$NEO_BASE_APK" "$OUT/unsigned.apk"
+else
+ aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml -o "$OUT/unsigned.apk"
+fi
 (cd "$STAGE" && zip -q -r "$OUT/unsigned.apk" lib assets)
 (cd "$STAGE/dex" && zip -q "$OUT/unsigned.apk" classes*.dex)
 if [[ -n "$ZIPALIGN_CMD" ]]; then
