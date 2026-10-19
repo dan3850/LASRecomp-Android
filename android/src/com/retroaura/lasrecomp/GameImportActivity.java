@@ -138,9 +138,9 @@ public final class GameImportActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Configurações de vídeo")
             .setItems(sections, (dialog, which) -> {
                 if (which == 0) {
-                    final String[] labels = {"Igual à tela (padrão)", "25% da tela", "50% da tela",
+                    final String[] labels = {"Igual à tela (padrão)", "720p fixo (1280 × 720)", "25% da tela", "50% da tela",
                         "75% da tela", "Dinâmica", "1x (1080p)", "2x", "3x", "4x"};
-                    final String[] values = {"match", "25%", "50%", "75%", "dynamic", "1x", "2x", "3x", "4x"};
+                    final String[] values = {"match", "720p", "25%", "50%", "75%", "dynamic", "1x", "2x", "3x", "4x"};
                     String current = videoOption("resolution", "match");
                     int selected = 0;
                     for (int i = 0; i < values.length; i++) if (values[i].equals(current)) selected = i;
