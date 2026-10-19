@@ -491,9 +491,9 @@ static void tab_display(void) {
         if (opt_choice("Upscaler", &ui, ups, 2, 1, ud)) g_settings.upscaler = ui ? UPSCALE_SHARP : UPSCALE_BILINEAR;
     }
 #ifdef __ANDROID__
-    if (opt_toggle("Forcar GPU Adreno ao maximo", &g_settings.force_adreno_max, false,
-                   "Solicita o clock maximo da GPU Adreno pelo AdrenoTools. Pode aumentar calor e bateria; "
-                   "limites termicos do Android continuam valendo. Desligado por padrao.")) {
+    if (opt_toggle("GPU Adreno: velocidade máxima", &g_settings.force_adreno_max, false,
+                   "Solicita o clock máximo da GPU Adreno pelo AdrenoTools. Pode aumentar o calor e o consumo; "
+                   "os limites térmicos do Android continuam valendo. Desligado por padrão.")) {
         if (!plat_adreno_turbo_set(g_settings.force_adreno_max)) {
             g_settings.force_adreno_max = false;
             LOG("[adreno-turbo] request rejected: interface unavailable\n");
