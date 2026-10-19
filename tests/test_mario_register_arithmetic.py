@@ -23,11 +23,12 @@ class TestRegisterArithmetic(unittest.TestCase):
     @unittest.skipUnless(shutil.which("clang"), "clang required")
     def test_native_reference(self):
         with tempfile.TemporaryDirectory(prefix="mario-regarith-") as tmp:
-            source, library = Path(tmp) / "test.c", Path(tmp) / "test.so"
+            source = Path(tmp) / "test.c"
             for sf in (0, 1):
                 for subtract in (0, 1):
                     for flags in (0, 1):
                         for shift in (0, 1, 7, 31 if not sf else 63):
+                            library = Path(tmp) / f"test_{sf}_{subtract}_{flags}_{shift}.so"
                             words = [op(sf, subtract, flags, shift), RET]
                             body = translate(words)
                             self.assertIsNotNone(body)

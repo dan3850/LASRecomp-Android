@@ -30,7 +30,7 @@ class TestTBZ(unittest.TestCase):
                     body = translate(words)
                     self.assertIsNotNone(body, (bit, nonzero))
                     source = Path(tmp) / "test.c"
-                    library = Path(tmp) / "test.so"
+                    library = Path(tmp) / f"test_{bit}_{int(nonzero)}.so"
                     source.write_text("\n".join([HEADER, "void test(MarioA64State *s) {", *body, "}"]))
                     subprocess.run(["clang", "-std=c11", "-O2", "-shared", "-fPIC",
                                     "-Wall", "-Wextra", "-Werror", str(source), "-o", str(library)],

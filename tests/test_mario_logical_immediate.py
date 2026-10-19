@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from mario_leaf_codegen import HEADER, translate
 from mario_a64_reference import run_reference
-from mario_leaf_verify import State, snapshot
+from mario_leaf_verify import State, snapshot, run_original, uc
 
 RET = 0xD65F03C0
 
@@ -23,11 +23,12 @@ class TestLogicalImmediate(unittest.TestCase):
     @unittest.skipUnless(shutil.which("clang"), "clang required")
     def test_native_reference(self):
         with tempfile.TemporaryDirectory(prefix="mario-logimm-") as tmp:
-            source, library = Path(tmp) / "test.c", Path(tmp) / "test.so"
+            source = Path(tmp) / "test.c"
             for sf, n, imms, immr in ((0, 0, 7, 0), (0, 0, 15, 9),
                                        (1, 1, 15, 3), (1, 1, 0, 63),
                                        (1, 0, 39, 12)):
                 for opc in range(4):
+                    library = Path(tmp) / f"test_{sf}_{n}_{imms}_{immr}_{opc}.so"
                     words = [logical(sf, opc, n, immr, imms), RET]
                     body = translate(words)
                     self.assertIsNotNone(body, (sf, opc, n, imms, immr))
@@ -44,6 +45,10 @@ class TestLogicalImmediate(unittest.TestCase):
                         state.x[30] = 0x1234
                         state.nzcv = 0xF0000000
                         expected = run_reference(struct.pack("<2I", *words), state)
+                        if uc is not None:
+                            actual_arm64, _, fault = run_original(struct.pack("<2I", *words), state)
+                            self.assertFalse(fault)
+                            self.assertEqual(expected, actual_arm64)
                         fn(ctypes.byref(state))
                         self.assertEqual(snapshot(state), expected)
 

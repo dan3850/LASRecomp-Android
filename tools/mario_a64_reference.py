@@ -174,7 +174,7 @@ def run_reference(code, initial, ram=None, ram_base=0, allow_multiple_ret=False,
                       (value | mask) if opc == 1 else (value ^ mask))
             if opc == 3:
                 nzcv = (int(bool(result & (1 << (width - 1)))) << 31) | (int(result == 0) << 30)
-            elif rd != 31:
+            if rd != 31:
                 regs[rd] = result
             continue
 

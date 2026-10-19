@@ -259,6 +259,8 @@ def translate(words, allow_multiple_ret=False, allow_backward_branches=False, ma
                 expression = f"(uint32_t){expression}"
             if opc == 3:
                 lines.append(f"    {{ uint64_t result = {expression};")
+                if rd != 31:
+                    lines.append(f"      s->x[{rd}] = result;")
                 lines.append(f"      s->nzcv = ((result >> {width - 1}) << 31) | ((result == 0) << 30); }}")
             elif rd != 31:
                 lines.append(f"    s->x[{rd}] = {expression};")
@@ -484,8 +486,12 @@ def translate(words, allow_multiple_ret=False, allow_backward_branches=False, ma
                 lines.append("        }")
                 if rt != 31:
                     lines.append(f"        s->x[{rt}] = value0;")
+                else:
+                    lines.append("        (void)value0; /* load to zero register */")
                 if rt2 != 31:
                     lines.append(f"        s->x[{rt2}] = value1;")
+                else:
+                    lines.append("        (void)value1; /* load to zero register */")
             else:
                 value0 = "0ULL" if rt == 31 else f"s->x[{rt}]"
                 value1 = "0ULL" if rt2 == 31 else f"s->x[{rt2}]"
