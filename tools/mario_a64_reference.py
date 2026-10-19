@@ -18,11 +18,28 @@ def run_reference(code, initial, ram=None, ram_base=0):
     nzcv = int(initial.nzcv) & 0xF0000000
     words = struct.unpack("<" + "I" * (len(code) // 4), code)
 
-    for index, op in enumerate(words):
+    index = 0
+    while index < len(words):
+        op = words[index]
+        index += 1
+        if (op & 0x7E000000) == 0x34000000:
+            imm = (op >> 5) & 0x7FFFF
+            displacement = imm - 0x80000 if imm & 0x40000 else imm
+            target = index - 1 + displacement
+            if target < index or target >= len(words):
+                raise ValueError("Unsupported backward or external CBZ/CBNZ")
+            rt = op & 31
+            value = 0 if rt == 31 else regs[rt]
+            if not (op & 0x80000000):
+                value &= 0xFFFFFFFF
+            take = (value != 0) if op & 0x01000000 else (value == 0)
+            if take:
+                index = target
+            continue
         if op == 0xD503201F:
             continue
         if op == 0xD65F03C0:
-            if index != len(words) - 1:
+            if index != len(words):
                 raise ValueError("Early RET cannot be interpreted as a leaf")
             return (tuple(regs), stack, regs[30], nzcv)
 
