@@ -907,7 +907,25 @@ static void stable60_mod_pace(void) {
         LOG("[mod60-pacer] native 60Hz mod cap %s (LARECOMP_MOD60_PACE=%s)\n",
             enabled?"enabled":"disabled",v?v:"unset");
     }
-    bool active=enabled && rt_mod_stable60_active();
+    bool mod_active=enabled && rt_mod_stable60_active();
+    // FIFO presents naturally block the producer at swapchain acquisition.
+    // Do not impose a second 60 Hz sleep on top of that back-pressure.
+    // Keep the existing MAILBOX policy and all guest VI/core timing intact.
+    static int fifo_force_pace=-1;
+    static bool fifo_logged;
+    if (fifo_force_pace<0) {
+        const char *v=getenv("LARECOMP_MOD60_FIFO_PACE");
+        fifo_force_pace=v && atoi(v)!=0;
+    }
+    bool fifo_ready=g_vk.swapchain && !surface_rebuild_needed &&
+                    active_present_mode==VK_PRESENT_MODE_FIFO_KHR;
+    bool active=las_mod60_host_pace_enabled(mod_active,fifo_ready,fifo_force_pace!=0);
+    if (mod_active && fifo_ready && !active && !fifo_logged) {
+        LOG("[mod60-pacer] FIFO back-pressure active; skipping duplicate 60 Hz sleep "
+            "(LARECOMP_MOD60_FIFO_PACE=1 restores old behavior)\n");
+        fifo_logged=true;
+    }
+    if (!fifo_ready || !mod_active || active) fifo_logged=false;
     uint64_t now=plat_now_ns();
     uint64_t deadline=las_mod60_deadline(&pacer,active,now);
     if (!active) {
