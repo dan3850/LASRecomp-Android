@@ -159,6 +159,21 @@ def translate(words):
             lines.append("    s->pc = s->x[30];")
             return lines
 
+        # ADR/ADRP: guest PC is the address of the first instruction on entry.
+        # Use the current runtime guest PC, never the NSO's build-time load address.
+        if (word & 0x1F000000) == 0x10000000:
+            imm21 = (((word >> 5) & 0x7FFFF) << 2) | ((word >> 29) & 3)
+            if imm21 & (1 << 20):
+                imm21 -= 1 << 21
+            rd = word & 31
+            if rd != 31:
+                current_pc = f"(s->pc + {index * 4}ULL)"
+                if word & 0x80000000:  # ADRP: page of the instruction's PC
+                    current_pc = f"({current_pc} & ~0xFFFULL)"
+                    imm21 <<= 12
+                lines.append(f"    s->x[{rd}] = {current_pc} + (uint64_t)({imm21}LL);")
+            continue
+
         # MOVZ/MOVN/MOVK, immediate, 32- or 64-bit. Destination 31 is WZR/XZR.
         family = word & 0x7F800000
         if family in (0x12800000, 0x52800000, 0x72800000):
