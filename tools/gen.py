@@ -6,6 +6,7 @@ Usage: gen.py <name> <nso> <base> <outdir> [--hle hle_symbols.txt] [--chunk N] [
 """
 import argparse
 import bisect
+import json
 import os
 import platform
 import re
@@ -41,12 +42,22 @@ def sanitize(sym):
 
 
 class Module:
-    def __init__(self, name, path, base, simd='asm', *, nso=None):
+    def __init__(self, name, path, base, simd='asm', *, nso=None,
+                 profile='zelda', expected_build_id=None):
+        if profile not in ('zelda', 'mario'):
+            raise ValueError(f'unknown game profile: {profile}')
         self.name = name
         if nso is None:
             from nso import Nso
             nso = Nso(path)
         self.nso = nso
+        if expected_build_id is not None and nso.build_id.lower() != expected_build_id.lower():
+            raise ValueError(f'{name}: Build ID mismatch: expected {expected_build_id}, got {nso.build_id}')
+        self.profile = profile
+        # These maps contain Zelda addresses, offsets and behavior. Never share
+        # them with another title, even if an instruction address happens to match.
+        self.patches = PATCHES if profile == 'zelda' else {}
+        self.rando_code = RANDO_CODE if profile == 'zelda' else {}
         self.base = base
         n = self.nso
         self.lo = base + n.text[0]
@@ -56,6 +67,7 @@ class Module:
         self.cache = {}
         self.runtime_nops = set()  # explicit supported sites for the Android mod menu
         self.stats = Counter()
+        self.unsupported_samples = []
         self.mu = None
 
     def in_text(self, a):
@@ -71,7 +83,12 @@ class Module:
                 ins = self.lifter.lift(self.word(a), a)
             except Unsupported as e:
                 self.stats['unsupported'] += 1
+                if len(self.unsupported_samples) < 64:
+                    self.unsupported_samples.append({
+                        'pc': hex(a), 'word': f'0x{self.word(a):08x}', 'reason': str(e)})
                 ins = Insn('trap', f'rt_udf(c, {hx(a)}); /* {e} */')
+            if ins.kind == 'trap':
+                self.stats['trap_words'] += 1
             self.cache[a] = ins
         return ins
 
@@ -80,6 +97,8 @@ class Module:
         from nso import R_AARCH64_RELATIVE
         n, b = self.nso, self.base
         starts = set()
+        if self.profile == 'mario':
+            starts.add(self.lo)  # include the NSO entry, including stripped modules
         for a in eh_frame_functions(n):
             starts.add(b + a)
         for name, info, shndx, value, size in n.syms:
@@ -396,11 +415,11 @@ class Module:
         all_labels = bool(tables)
         if all_labels:
             labels = set(range(entry, end, 4))
-        rando_here = [a for a in range(entry, end, 4) if a - self.base in RANDO_CODE]
+        rando_here = [a for a in range(entry, end, 4) if a - self.base in self.rando_code]
         if rando_here:
             labels = set(labels)
             for a in rando_here:
-                for w in RANDO_CODE[a - self.base]:
+                for w in self.rando_code[a - self.base]:
                     v = self.lifter.lift(w, a)
                     if v.kind in ('b', 'bcond') and isinstance(v.target, int) and entry <= v.target < end:
                         labels.add(v.target)
@@ -416,20 +435,20 @@ class Module:
                 out.append(f'    {{ extern int rt_mod_nop(uint64_t); if (!rt_mod_nop({hx(a)})) {{ {original} }} }}')
                 last = 'op'
                 continue
-            if a - self.base in RANDO_CODE:  # randomizer patch site: the active seed picks the instruction
+            if a - self.base in self.rando_code:  # Zelda randomizer patch site
                 flush()
                 out.append(f'    {{ extern uint32_t rando_word(uint64_t); uint32_t rw = rando_word({hx(a)});')
                 first = True
-                for w in RANDO_CODE[a - self.base]:
+                for w in self.rando_code[a - self.base]:
                     v = self.lifter.lift(w, a)
                     out.append(f'    {"if" if first else "else if"} (rw == {hx(w)}) {{ ' + ' '.join(self.render_single(v, a, jump, refs)) + ' }')
                     first = False
                 out.append('    else { ' + ' '.join(self.render_single(ins, a, jump, refs)) + ' } }')
                 last = 'op'
                 continue
-            if a in PATCHES:  # hand-written replacement for one instruction (tools/patches.py)
+            if a in self.patches:  # title-specific instruction replacement
                 flush()
-                out.append('    ' + PATCHES[a](self, a))
+                out.append('    ' + self.patches[a](self, a))
                 last = 'op'
                 continue
             k = ins.kind
@@ -513,6 +532,10 @@ def write_if_changed(path, text):
 
 def enable_stable60_menu(module, enabled, explicit=False):
     """Insert runtime-selectable NOP sites only for the verified game version."""
+    if module.profile != 'zelda':
+        if enabled and explicit:
+            raise ValueError('Stable 60fps v2 is a Zelda-only patch')
+        return False
     if not enabled or module.name != 'main':
         return False
     if module.nso.build_id.lower() != STABLE60_BUILD_ID:
@@ -525,7 +548,7 @@ def enable_stable60_menu(module, enabled, explicit=False):
     for pc, offset in zip(sites, STABLE60_OFFSETS):
         if not module.in_text(pc):
             raise ValueError(f"Stable 60fps v2: site main+{offset:#x} outside text")
-        if pc in PATCHES or offset in RANDO_CODE:
+        if pc in module.patches or offset in module.rando_code:
             raise ValueError(f"Stable 60fps v2: patch conflict at main+{offset:#x}")
         if module.word(pc) == 0xd503201f:
             raise ValueError(f"Stable 60fps v2: main+{offset:#x} is already a NOP")
@@ -540,6 +563,10 @@ def main():
     ap.add_argument('base', type=lambda s: int(s, 0))
     ap.add_argument('outdir')
     ap.add_argument('--hle')
+    ap.add_argument('--profile', choices=('zelda', 'mario'), default='zelda',
+                    help='select title patches; mario emits original instructions')
+    ap.add_argument('--expect-build-id', help='reject another input version before writing output')
+    ap.add_argument('--report', help='write a generation manifest (does not imply runtime compatibility)')
     ap.add_argument('--chunk', type=int, default=1500)  # functions per file at most
     ap.add_argument('--chunk-bytes', type=int, default=1500000)  # and about this much C (even compile times)
     ap.add_argument('--big-fn', type=int, default=100000)  # bytes of C from which a function gets its own file
@@ -552,9 +579,12 @@ def main():
                     help='generate the original instructions without Stable 60fps hooks')
     ap.set_defaults(stable60_menu=None)
     args = ap.parse_args()
+    if args.chunk < 1 or args.chunk_bytes < 1 or args.big_fn < 1 or args.limit < 0:
+        ap.error('chunk sizes must be positive and limit must be nonnegative')
 
     t0 = time.time()
-    m = Module(args.name, args.nso, args.base, args.simd)
+    m = Module(args.name, args.nso, args.base, args.simd, profile=args.profile,
+               expected_build_id=args.expect_build_id)
     # Default on direct Termux ARM64 builds only. Other platforms retain the
     # original generator behavior unless explicitly opted in.
     termux = (os.environ.get('PREFIX') == STABLE60_TERMUX_PREFIX and
@@ -665,7 +695,7 @@ def main():
         # (the start screen's setup reads these for its progress bar: runtime/gamebuild.c)
         print(f'{args.name}: progress {ci}/{len(order)} files {nchunks}', file=sys.stderr, flush=True)
     for fn in os.listdir(args.outdir):  # an earlier run's extra chunks
-        mm = re.fullmatch(re.escape(args.name) + r'_(\d{3})\.c', fn)
+        mm = re.fullmatch(re.escape(args.name) + r'_(\d{3,})\.c', fn)
         if mm and int(mm.group(1)) >= nchunks:
             os.remove(os.path.join(args.outdir, fn))
     import io
@@ -690,6 +720,19 @@ def main():
             f.write('const char *lasgame_mod_menu_v1(void) { return "'
                     + STABLE60_CAPABILITY + '"; }\n')
         write_if_changed(os.path.join(args.outdir, f'{args.name}_table.c'), f.getvalue())
+    if args.report:
+        report = {
+            'schema': 1, 'profile': m.profile, 'module': m.name,
+            'build_id': m.nso.build_id, 'base': hex(m.base), 'simd': args.simd,
+            'image_bytes': m.nso.size, 'text_bytes': m.nso.text[1],
+            'functions': len(order), 'total_functions': len(entries),
+            'complete': len(order) == len(entries),
+            'sources': [f'{args.name}_{i:03d}.c' for i in range(nchunks)] + [f'{args.name}_table.c'],
+            'stats': dict(m.stats), 'unsupported_samples': m.unsupported_samples,
+            'dependencies': m.nso.needed, 'imports': len(m.nso.imports()),
+            'stable60_menu': stable60_menu, 'boot_tested': False,
+        }
+        write_if_changed(args.report, json.dumps(report, indent=2, sort_keys=True) + '\n')
     print(f'{args.name}: wrote {nchunks} chunks, {time.time() - t0:.0f}s total', file=sys.stderr)
 
 
