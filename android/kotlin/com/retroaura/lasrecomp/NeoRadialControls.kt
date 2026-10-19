@@ -71,7 +71,6 @@ class NeoRadialControls(private val activity: Activity, private val input: NeoIn
 
         val leftHost = FrameLayout(activity)
         val rightHost = FrameLayout(activity)
-        val half = FrameLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT)
         // Use measured half-screen widths rather than a zero-width layout.
         view.addOnLayoutChangeListener { _, l, _, r, _, _, _, _, _ ->
             val width = (r - l) / 2
@@ -90,8 +89,8 @@ class NeoRadialControls(private val activity: Activity, private val input: NeoIn
         val rr = FrameLayout.LayoutParams(1, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END)
         view.addView(leftHost, ll)
         view.addView(rightHost, rr)
-        leftHost.addView(left)
-        rightHost.addView(right)
+        leftHost.addView(left, FrameLayout.LayoutParams(\n            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rightHost.addView(right, FrameLayout.LayoutParams(\n            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         scope.launch { left.events().collect { dispatch(it) } }
         scope.launch { right.events().collect { dispatch(it) } }
     }
