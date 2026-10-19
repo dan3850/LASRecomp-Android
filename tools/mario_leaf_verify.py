@@ -120,6 +120,8 @@ def main():
                    help="validate bounded W/X LDR STR and memory writes")
     p.add_argument("--require-unicorn", action="store_true",
                    help="Fail instead of using the Python reference interpreter")
+    p.add_argument("--use-fde", action="store_true",
+                   help="validate FDE-bounded candidates (experimental)")
     args = p.parse_args()
     if args.require_unicorn and uc is None:
         p.error("Unicorn Python module unavailable; omit --require-unicorn for reference comparison")
@@ -130,7 +132,7 @@ def main():
         p.error("clang is required for native validation")
     nso = Nso(args.nso)
     matches = list(candidates(nso, args.limit, min_instructions=2,
-                              allow_memory=args.with_memory))
+                              allow_memory=args.with_memory, use_fde=args.use_fde))
     if not matches:
         raise SystemExit("No supported leaf candidates found")
     with tempfile.TemporaryDirectory(prefix="mario-leaf-verify-") as dirname:
