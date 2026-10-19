@@ -190,7 +190,7 @@ done
 OBJ="$OUT/obj"; LIB="$OUT/lib"
 mkdir -p "$OBJ" "$LIB"
 STAMP="$OUT/flags.stamp"
-HASH="$(sha256sum "$0" | cut -d' ' -f1)"
+HASH="$(python3 tools/termux_compile_id.py "$0")"
 if [[ ! -f "$OUT/flags.id" || "$(cat "$OUT/flags.id")" != "$HASH" ]]; then
  printf '%s' "$HASH" > "$OUT/flags.id"; touch "$STAMP"
 fi
@@ -515,6 +515,29 @@ if [[ "$NEO_ENABLE" == 1 ]]; then
   fail "NeoRadialControls.class nao foi gerado"
  echo "Controle original NeoRadialControls compilado."
 fi
+# BEGIN LICENSE_ASSET_PACKAGING
+# APK legal texts: copy only existing license files; no changes to native
+# renderer, compiled objects, private game module or Gradle caches.
+LICENSE_STAGE="$STAGE/assets/licenses"
+mkdir -p "$LICENSE_STAGE"
+cp LICENSE "$LICENSE_STAGE/LASRecomp-MIT.txt"
+for name in THIRD_PARTY_NOTICES.txt AndroidX-Apache-2.0.txt SDL3-zlib.txt \
+            FFmpeg-LGPL-2.1.txt AdrenoTools-BSD-2-Clause.txt \
+            Volk-MIT.txt VMA-MIT.txt Dear-ImGui-MIT.txt SMAA-MIT.txt; do
+ [[ -s "android/licenses/$name" ]] || fail "Licenca obrigatoria ausente: $name"
+ cp "android/licenses/$name" "$LICENSE_STAGE/$name"
+done
+if [[ "$NEO_ENABLE" == 1 ]]; then
+ for name in RadialGamePad-GPL-3.0.txt Ryujinx-Neo-MIT.txt; do
+  [[ -s "android/licenses/$name" ]] || fail "Licenca Neo ausente: $name"
+  cp "android/licenses/$name" "$LICENSE_STAGE/$name"
+ done
+ python3 tools/neo_license_manifest.py "$LICENSE_STAGE" "$STAGE/radial/artifacts.tsv" ||
+  fail "Falha ao preservar avisos das bibliotecas Neo"
+ [[ -s "$LICENSE_STAGE/NEO_COMPONENTS.txt" ]] ||
+  fail "Inventario legal Neo nao gerado"
+fi
+# END LICENSE_ASSET_PACKAGING
 jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
 # Avoid stale classes2.dex from an earlier optional dependency build.
 rm -f "$STAGE/dex"/classes*.dex
@@ -587,6 +610,40 @@ fi
 ${APKSIGNER_CMD} sign --ks "$KEYSTORE" --ks-key-alias androiddebugkey \
  --ks-pass pass:android --key-pass pass:android --out "$APK" "$OUT/aligned.apk"
 ${APKSIGNER_CMD} verify "$APK"
+# BEGIN LICENSE_ASSET_PACKAGING
+# A signed APK must actually contain the legal notices and the full GPL text.
+python3 - "$APK" "$NEO_ENABLE" <<'PY'
+import sys
+import zipfile
+apk, neo = sys.argv[1], sys.argv[2] == "1"
+required = {
+    "assets/licenses/LASRecomp-MIT.txt",
+    "assets/licenses/THIRD_PARTY_NOTICES.txt",
+    "assets/licenses/AndroidX-Apache-2.0.txt",
+    "assets/licenses/SDL3-zlib.txt",
+    "assets/licenses/FFmpeg-LGPL-2.1.txt",
+    "assets/licenses/AdrenoTools-BSD-2-Clause.txt",
+    "assets/licenses/Volk-MIT.txt",
+    "assets/licenses/VMA-MIT.txt",
+    "assets/licenses/Dear-ImGui-MIT.txt",
+    "assets/licenses/SMAA-MIT.txt",
+}
+if neo:
+    required |= {
+        "assets/licenses/RadialGamePad-GPL-3.0.txt",
+        "assets/licenses/Ryujinx-Neo-MIT.txt",
+        "assets/licenses/NEO_COMPONENTS.txt",
+    }
+with zipfile.ZipFile(apk) as archive:
+    missing = required - set(archive.namelist())
+    if missing:
+        raise SystemExit("ERRO: arquivos legais ausentes do APK: " + ", ".join(sorted(missing)))
+    if neo and "GNU GENERAL PUBLIC LICENSE" not in archive.read(
+            "assets/licenses/RadialGamePad-GPL-3.0.txt").decode("utf-8"):
+        raise SystemExit("ERRO: licenca original GPL corrompida no APK")
+print("LICENCAS APK: verificados", len(required), "arquivos obrigatorios")
+PY
+# END LICENSE_ASSET_PACKAGING
 if [[ -d "$HOME/storage/downloads" ]]; then
  mkdir -p "$HOME/storage/downloads/LASRecomp"
  cp -f "$APK" "$HOME/storage/downloads/LASRecomp/LASRecomp-Android-Termux.apk"
