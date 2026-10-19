@@ -235,6 +235,12 @@ public final class GameTouchControls extends View {
     private void pointerDown(int pointerId, float x, float y) {
         int control=hit(x,y);
         if (control<0) return;
+        // A stick belongs to exactly one pointer. Otherwise releasing one
+        // finger would incorrectly zero the other finger's analog value.
+        if (control>=LEFT_STICK) {
+            for (int i=0;i<pointerToControl.size();i++)
+                if (pointerToControl.valueAt(i)==control) return;
+        }
         pointerToControl.put(pointerId,control);
         if (control>=LEFT_STICK) moveStick(control,x,y);
         else press(control);
