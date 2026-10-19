@@ -22,6 +22,22 @@ def run_reference(code, initial, ram=None, ram_base=0):
     while index < len(words):
         op = words[index]
         index += 1
+        if (op & 0xFF000010) == 0x54000000:
+            cond = op & 15
+            imm = (op >> 5) & 0x7FFFF
+            displacement = imm - 0x80000 if imm & 0x40000 else imm
+            target = index - 1 + displacement
+            if cond >= 14 or target < index or target >= len(words):
+                raise ValueError("Unsupported B.cond encoding or destination")
+            n, z = bool(nzcv & (1 << 31)), bool(nzcv & (1 << 30))
+            carry, overflow = bool(nzcv & (1 << 29)), bool(nzcv & (1 << 28))
+            conditions = (z, not z, carry, not carry, n, not n,
+                          overflow, not overflow, carry and not z,
+                          not carry or z, n == overflow, n != overflow,
+                          not z and n == overflow, z or n != overflow)
+            if conditions[cond]:
+                index = target
+            continue
         if (op & 0x7E000000) == 0x34000000:
             imm = (op >> 5) & 0x7FFFF
             displacement = imm - 0x80000 if imm & 0x40000 else imm
