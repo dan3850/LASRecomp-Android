@@ -69,6 +69,14 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     double h;
     int mode = g_settings.res_mode;
     if (forced > 0) h = forced;
+    else if (mode == RES_FIXED_720P) h = 720.0 / 1080.0;  // identical guest render resolution in Dock/Handheld A/B
+    else if (mode >= RES_EDEN_025 && mode <= RES_EDEN_400) {
+        // Eden-style resolution multipliers: native 720p in Handheld, 1080p in Dock.
+        // Only the scaling math is adapted; no Eden implementation/source is used.
+        static const double scale[] = {0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0};
+        const double native = g_settings.switch_mode == SWITCH_MODE_HANDHELD ? 720.0 / 1080.0 : 1.0;
+        h = native * scale[mode - RES_EDEN_025];
+    }
     else if (mode >= 1 && mode <= 8) h = mode;
     else {
         h = reshape ? dh / 1080.0 : fit;  // Match display
