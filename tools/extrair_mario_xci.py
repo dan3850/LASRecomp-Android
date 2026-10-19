@@ -20,6 +20,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -157,12 +158,36 @@ def run(args: argparse.Namespace) -> Path:
         print("== Reaproveitando NSP já convertido; sem reconverter XCI ==", flush=True)
     base, update = choose_packages(nsps, args.base_nsp, args.update_nsp)
     print(f"== NSP base: {base.name} ==", flush=True)
-    unpack_command = [yanu, "unpack", "--base", str(base)]
     if update is not None:
         print(f"== Aplicando atualização: {update.name} ==", flush=True)
-        unpack_command.extend(["--update", str(update)])
-    unpack_command.extend(["--outdir", str(dest)])
-    subprocess.run(unpack_command, check=True)
+
+    # The upstream Termux 'yanu' wrapper forwards all arguments via
+    # bash -c 'yanu '"$*" rather than safely quoting "$@".
+    # Therefore an NSP filename with spaces is split into extra CLI
+    # arguments inside proot ('unexpected argument Mario'). Work around
+    # the installed wrapper without modifying/reinstalling it or copying
+    # the multi-gigabyte NSP: create temporary symlinks with safe names.
+    # The real source files remain untouched. If Yanu returns 0 despite
+    # failing (the wrapper's EXIT trap can mask its status), the existing
+    # exefs/main + romfs postcondition still catches the failure.
+    if Path(yanu).name == "yanu":
+        with tempfile.TemporaryDirectory(prefix=".yanu-args-", dir=convdir) as tmp:
+            temp = Path(tmp)
+            safe_base = temp / "base.nsp"
+            safe_base.symlink_to(base.resolve())
+            unpack_command = [yanu, "unpack", "--base", str(safe_base)]
+            if update is not None:
+                safe_update = temp / "update.nsp"
+                safe_update.symlink_to(update.resolve())
+                unpack_command.extend(["--update", str(safe_update)])
+            unpack_command.extend(["--outdir", str(dest)])
+            subprocess.run(unpack_command, check=True)
+    else:
+        unpack_command = [yanu, "unpack", "--base", str(base)]
+        if update is not None:
+            unpack_command.extend(["--update", str(update)])
+        unpack_command.extend(["--outdir", str(dest)])
+        subprocess.run(unpack_command, check=True)
     if not has_game_data(dest):
         fail("A extração terminou mas exefs/main e romfs não estão completos. "
              "Verifique a versão do Yanu, o log e as chaves da sua própria "
