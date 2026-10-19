@@ -420,10 +420,10 @@ if [[ "$NEO_ENABLE" == 1 ]]; then
  step "Preparando dependencias originais do controle Ryujinx Neo"
  command -v kotlinc >/dev/null 2>&1 || fail "Kotlin nao encontrado. No Termux instale: pkg install kotlin"
  command -v unzip >/dev/null 2>&1 || fail "unzip nao encontrado. Instale: pkg install unzip"
- mkdir -p "$STAGE/radial" "$NEO_JAVA_RES"
+ mkdir -p "$STAGE/radial"
  # Delete only generated module intermediates: never invalidate native caches.
- rm -rf "$STAGE/radial/extracted"
- mkdir -p "$STAGE/radial/extracted"
+ rm -rf "$STAGE/radial/extracted" "$NEO_JAVA_RES"
+ mkdir -p "$STAGE/radial/extracted" "$NEO_JAVA_RES"
  python3 tools/neo_radial_deps.py "$CACHE/neo-radial-maven" > "$STAGE/radial/artifacts.tsv" ||
   fail "Falha ao preparar as dependencias do RadialGamePad"
  artifact_index=0
@@ -443,14 +443,14 @@ if [[ "$NEO_ENABLE" == 1 ]]; then
   [[ -s "$module/classes.jar" ]] || fail "AAR com classes.jar vazio: $artifact"
   RADIAL_JARS+=("$module/classes.jar")
   RADIAL_CP="$RADIAL_CP:$module/classes.jar"
-  if unzip -Z1 "$artifact" | grep -q '^res/'; then
+  if unzip -Z1 "$artifact" | grep '^res/' >/dev/null; then
    (cd "$module" && unzip -q "$artifact" 'res/*') ||
     fail "Nao foi possivel extrair os recursos de $artifact"
    aapt2 compile --dir "$module/res" -o "$module/compiled-resources.zip" ||
     fail "aapt2 nao compilou os recursos de $artifact"
    NEO_RES_ZIPS+=("$module/compiled-resources.zip")
   fi
-  if unzip -Z1 "$artifact" | grep -q '^assets/'; then
+  if unzip -Z1 "$artifact" | grep '^assets/' >/dev/null; then
    (cd "$STAGE" && unzip -qo "$artifact" 'assets/*') ||
     fail "Nao foi possivel extrair os assets de $artifact"
   fi
@@ -476,6 +476,8 @@ else
  NEO_RJAVA=()
  echo "AVISO: controles antigos selecionados explicitamente (LASRECOMP_NEO_CONTROLS=0)"
 fi
+# Prevent a previous Neo .class from leaking into a legacy-only APK.
+rm -f "$STAGE/classes/com/retroaura/lasrecomp"/NeoRadialControls*.class
 javac -source 8 -target 8 -encoding UTF-8 -cp "$RADIAL_CP" \
  -d "$STAGE/classes" android/src/com/retroaura/lasrecomp/*.java "${SDLJAVA[@]}" "${NEO_RJAVA[@]}"
 # Compile the actual original RadialGamePad integration Kotlin module only
