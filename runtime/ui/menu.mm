@@ -25,6 +25,7 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 extern "C" {
 #include "../hle.h"
 #include "../settings.h"
+#include "../platform.h"
 #include "menu.h"
 void input_reset(void);
 void save_editor_draw(float scale);  // save_editor.mm
@@ -489,6 +490,17 @@ static void tab_display(void) {
         }
         if (opt_choice("Upscaler", &ui, ups, 2, 1, ud)) g_settings.upscaler = ui ? UPSCALE_SHARP : UPSCALE_BILINEAR;
     }
+#ifdef __ANDROID__
+    if (opt_toggle("Forcar GPU Adreno ao maximo", &g_settings.force_adreno_max, false,
+                   "Solicita o clock maximo da GPU Adreno pelo AdrenoTools. Pode aumentar calor e bateria; "
+                   "limites termicos do Android continuam valendo. Desligado por padrao.")) {
+        if (!plat_adreno_turbo_set(g_settings.force_adreno_max)) {
+            g_settings.force_adreno_max = false;
+            LOG("[adreno-turbo] request rejected: interface unavailable\n");
+        }
+        settings_save(); // make this opt-in survive an app restart
+    }
+#endif
     static const char *aa[] = {"Off", "SMAA"};
     opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
