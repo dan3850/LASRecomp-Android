@@ -12,9 +12,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import unicorn as uc
-from unicorn import arm64_const as A
+try:
+    import unicorn as uc
+    from unicorn import arm64_const as A
+except ImportError:
+    uc = None
+    A = None
 
+from mario_a64_reference import run_reference
 from mario_leaf_codegen import Nso, candidates, render
 
 CODE_BASE = 0x10000000
@@ -47,6 +52,8 @@ def snapshot(state):
 
 
 def run_original(code, initial):
+    if uc is None:
+        return run_reference(code, initial)
     mu = uc.Uc(uc.UC_ARCH_ARM64, uc.UC_MODE_ARM)
     mu.mem_map(CODE_BASE, 0x1000)
     mu.mem_write(CODE_BASE, code)
@@ -70,7 +77,11 @@ def main():
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--cases", type=int, default=12)
     p.add_argument("--seed", type=int, default=20261019)
+    p.add_argument("--require-unicorn", action="store_true",
+                   help="Fail instead of using the Python reference interpreter")
     args = p.parse_args()
+    if args.require_unicorn and uc is None:
+        p.error("Unicorn Python module unavailable; omit --require-unicorn for reference comparison")
     if not 1 <= args.limit <= 1000 or not 1 <= args.cases <= 100:
         p.error("--limit must be 1..1000 and --cases 1..100")
     clang = shutil.which("clang")
@@ -115,7 +126,11 @@ def main():
                     raise SystemExit(f"FAIL 0x{start:x} case {serial}: {detail}; initial PC 0x{baseline[2]:x}")
                 passed += 1
         print(f"PASS: {len(matches)} Mario leaf functions, {passed} CPU-state comparisons")
-        print("Compared x0..x30, SP, PC and NZCV against original AArch64 in Unicorn.")
+        print("Compared x0..x30, SP, PC and NZCV.")
+        if uc is None:
+            print("Backend: independent Python ARM64 subset interpreter (limited validation, not Unicorn)")
+        else:
+            print("Backend: Unicorn executing original ARM64 bytes")
         print("Unimplemented: RAM accesses, SIMD, branches/calls, full dynamic linking.")
 
 
