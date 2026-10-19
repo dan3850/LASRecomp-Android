@@ -118,8 +118,28 @@ class TestMemory(unittest.TestCase):
         self.assertEqual(s.fault, 1)
         self.assertEqual(ram, bytes(range(64)))
 
+    def test_pair_load_and_store(self):
+        # LDP X2, X3, [X0] and STP X2, X3, [X0, #16].
+        ldp = 0xA9400000 | (3 << 10) | 2
+        stp = 0xA9000000 | (2 << 15) | (3 << 10) | 2
+        s, ram = compare([ldp, stp, RET], {0: BASE + 8})
+        self.assertEqual(s.x[2], int.from_bytes(bytes(range(8, 16)), "little"))
+        self.assertEqual(s.x[3], int.from_bytes(bytes(range(16, 24)), "little"))
+        self.assertEqual(ram[24:40], bytes(range(8, 24)))
+
+    def test_pair_load_overlapping_destinations(self):
+        # Current reference oracle defines second destination write as final.
+        s, _ = compare([0xA9400000, RET], {0: BASE + 8})
+        self.assertEqual(s.x[0], int.from_bytes(bytes(range(16, 24)), "little"))
+
+    def test_pair_out_of_bounds_has_no_partial_store(self):
+        stp = 0xA9000000 | (2 << 10) | 1
+        s, ram = compare([stp, RET], {0: BASE + 56})
+        self.assertEqual(s.fault, 1)
+        self.assertEqual(ram, bytes(range(64)))
+
     def test_reject_indexed_pair_and_sign_extended(self):
-        for invalid in (0xF8408400, 0xB9800000, 0xA9400000, 0xF8400400):
+        for invalid in (0xF8408400, 0xB9800000, 0xF8400400):
             with self.subTest(opcode=hex(invalid)):
                 self.assertIsNone(translate([invalid, RET]))
 
