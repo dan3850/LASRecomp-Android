@@ -147,20 +147,9 @@ def translate(words):
             cond = word & 15
             if cond >= 14 or target <= index or target >= len(words):
                 return None
-            predicates = [
-                "z", "!z", "c", "!c", "n", "!n", "v", "!v",
-                "c && !z", "!c || z", "n == v", "n != v",
-                "!z && (n == v)", "z || (n != v)",
-            ]
-            lines.append("    {")
-            lines.append("        uint64_t flags = s->nzcv;")
-            flag_names = ("n", "z", "c", "v")
-            flag_bits = (31, 30, 29, 28)
-            for name, bit in zip(flag_names, flag_bits):
-                if name in predicates[cond].replace("&&", " ").replace("||", " ").replace("!", " ").replace("==", " ").replace("!=", " ").split():
-                    lines.append(f"        int {name} = (flags >> {bit}) & 1;")
-            lines.append(f"        if ({predicates[cond]}) goto mario_label_{target};")
-            lines.append("    }")
+            # Reuse the same tested predicate as CSEL/CSINC. Token-based
+            # variable extraction broke composite conditions (e.g. GT: N==V).
+            lines.append(f"    if (mario_condition(s->nzcv, {cond})) goto mario_label_{target};")
             continue
         if (word & 0x7E000000) == 0x34000000:
             imm = (word >> 5) & 0x7FFFF
