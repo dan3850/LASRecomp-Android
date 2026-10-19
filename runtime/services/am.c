@@ -55,15 +55,17 @@ static void common_state_getter(Service *s, IpcReq *req, IpcResp *resp) {
         }
         pthread_mutex_unlock(&g_klock);
         break;
-    case 5: OUT(uint8_t, 0) = 1; resp_size(resp, 1); break;   // GetOperationMode: docked
-    case 6: OUT(uint32_t, 0) = 1; resp_size(resp, 4); break;  // GetPerformanceMode: boost
+    case 5: OUT(uint8_t, 0) = g_settings.switch_mode == SWITCH_MODE_DOCKED ? 1 : 0; resp_size(resp, 1); break; // GetOperationMode
+    case 6: OUT(uint32_t, 0) = g_settings.switch_mode == SWITCH_MODE_DOCKED ? 1 : 0; resp_size(resp, 4); break; // GetPerformanceMode
     case 8: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;   // GetBootMode
     case 9: OUT(uint8_t, 0) = 1; resp_size(resp, 1); break;   // GetCurrentFocusState: in focus
     case 13: case 61: resp->copy_handles[resp->ncopy++] = new_event(); break;
     case 60: {  // GetDefaultDisplayResolution
-        int w = getenv("LARECOMP_DISPLAY_W") ? atoi(getenv("LARECOMP_DISPLAY_W")) : 1920;
-        LOG("[am] GetDefaultDisplayResolution -> %dx1080\n", w);
-        OUT(int32_t, 0) = w; OUT(int32_t, 4) = 1080; resp_size(resp, 8); break;
+        int docked = g_settings.switch_mode == SWITCH_MODE_DOCKED;
+        int w = getenv("LARECOMP_DISPLAY_W") ? atoi(getenv("LARECOMP_DISPLAY_W")) : (docked ? 1920 : 1280);
+        int h = docked ? 1080 : 720;
+        LOG("[am] GetDefaultDisplayResolution -> %dx%d (%s)\n", w, h, docked ? "docked" : "handheld");
+        OUT(int32_t, 0) = w; OUT(int32_t, 4) = h; resp_size(resp, 8); break;
     }
     default: UNHANDLED("ICommonStateGetter");
     }
@@ -197,13 +199,16 @@ SERVICE("appletOE", applet_oe) {
 // ------------------------------------------------------------------ apm
 static void apm_session(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
-    if (req->cmd == 1) { OUT(uint32_t, 0) = 0x92220008; resp_size(resp, 4); }  // GetPerformanceConfiguration
+    if (req->cmd == 1) { // GetPerformanceConfiguration: guest-visible Switch profile, NOT physical Android clocks
+        OUT(uint32_t, 0) = g_settings.switch_mode == SWITCH_MODE_DOCKED ? 0x92220008 : 0x00020003;
+        resp_size(resp, 4);
+    }
 }
 
 SERVICE("apm", apm) {
     (void)s;
     if (req->cmd == 0) ipc_return_object(resp, service_new("apm:ISession", apm_session, NULL));
-    else if (req->cmd == 1) { OUT(uint32_t, 0) = 1; resp_size(resp, 4); }
+    else if (req->cmd == 1) { OUT(uint32_t, 0) = g_settings.switch_mode == SWITCH_MODE_DOCKED ? 1 : 0; resp_size(resp, 4); }
 }
 
 // ------------------------------------------------------------------ lm (guest log output)
