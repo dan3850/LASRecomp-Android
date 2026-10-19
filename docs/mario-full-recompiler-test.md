@@ -132,6 +132,9 @@ hashes dos NSOs, e é respeitado por futuras gerações completas. Pedir outra
 instrução do mesmo bloco reparado não o recompila novamente. Um erro durante
 o reparo restaura a biblioteca concluída, as fontes e os metadados anteriores;
 uma transação interrompida é recuperada na próxima chamada do reparo.
+Se o Python ou o sistema de arquivos não oferecer `os.link`, o backup usa uma
+cópia com SHA256 verificado e preserva a data da biblioteca anterior. Uma falha
+nesse backup encerra o reparo antes de alterar as fontes ou a biblioteca.
 
 O perfil Mario desativa os callbacks de gameplay, patches do randomizer,
 leituras de câmera e overlays que dependem dos endereços do Zelda. O menu do

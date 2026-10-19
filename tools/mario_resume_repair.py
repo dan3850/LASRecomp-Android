@@ -65,6 +65,22 @@ def function_span(text, function):
     raise ValueError('unterminated generated function: ' + function)
 
 
+def backup_library(source, destination):
+    link = getattr(os, 'link', None)
+    if callable(link):
+        try:
+            link(source, destination)
+            return
+        except (OSError, NotImplementedError):
+            pass
+    print('Link fisico indisponivel; copiando biblioteca para backup.', flush=True)
+    temporary = destination.with_suffix('.so.partial')
+    shutil.copy2(source, temporary)
+    if file_hash(temporary) != file_hash(source):
+        raise OSError('library backup verification failed')
+    os.replace(temporary, destination)
+
+
 def recover(out):
     transaction = out / 'resume-transaction'
     if not transaction.exists():
@@ -185,7 +201,7 @@ def repair(game, out, targets, *, jobs=2, cc='clang', nm=None, host_test=False):
             if updated['modules'][name] != report['modules'][name]:
                 metadata_paths += [out / 'generated' / name / value for value in
                                    ('generation.json', 'generation-state.json')]
-        # A hard link preserves the completed .so without making a large copy.
+        # Preserve the completed .so before modifying any generated files.
         transaction = out / 'resume-transaction'
         transaction.mkdir()
         manifest = {'kind': 'mario-resume-v1', 'phase': 'backing-up', 'files': {}}
@@ -198,7 +214,7 @@ def repair(game, out, targets, *, jobs=2, cc='clang', nm=None, host_test=False):
                     backup = transaction / 'files' / relative
                     backup.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(path, backup)
-            os.link(out / 'libmario_test.so', transaction / 'libmario_test.so')
+            backup_library(out / 'libmario_test.so', transaction / 'libmario_test.so')
             manifest['phase'] = 'prepared'
             write_json(transaction / 'transaction.json', manifest)
             for path, text in changed.items():

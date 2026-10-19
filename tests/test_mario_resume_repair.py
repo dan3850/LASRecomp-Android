@@ -162,6 +162,7 @@ class TestMarioResume(unittest.TestCase):
         paths = [self.out / 'build-report.json', self.out / 'libmario_test.so',
                  *(self.out / 'generated').glob('*/*')]
         snapshots = {path: path.read_bytes() for path in paths if path.is_file()}
+        library_mtime = (self.out / 'libmario_test.so').stat().st_mtime_ns
 
         def fail(*args, **kwargs):
             temporary = self.out / 'invalid.so.partial'
@@ -169,12 +170,42 @@ class TestMarioResume(unittest.TestCase):
             temporary.replace(self.out / 'libmario_test.so')
             raise RuntimeError('interrupted compiler/link operation')
 
-        with patch.object(fix, 'compile_library', side_effect=fail), self.assertRaisesRegex(RuntimeError, 'interrupted'):
+        with patch.object(fix.os, 'link', None), patch.object(fix, 'compile_library', side_effect=fail), self.assertRaisesRegex(RuntimeError, 'interrupted'):
             fix.repair(self.exefs, self.out, [('sdk', 0x44)], host_test=True)
         for path, data in snapshots.items():
             self.assertEqual(path.read_bytes(), data, str(path))
         self.assertFalse((self.out / 'resume-transaction').exists())
         self.assertFalse((self.out / 'resume-plan.json').exists())
+        self.assertEqual((self.out / 'libmario_test.so').stat().st_mtime_ns, library_mtime)
+
+    def test_missing_os_link_repairs_and_executes_interior_entry(self):
+        executable = self.executable()
+        with patch.dict(fix.os.__dict__):
+            fix.os.__dict__.pop('link', None)
+            _, built = fix.repair(self.exefs, self.out, [('sdk', 0x44)], host_test=True)
+        self.assertEqual(built, 2)
+        result = self.run_guest(executable, 'resume')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.out / 'resume-transaction').exists())
+
+    def test_rejected_hardlink_uses_verified_copy(self):
+        source = self.out / 'libmario_test.so'
+        backup = self.folder / 'backup.so'
+        with patch.object(fix.os, 'link', side_effect=OSError('not supported')):
+            fix.backup_library(source, backup)
+        self.assertEqual(backup.read_bytes(), source.read_bytes())
+        self.assertEqual(backup.stat().st_mtime_ns, source.stat().st_mtime_ns)
+
+    def test_failed_backup_leaves_completed_build_unchanged(self):
+        paths = [self.out / 'build-report.json', self.out / 'libmario_test.so',
+                 *(self.out / 'generated').glob('*/*')]
+        snapshots = {path: path.read_bytes() for path in paths if path.is_file()}
+        with patch.object(fix.os, 'link', None), patch.object(fix.shutil, 'copy2', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                fix.repair(self.exefs, self.out, [('sdk', 0x44)], host_test=True)
+        for path, data in snapshots.items():
+            self.assertEqual(path.read_bytes(), data, str(path))
+        self.assertFalse((self.out / 'resume-transaction').exists())
 
     def test_edited_sources_and_invalid_targets_do_not_change_library(self):
         library_hash = file_hash(self.out / 'libmario_test.so')
