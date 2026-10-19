@@ -59,6 +59,14 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 raise ValueError("Early RET cannot be interpreted as a leaf")
             return (tuple(regs), stack, regs[30], nzcv)
 
+        # MOV register alias: ORR Rd, ZR, Rm, LSL #0.
+        if (op & 0x7FE0FFE0) == 0x2A0003E0:
+            dest, source = op & 31, (op >> 16) & 31
+            if dest != 31:
+                value = 0 if source == 31 else regs[source]
+                regs[dest] = value if op & 0x80000000 else value & 0xFFFFFFFF
+            continue
+
         # AArch64 move-wide immediate encoding (32/64 bit, shift 0..48).
         move_class = (op >> 23) & 0x3F
         if move_class == 0b100101:
