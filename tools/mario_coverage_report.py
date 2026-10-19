@@ -17,6 +17,7 @@ def analyze(nso, max_bytes=128, examples=5):
     text_lo, text_size = nso.text
     text_hi = text_lo + text_size
     counts = Counter()
+    counts["discovered"] = len(starts)
     blockers = Counter()
     samples = {}
     accepted_by_length = Counter()
@@ -82,7 +83,7 @@ def main():
     counts, blockers, samples, total, accepted = analyze(
         nso, args.max_bytes, args.examples)
     print(f"Build ID: {nso.build_id}")
-    print(f"Discovered starts: {sum(counts.values()) - counts['eligible']}")
+    print(f"Discovered starts: {counts['discovered']}")
     print(f"Candidate span: 8..{args.max_bytes} bytes (next discovered start as boundary)")
     print(f"Eligible: {counts['eligible']}; accepted: {counts['accepted']}; rejected: {counts['rejected']}")
     print(f"Excluded: short={counts['too_short']} long={counts['too_long']} invalid={counts['invalid_boundary']}")
