@@ -232,6 +232,39 @@ def translate(words):
                 lines.append(f"    s->x[{rd}] = {expression};")
             continue
 
+        # ADD/SUB shifted register, LSL only, with optional NZCV update.
+        if (word & 0x1F200000) == 0x0B000000:
+            shift_type = (word >> 22) & 3
+            amount = (word >> 10) & 63
+            width = 64 if word & 0x80000000 else 32
+            if shift_type != 0 or amount >= width:
+                return None
+            subtract = bool(word & 0x40000000)
+            setflags = bool(word & 0x20000000)
+            rd, rn, rm = word & 31, (word >> 5) & 31, (word >> 16) & 31
+            mask = "UINT64_MAX" if width == 64 else "UINT32_MAX"
+            lhs = "0ULL" if rn == 31 else f"s->x[{rn}]"
+            rhs = "0ULL" if rm == 31 else f"s->x[{rm}]"
+            lines.append("    {")
+            lines.append(f"        uint64_t a = ({lhs}) & {mask};")
+            lines.append(f"        uint64_t b = (({rhs}) << {amount}) & {mask};")
+            lines.append(f"        uint64_t result = (a {'-' if subtract else '+'} b) & {mask};")
+            if setflags:
+                lines.append(f"        uint64_t sign = 1ULL << {width - 1};")
+                lines.append("        uint64_t n = (result & sign) != 0;")
+                lines.append("        uint64_t z = result == 0;")
+                if subtract:
+                    lines.append("        uint64_t carry = a >= b;")
+                    lines.append("        uint64_t overflow = ((a ^ b) & (a ^ result) & sign) != 0;")
+                else:
+                    lines.append(f"        uint64_t carry = a > ({mask} - b);")
+                    lines.append("        uint64_t overflow = (~(a ^ b) & (a ^ result) & sign) != 0;")
+                lines.append("        s->nzcv = (n << 31) | (z << 30) | (carry << 29) | (overflow << 28);")
+            if rd != 31:
+                lines.append(f"        s->x[{rd}] = result;")
+            lines.append("    }")
+            continue
+
         # ADDS/SUBS immediate, including CMP alias (SUBS with Rd=31).
         family = word & 0x7F000000
         if family in (0x31000000, 0x71000000):
