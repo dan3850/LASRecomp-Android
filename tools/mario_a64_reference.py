@@ -13,7 +13,7 @@ def levels_mask(bits):
     return (1 << bits) - 1
 
 
-def run_reference(code, initial, ram=None, ram_base=0):
+def run_reference(code, initial, ram=None, ram_base=0, allow_multiple_ret=False):
     if not code or len(code) % 4:
         raise ValueError("AArch64 code must contain whole 4-byte instructions")
     regs = [int(initial.x[i]) for i in range(31)]
@@ -79,8 +79,8 @@ def run_reference(code, initial, ram=None, ram_base=0):
         if op == 0xD503201F:
             continue
         if op == 0xD65F03C0:
-            if index != len(words):
-                raise ValueError("Early RET cannot be interpreted as a leaf")
+            if index != len(words) and not allow_multiple_ret:
+                raise ValueError("Early RET requires opt-in")
             return (tuple(regs), stack, regs[30], nzcv)
 
         # MOV register alias: ORR Rd, ZR, Rm, LSL #0.
