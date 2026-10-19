@@ -419,6 +419,17 @@ if [[ "$NEO_ENABLE" == 1 ]]; then
  step "Preparando dependencias originais do controle Ryujinx Neo"
  command -v kotlinc >/dev/null 2>&1 || fail "Kotlin nao encontrado. No Termux instale: pkg install kotlin"
  command -v unzip >/dev/null 2>&1 || fail "unzip nao encontrado. Instale: pkg install unzip"
+ # SDK D8/R8 8.x cannot handle Kotlin 2.4 metadata from current Termux kotlinc.
+ # R8 9.1.29 is the minimum documented compatible version. Reuse cached JAR.
+ # Explicit LASRECOMP_D8_JAR remains a supported user override.
+ if [[ -z "${LASRECOMP_D8_JAR:-}" ]]; then
+  NEO_D8_JAR="$(python3 tools/neo_d8.py "$CACHE/java-tools")" ||
+   fail "D8 atualizado nao pode ser preparado para Kotlin/Neo"
+  D8_CMD=(java -Xmx1g -cp "$NEO_D8_JAR" com.android.tools.r8.D8)
+ fi
+ echo "Neo D8 ativo: ${D8_CMD[*]}"
+ "${D8_CMD[@]}" --version ||
+  fail "D8 Neo nao executa no Java instalado"
  mkdir -p "$STAGE/radial"
  # Delete only generated module intermediates: never invalidate native caches.
  rm -rf "$STAGE/radial/extracted" "$NEO_JAVA_RES"
