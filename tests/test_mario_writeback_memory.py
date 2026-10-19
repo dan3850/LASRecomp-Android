@@ -37,6 +37,20 @@ def scalar(load, width, mode, rt=1, rn=0, imm=0):
 
 
 class TestWritebackMemory(unittest.TestCase):
+    def test_register_offset_encoding_not_shadowed_by_writeback(self):
+        # Both decoders share the scalar memory opcode family; mode=2 must
+        # reach register-offset handling instead of being rejected as imm9.
+        for base, option, scaled in (
+                (0xB8600800, 2, False),  # LDR W, UXTW
+                (0xB8200800, 3, True),   # STR W, LSL
+                (0xF8600800, 3, True),   # LDR X, LSL
+                (0xF8200800, 2, False)): # STR X, UXTW
+            word = base | (1 << 16) | (option << 13) | ((1 << 12) if scaled else 0) | 2
+            self.assertEqual((word >> 10) & 3, 2)
+            self.assertIsNotNone(translate([word, RET]), hex(word))
+        # Unsupported register-offset extensions must remain rejected.
+        self.assertIsNone(translate([0xF8600800 | (1 << 16) | 2, RET]))
+
     def test_reject_constrained_unpredictable_overlaps(self):
         for mode in ("pre", "post"):
             for load in (False, True):
