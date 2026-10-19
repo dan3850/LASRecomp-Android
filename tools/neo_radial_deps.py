@@ -25,7 +25,7 @@ MAVEN = (
 # dependencies and the AndroidX/core Kotlin JVM runtime used by those classes.
 # AndroidX AAR resources are compiled separately by aapt2 in the parent script.
 ARTIFACTS = (
-    ("com.github.Swordfish90", "RadialGamePad", "2.0.0", "aar"),
+    ("com.github.swordfish90", "radialgamepad", "2.0.0", "aar"),
     ("androidx.core", "core", "1.9.0", "aar"),
     ("androidx.core", "core-ktx", "1.9.0", "aar"),
     ("androidx.customview", "customview", "1.1.0", "aar"),
@@ -120,7 +120,7 @@ def main():
                     package = found.group(1).decode("utf-8") if found else group
                 except KeyError:
                     package = group
-            if name == "RadialGamePad" and package == group:
+            if name == "radialgamepad" and package == group:
                 package = "com.swordfish.radialgamepad.library"
         print(f"{extension}\t{target}\t{package}", flush=True)
 
