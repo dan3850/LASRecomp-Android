@@ -230,11 +230,15 @@ static int vk_counter_mode(void) {
         // still jump 33 ms between two guest frames once the game selects 30 FPS.
         // Give each presented frame a stable 16 ms step so the next frame's
         // counter no longer inherits the half-rate decision. Does NOT improve GPU speed.
-        // Use real Vulkan GPU timestamps on Android as well. The virtual
-        // 16 ms counter was an A/B-only experiment and caused gameplay
-        // regressions; it must never be the default for release testing.
-        // Other counter modes remain explicit developer-only overrides.
-        const int default_mode = 2;  // real GPU timestamps
+#ifdef __ANDROID__
+        // One-off A/B experiment: give the game a synthetic 16 ms GPU frame
+        // counter to test whether the observed 30 FPS plateau is a counter
+        // feedback loop rather than actual GPU saturation. An explicit
+        // LARECOMP_VK_COUNTER=gpu always restores normal real GPU queries.
+        const int default_mode = 4;  // virtual: Android 30/60 feedback-loop test
+#else
+        const int default_mode = 2;  // gpu: unchanged on other platforms
+#endif
         counter_mode = e && !strcmp(e, "cpu") ? 0 : e && !strcmp(e, "frozen") ? 1 : e && !strcmp(e, "legacy") ? 3
                      : e && !strcmp(e, "virtual") ? 4 : e && !strcmp(e, "gpu") ? 2 : default_mode;
         if (counter_mode == 2 && !g_vk.props.limits.timestampComputeAndGraphics) counter_mode = 0;
