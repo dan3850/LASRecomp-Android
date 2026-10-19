@@ -57,6 +57,15 @@ class TestMarioCodegen(unittest.TestCase):
         self.assertIsNone(translate([0xB4000000, RET]))  # backward/self
         self.assertIsNone(translate([0xB4000000 | (3 << 5), RET]))  # outside
 
+    def test_bcond_validity(self):
+        for cond in range(14):
+            word = 0x54000000 | (2 << 5) | cond
+            self.assertIsNotNone(translate([word, add_imm(0, 0, 1), RET]))
+        for cond in (14, 15):
+            self.assertIsNone(translate([0x54000000 | (2 << 5) | cond, RET]))
+        self.assertIsNone(translate([0x54000000, RET]))
+        self.assertIsNone(translate([0x54000000 | (3 << 5), RET]))
+
     def test_supported_translation(self):
         self.assertIsNotNone(translate([add_imm(0, 0, 0x180), RET]))
         self.assertIsNotNone(translate([add_imm(31, 31, 16), RET]))
@@ -80,6 +89,8 @@ class TestMarioCodegen(unittest.TestCase):
             ([mov_wide("movz", 31, 0xffff), RET], {}),
             ([0xB4000000 | (2 << 5), add_imm(0, 0, 1), RET], {0: 0}),
             ([0xB5000000 | (2 << 5) | 7, add_imm(7, 7, 1), RET], {7: 0xFFFFFFFF}),
+            ([0x54000000 | (2 << 5) | 2, add_imm(0, 0, 1), RET], {0: 0}),
+            ([0x54000000 | (2 << 5) | 0, add_imm(0, 0, 1), RET], {0: 1}),
         ]
         with tempfile.TemporaryDirectory(prefix="test-mario-leaf-") as tmp:
             cfile = Path(tmp) / "leaves.c"
