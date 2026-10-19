@@ -88,10 +88,10 @@ public final class GameTouchControls extends View {
         final float faceY = h*0.30f;
         place(LEFT_STICK, leftX, leftY, analog);
         // Zelda does not use the right stick. Keep its native axes neutral.
-        place(UP, dpadX, dpadY-step, button);
-        place(DOWN, dpadX, dpadY+step, button);
-        place(LEFT, dpadX-step, dpadY, button);
-        place(RIGHT, dpadX+step, dpadY, button);
+        place(UP, dpadX, dpadY-step*0.72f, button);
+        place(DOWN, dpadX, dpadY+step*0.72f, button);
+        place(LEFT, dpadX-step*0.72f, dpadY, button);
+        place(RIGHT, dpadX+step*0.72f, dpadY, button);
         place(X, rightX, faceY-step, button);
         place(B, rightX, faceY+step, button);
         place(Y, rightX-step, faceY, button);
@@ -152,6 +152,17 @@ public final class GameTouchControls extends View {
                 cy[i]-(fm.ascent+fm.descent)*0.5f, paint);
     }
 
+    private void drawDpadBase(Canvas canvas) {
+        float x=(cx[UP]+cx[DOWN])*0.5f;
+        float y=(cy[LEFT]+cy[RIGHT])*0.5f;
+        float r=radius[UP];
+        fill(0xA3262D3A);
+        rect.set(x-r*0.8f,y-r*0.8f,x+r*0.8f,y+r*0.8f);
+        canvas.drawRoundRect(rect,r*0.20f,r*0.20f,paint);
+        outline(density);
+        canvas.drawRoundRect(rect,r*0.20f,r*0.20f,paint);
+    }
+
     private void drawDpadButton(Canvas canvas, int i, float r) {
         // Directional cross sectors, instead of four unrelated round buttons.
         float x=cx[i], y=cy[i], half=r*0.76f;
@@ -186,6 +197,7 @@ public final class GameTouchControls extends View {
         if (!ready) positionControls(getWidth(),getHeight());
         drawStick(canvas, LEFT_STICK, 0);
 
+        drawDpadBase(canvas);
         for (int i=0; i<BUTTON_COUNT; i++) {
             if (i==ZL || i==ZR || i==L3 || i==R3) continue;
             drawButton(canvas,i);
