@@ -23,11 +23,15 @@ int main(void) {
     assert(las_mod60_deadline(&p,false,p.last_present_ns+1)==0);
     assert(p.last_present_ns==0);
     assert(las_mod60_deadline(&p,true,UINT64_C(5000000000))==0);
-    // FIFO swapchains pace at acquire; a second host sleep is redundant.
-    assert(!las_mod60_host_pace_enabled(false,false,false));
-    assert(las_mod60_host_pace_enabled(true,false,false));  // MAILBOX
-    assert(las_mod60_host_pace_enabled(true,false,true));   // MAILBOX override
-    assert(!las_mod60_host_pace_enabled(true,true,false));  // FIFO
-    assert(las_mod60_host_pace_enabled(true,true,true));    // A/B restore
+    // A 120 Hz FIFO display can deliver frames every 8.33 ms. It must
+    // NOT lift Stable60's 60 Hz safety cap or double game simulation speed.
+    LasMod60Pacer high_refresh={0};
+    uint64_t start=UINT64_C(1000000000);
+    assert(las_mod60_deadline(&high_refresh,true,start)==0);
+    assert(las_mod60_deadline(&high_refresh,true,start+UINT64_C(8333333))==
+           start+LAS_MOD60_PERIOD_NS);
+    // With 60 Hz FIFO, acquire already consumed a full period: no extra sleep.
+    las_mod60_complete(&high_refresh,start);
+    assert(las_mod60_deadline(&high_refresh,true,start+LAS_MOD60_PERIOD_NS)==0);
     puts("TEST_MOD60_PACER_PASS");
 }
