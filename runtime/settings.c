@@ -17,6 +17,7 @@ static const char *settings_file(void) {
 
 Settings g_settings = {
     .aspect = ASPECT_UNLOCKED,
+    .switch_mode = SWITCH_MODE_DOCKED,
     .fullscreen = false,
     .volume = 1.0f,
     .reverb = true,
@@ -89,16 +90,31 @@ void settings_load(void) {
             continue;
         }
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
+        else if (!strcmp(key, "switch_mode")) g_settings.switch_mode = !strcmp(val, "handheld") ? SWITCH_MODE_HANDHELD : SWITCH_MODE_DOCKED;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
         else if (!strcmp(key, "resolution")) {
-            int n = atoi(val);
-            g_settings.res_mode = !strcmp(val, "dynamic") ? RES_DYNAMIC : (!strcmp(val, "75%") || !strcmp(val, "67%")) ? RES_Q75 :
-                                  !strcmp(val, "50%") ? RES_Q50 : !strcmp(val, "25%") ? RES_Q25 :
-                                  (n >= 1 && n <= 4) ? n : n > 4 ? 4 : RES_MATCH;  // (5x-8x were removed)
+            if (!strcmp(val, "dynamic")) g_settings.res_mode = RES_DYNAMIC;
+            else if (!strcmp(val, "75%") || !strcmp(val, "67%")) g_settings.res_mode = RES_Q75;
+            else if (!strcmp(val, "50%")) g_settings.res_mode = RES_Q50;
+            else if (!strcmp(val, "25%")) g_settings.res_mode = RES_Q25;
+            else if (!strcmp(val, "720p")) g_settings.res_mode = RES_FIXED_720P;
+            else {
+                static const char *const eden[] = {
+                    "eden_0.25x", "eden_0.5x", "eden_0.75x", "eden_1x",
+                    "eden_1.25x", "eden_1.5x", "eden_2x", "eden_3x", "eden_4x"
+                };
+                int found = 0;
+                for (unsigned i = 0; i < sizeof eden / sizeof eden[0]; ++i)
+                    if (!strcmp(val, eden[i])) { g_settings.res_mode = RES_EDEN_025 + (int)i; found = 1; break; }
+                if (!found) {
+                    int n = atoi(val);
+                    g_settings.res_mode = n >= 1 && n <= 4 ? n : n > 4 ? 4 : RES_MATCH;
+                }
+            }
         }
         else if (!strcmp(key, "upscaler")) g_settings.upscaler = !strcmp(val, "bilinear") ? UPSCALE_BILINEAR : UPSCALE_SHARP;  // (metalfx / fsr1: this OS's)
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
@@ -145,6 +161,7 @@ void settings_save(void) {
     if (!f) { LOG("[settings] cannot write %s\n", SETTINGS_FILE); return; }
     fprintf(f, "# LAS Recomp settings (edited from the in-game menu: F1, Esc, or Minus+Plus on a controller)\n");
     fprintf(f, "aspect = %s\n", g_settings.aspect == ASPECT_ORIGINAL ? "original" : "unlocked");
+    fprintf(f, "switch_mode = %s\n", g_settings.switch_mode == SWITCH_MODE_HANDHELD ? "handheld" : "docked");
     fprintf(f, "fullscreen = %d\n", g_settings.fullscreen);
     fprintf(f, "volume = %.2f\n", g_settings.volume);
     fprintf(f, "reverb = %d\n", g_settings.reverb);
@@ -156,6 +173,13 @@ void settings_save(void) {
     else if (g_settings.res_mode == RES_Q75) fprintf(f, "resolution = 75%%\n");
     else if (g_settings.res_mode == RES_Q25) fprintf(f, "resolution = 25%%\n");
     else if (g_settings.res_mode == RES_Q50) fprintf(f, "resolution = 50%%\n");
+    else if (g_settings.res_mode == RES_FIXED_720P) fprintf(f, "resolution = 720p\n");
+    else if (g_settings.res_mode >= RES_EDEN_025 && g_settings.res_mode <= RES_EDEN_400) {
+        static const char *const eden[] = {
+            "0.25x", "0.5x", "0.75x", "1x", "1.25x", "1.5x", "2x", "3x", "4x"
+        };
+        fprintf(f, "resolution = eden_%s\n", eden[g_settings.res_mode - RES_EDEN_025]);
+    }
     else if (g_settings.res_mode >= 1 && g_settings.res_mode <= 8) fprintf(f, "resolution = %dx\n", g_settings.res_mode);
     else fprintf(f, "resolution = match\n");
     fprintf(f, "inv_keys = %d\n", g_settings.inv_keys);
