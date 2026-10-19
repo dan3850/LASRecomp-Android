@@ -55,6 +55,15 @@ assert 'SecondaryDialConfig.SingleButton(5, 1f, 1f, button(NeoInputBridge.RIGHT_
 assert "KEYCODE_F1" in bridge and "SDL_SCANCODE_F1" in menu
 assert "button(DPAD_LEFT, x < -0.35f)" in bridge
 assert "button(DPAD_UP, y < -0.35f)" in bridge
+# Only the settings gear should occupy the former in-game log button area.
+assert "captureButton" not in activity, "Diagnostic overlay unexpectedly present"
+assert 'text = "HOME"' not in ui, "Old text-labelled HOME must be replaced"
+assert "ImageButton(activity)" in ui
+assert "setImageResource(android.R.drawable.ic_menu_manage)" in ui
+assert 'contentDescription = "Configurações"' in ui
+assert "Gravity.TOP or Gravity.CENTER_HORIZONTAL" in ui
+assert "input.home(true)" in ui and "input.home(false)" in ui
+assert "GraphicsDiagnostics.handleResult" in activity, "Keep export backend intact"
 print("OK: all 16 Switch Npad button bindings match the actual native defaults.")
 print("OK: D-pad independent, two genuine analog sticks connected to nn::hid.")
-print("OK: dedicated HOME opens the real in-game settings via F1.")
+print("OK: top-center gear-only settings opens the F1 menu; no log overlay.")
