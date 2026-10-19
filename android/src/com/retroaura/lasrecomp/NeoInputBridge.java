@@ -52,6 +52,15 @@ public final class NeoInputBridge {
     }
     private final boolean[] pressedKeys=new boolean[256];
     public synchronized void direction(int id, float x, float y) {
+        if (id==DPAD_UP) {
+            // Original RadialGamePad Cross emits a Direction event, not
+            // four separate Button events. Preserve simultaneous diagonals.
+            button(DPAD_LEFT, x < -0.35f);
+            button(DPAD_RIGHT, x > 0.35f);
+            button(DPAD_UP, y < -0.35f);
+            button(DPAD_DOWN, y > 0.35f);
+            return;
+        }
         if (id!=LEFT_STICK) return;
         boolean l=x < -0.35f, r=x > 0.35f, u=y < -0.35f, d=y > 0.35f;
         stickLeft=l; stickRight=r; stickUp=u; stickDown=d;
