@@ -80,10 +80,38 @@ void plat_sleep_until_ns(uint64_t t) {
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
 }
 
+// The upstream P/E core selection is Windows-only. On Android use a soft nice
+// preference for the critical threads, and let the system choose the CPU core.
+// A privileged scheduling policy or hard affinity is deliberately not attempted.
+// LARECOMP_ANDROID_PERF_THREADS=0 disables the new hints for an A/B comparison.
+void plat_thread_perf_core(int role) {
+    static const char *const names[] = {"game", "render", "vsync"};
+    if (role < PLAT_PERF_GAME || role > PLAT_PERF_VSYNC) return;
+    const char *opt = getenv("LARECOMP_ANDROID_PERF_THREADS");
+    if (opt && strcmp(opt, "0") == 0) {
+        LOG("[perf-thread] %s disabled tid=%ld cpu=%d\\n",
+            names[role], (long)gettid(), sched_getcpu());
+        return;
+    }
+
+    const int target_nice = -4; // same conservative request as the existing VI hint
+    int before = getpriority(PRIO_PROCESS, 0); // Android/Linux: current native thread
+    int status = 0, saved_errno = 0;
+    if (before > target_nice && setpriority(PRIO_PROCESS, 0, target_nice) != 0) {
+        status = -1;
+        saved_errno = errno; // Android may refuse negative nice without privilege
+    }
+    int after = getpriority(PRIO_PROCESS, 0);
+    LOG("[perf-thread] %s tid=%ld cpu=%d nice=%d->%d target=%d status=%s errno=%d\\n",
+        names[role], (long)gettid(), sched_getcpu(), before, after,
+        target_nice, status ? "denied" : "ok", saved_errno);
+}
+
 void plat_thread_realtime(uint64_t period_ns) {
     (void)period_ns;
-    // No root or privileged scheduling required. Android may reject this hint.
+    // Preserve the pre-existing VI scheduling request in both A/B modes.
     (void)setpriority(PRIO_PROCESS, 0, -4);
+    plat_thread_perf_core(PLAT_PERF_VSYNC);
 }
 
 void plat_init(void) {
