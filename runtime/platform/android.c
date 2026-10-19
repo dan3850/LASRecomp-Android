@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <pthread.h>
 #include <sched.h>
@@ -112,6 +113,51 @@ void plat_thread_realtime(uint64_t period_ns) {
     // Preserve the pre-existing VI scheduling request in both A/B modes.
     (void)setpriority(PRIO_PROCESS, 0, -4);
     plat_thread_perf_core(PLAT_PERF_VSYNC);
+}
+
+// Same AdrenoTools feature used by Eden/yuzu on Android. KGSL_PWRCTRL
+// requests maximum clocks but does not bypass Android thermal policies.
+// A status of true means the library was called, not that the requested
+// frequency was achieved (AdrenoTools' API returns void).
+static void (*adreno_turbo_call)(bool);
+static int adreno_turbo_active;
+static void adreno_turbo_restore(void) {
+    if (adreno_turbo_active && adreno_turbo_call) {
+        adreno_turbo_call(false);
+        adreno_turbo_active = 0;
+        LOG("[adreno-turbo] clock request disabled on exit\n");
+    }
+}
+bool plat_adreno_turbo_set(bool enabled) {
+    if ((int)enabled == adreno_turbo_active) return true;
+    if (enabled && !adreno_turbo_call) {
+        int fd = open("/dev/kgsl-3d0", O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+            LOG("[adreno-turbo] unavailable: /dev/kgsl-3d0 (%s)\n", strerror(errno));
+            return false;
+        }
+        close(fd);
+        void *lib = dlopen("libadrenotools.so", RTLD_NOW | RTLD_LOCAL);
+        if (!lib) {
+            LOG("[adreno-turbo] libadrenotools unavailable: %s\n", dlerror());
+            return false;
+        }
+        adreno_turbo_call = (void (*)(bool))dlsym(lib, "adrenotools_set_turbo");
+        if (!adreno_turbo_call) {
+            LOG("[adreno-turbo] adrenotools_set_turbo unavailable\n");
+            dlclose(lib);
+            return false;
+        }
+        // Held until process exit because we keep the function pointer.
+        (void)atexit(adreno_turbo_restore);
+    }
+    if (adreno_turbo_call) {
+        adreno_turbo_call(enabled);
+        adreno_turbo_active = enabled ? 1 : 0;
+        LOG("[adreno-turbo] requested=%s (actual clock subject to KGSL and thermal policy)\n",
+            enabled ? "on" : "off");
+    }
+    return true;
 }
 
 void plat_init(void) {
