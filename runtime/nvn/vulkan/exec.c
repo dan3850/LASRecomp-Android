@@ -627,7 +627,11 @@ VkCommandBuffer vk_upload_cmd(void) {
         begin_cb(&s->upload, &s->upload_begun);
         // after everything submitted before it: a submission's commands may start while the previous one's still run,
         // and these copies overwrite what those may read (textures being replaced, vertex cache pages)
-        vk_full_barrier(s->upload);
+        // Upload CBs only write/clear/copy transfer resources. Wait for
+        // prior device writes before reusing those resources, without
+        // unnecessarily blocking unrelated graphics/compute reads.
+        // LARECOMP_VK_SCHEDULER=0 retains the conservative full barrier.
+        vk_sched_barrier(s->upload, VKSCHED_BEFORE_TRANSFER);
     }
     return s->upload;
 }
@@ -855,7 +859,7 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
 // 64 MB host-visible chunks (device-local when the GPU exposes resizable BAR); a chunk is reused once every
 // submission that allocated from it has completed.
 #define CHUNK_SIZE (64ull << 20)
-typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq, dirty_lo, dirty_hi; } Chunk;
+typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq, dirty_lo, dirty_hi; bool coherent; } Chunk;
 static Chunk *chunks;
 static int nchunks, active = -1;
 
@@ -875,10 +879,13 @@ static int new_chunk(uint64_t size) {
     c->ptr = info.pMappedData;
     c->size = size;
     c->dirty_lo = UINT64_MAX;
+    // HOST_COHERENT allocations need no vkFlushMappedMemoryRanges call.
+    // Query each chunk's actual memory type; VMA may pick a different heap.
+    VkMemoryPropertyFlags f;
+    vmaGetMemoryTypeProperties(g_vk.vma, info.memoryType, &f);
+    c->coherent = !!(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (!nchunks) {  // where the ring lives: device-local (resizable BAR) or system memory read across PCIe
-        VkMemoryPropertyFlags f;
-        vmaGetMemoryTypeProperties(g_vk.vma, info.memoryType, &f);
-        LOG("[vk] transient ring: memory type %u flags=%#x coherent=%d\n", info.memoryType, f, !!(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+        LOG("[vk] transient ring: memory type %u flags=%#x coherent=%d\n", info.memoryType, f, c->coherent);
         vk_diag_info("transient_memory_type=%u flags=%#x coherent=%d nonCoherentAtomSize=%llu", info.memoryType, f,
             !!(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT), (unsigned long long)g_vk.props.limits.nonCoherentAtomSize);
     }
@@ -893,7 +900,10 @@ static void ring_flush(void) {
     for (int i = 0; i < nchunks; i++) {
         Chunk *c = &chunks[i];
         if (c->dirty_lo == UINT64_MAX) continue;
-        VK_CHECK(vmaFlushAllocation(g_vk.vma, c->mem, c->dirty_lo, c->dirty_hi - c->dirty_lo));
+        // Per Vulkan host-coherent rules the queue submission observes CPU writes
+        // without an explicit flush. Noncoherent heaps keep their old path.
+        if (!c->coherent)
+            VK_CHECK(vmaFlushAllocation(g_vk.vma, c->mem, c->dirty_lo, c->dirty_hi - c->dirty_lo));
         c->dirty_lo = UINT64_MAX; c->dirty_hi = 0;
     }
 }
