@@ -234,6 +234,7 @@ KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio
     uint64_t stack = STACK_BASE + STACK_SIZE - ((stack_size + 0xFFFF) & ~0xFFFFull);
     region_add(stack, stack_size, 0xB, 3);
     KThread *t = thread_new(entry, 0, stack + stack_size, prio, 0);
+    t->is_main = true;
     t->handle = kernel_new_handle(&t->obj);
     return t;
 }
