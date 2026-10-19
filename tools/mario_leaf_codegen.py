@@ -78,9 +78,13 @@ static inline __attribute__((unused)) int mario_condition(uint64_t flags, unsign
 """
 
 
-def translate(words):
-    """Return C statements only for an entirely supported function ending in RET X30."""
-    if not words:
+def translate(words, allow_multiple_ret=False):
+    """Translate only supported functions ending in RET X30.
+
+    Multi-RET is opt-in. Branches remain strictly forward-only and in-range.
+    Every supported RET terminates native execution with the guest LR.
+    """
+    if not words or words[-1] != 0xD65F03C0:
         return None
     lines = ["    s->fault = 0;"]
     targets = set()
@@ -166,9 +170,12 @@ def translate(words):
             continue
         if word == 0xD503201F:  # NOP
             continue
-        if word == 0xD65F03C0 and index == len(words) - 1:  # RET X30
+        if word == 0xD65F03C0:  # RET X30 (optional early-return support)
+            if index != len(words) - 1 and not allow_multiple_ret:
+                return None
             lines.append("    s->pc = s->x[30];")
-            return lines
+            lines.append("    return;")
+            continue
 
         # ADR/ADRP: guest PC is the address of the first instruction on entry.
         # Use the current runtime guest PC, never the NSO's build-time load address.
@@ -494,10 +501,11 @@ def translate(words):
             continue
 
         return None  # unsupported branch, SIMD, memory mode or system instruction
-    return None  # missing RET
+    return lines  # The final instruction is a validated RET.
 
 
-def candidates(nso, limit, min_instructions=2, allow_memory=False, use_fde=False):
+def candidates(nso, limit, min_instructions=2, allow_memory=False,
+               use_fde=False, allow_multiple_ret=False):
     """Select bounded candidate spans; optionally prefer validated FDE ranges."""
     funcs, _ = discover(nso)
     starts = sorted(funcs)
@@ -521,7 +529,7 @@ def candidates(nso, limit, min_instructions=2, allow_memory=False, use_fde=False
                  0xB8000000, 0xB8400000, 0xF8000000, 0xF8400000)
                 for w in words):
             continue
-        code = translate(words)
+        code = translate(words, allow_multiple_ret=allow_multiple_ret)
         if code is None:
             continue
         yield start, end, code
@@ -551,6 +559,8 @@ def main():
                         help="include bounded 32/64-bit LDR/STR and offset LDP/STP functions")
     parser.add_argument("--use-fde", action="store_true",
                         help="use validated FDE spans when available (experimental)")
+    parser.add_argument("--multi-ret", action="store_true",
+                        help="opt in to forward-only functions with multiple RET X30")
     args = parser.parse_args()
     if not 1 <= args.limit <= 1000:
         parser.error("--limit must be between 1 and 1000")
@@ -558,7 +568,8 @@ def main():
         parser.error("--min-instructions must be between 1 and 32")
     nso = Nso(args.nso)
     matches = list(candidates(nso, args.limit, args.min_instructions,
-                              allow_memory=args.with_memory, use_fde=args.use_fde))
+                              allow_memory=args.with_memory, use_fde=args.use_fde,
+                              allow_multiple_ret=args.multi_ret))
     if not matches:
         raise SystemExit("No functions match the conservative instruction subset; no C emitted")
     args.output.parent.mkdir(parents=True, exist_ok=True)
