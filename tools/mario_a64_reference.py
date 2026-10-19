@@ -86,6 +86,29 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 regs[dest] = result & mask
             continue
 
+        # ADDS/SUBS immediate; CMP is SUBS with destination XZR/WZR.
+        family = op & 0x7F000000
+        if family in (0x31000000, 0x71000000):
+            shift = (op >> 22) & 3
+            if shift > 1:
+                raise ValueError("Reserved flag-setting immediate shift")
+            width = 64 if op & 0x80000000 else 32
+            mask = (1 << width) - 1
+            dest, source = op & 31, (op >> 5) & 31
+            a = (stack if source == 31 else regs[source]) & mask
+            b = ((op >> 10) & 0xFFF) << (12 if shift else 0)
+            subtract = family == 0x71000000
+            result = (a - b if subtract else a + b) & mask
+            sign = 1 << (width - 1)
+            n, z = bool(result & sign), result == 0
+            carry = a >= b if subtract else a + b > mask
+            overflow = (bool((a ^ b) & (a ^ result) & sign) if subtract
+                        else bool((~(a ^ b)) & (a ^ result) & sign))
+            nzcv = (int(n) << 31) | (int(z) << 30) | (int(carry) << 29) | (int(overflow) << 28)
+            if dest != 31:
+                regs[dest] = result
+            continue
+
         # ADD/SUB immediate, 32/64 bit, *without* setting flags.
         if ((op >> 24) & 0b11111) == 0b10001 and not (op & (1 << 29)):
             shift = (op >> 22) & 0b11
