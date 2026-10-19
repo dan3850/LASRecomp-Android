@@ -49,6 +49,14 @@ class TestMarioCodegen(unittest.TestCase):
     def test_reject_missing_ret(self):
         self.assertIsNone(translate([add_imm(0, 0, 1)]))
 
+    def test_forward_conditional_branches(self):
+        cbz = 0xB4000000 | (2 << 5) | 0
+        cbnz = 0xB5000000 | (2 << 5) | 7
+        self.assertIsNotNone(translate([cbz, add_imm(0, 0, 1), RET]))
+        self.assertIsNotNone(translate([cbnz, add_imm(0, 0, 1), RET]))
+        self.assertIsNone(translate([0xB4000000, RET]))  # backward/self
+        self.assertIsNone(translate([0xB4000000 | (3 << 5), RET]))  # outside
+
     def test_supported_translation(self):
         self.assertIsNotNone(translate([add_imm(0, 0, 0x180), RET]))
         self.assertIsNotNone(translate([add_imm(31, 31, 16), RET]))
@@ -70,6 +78,8 @@ class TestMarioCodegen(unittest.TestCase):
             ([add_imm(7, 7, 1, width=32), RET], {7: 0}),
             ([add_imm(8, 8, 2, sub=True), RET], {8: 0x7775}),
             ([mov_wide("movz", 31, 0xffff), RET], {}),
+            ([0xB4000000 | (2 << 5), add_imm(0, 0, 1), RET], {0: 0}),
+            ([0xB5000000 | (2 << 5) | 7, add_imm(7, 7, 1), RET], {7: 0xFFFFFFFF}),
         ]
         with tempfile.TemporaryDirectory(prefix="test-mario-leaf-") as tmp:
             cfile = Path(tmp) / "leaves.c"
