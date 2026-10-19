@@ -442,6 +442,20 @@ if [[ -n "$RADIAL_AAR" ]]; then
 fi
 javac -source 8 -target 8 -encoding UTF-8 -cp "$RADIAL_CP" \
  -d "$STAGE/classes" android/src/com/retroaura/lasrecomp/*.java "${SDLJAVA[@]}"
+# Compile the actual original RadialGamePad integration Kotlin module only
+# when explicitly enabled. Do not silently generate a legacy-looking APK.
+if [[ -n "$RADIAL_AAR" ]]; then
+ command -v kotlinc >/dev/null 2>&1 || fail "kotlinc nao instalado no Termux (necessario para NeoRadialControls.kt)"
+ KOTLIN_SRC="android/kotlin/com/retroaura/lasrecomp/NeoRadialControls.kt"
+ [[ -s "$KOTLIN_SRC" ]] || fail "Modulo Kotlin NeoRadialControls.kt ausente"
+ # Java classes are compiled first; Kotlin sees both the app's bridge and
+ # original RadialGamePad classes, including the explicit dependency jars.
+ kotlinc "$KOTLIN_SRC" -jvm-target 1.8 -classpath "$RADIAL_CP:$STAGE/classes" -d "$STAGE/classes" ||
+  fail "Falha ao compilar os controles originais Kotlin"
+ [[ -s "$STAGE/classes/com/retroaura/lasrecomp/NeoRadialControls.class" ]] ||
+  fail "NeoRadialControls.class nao foi gerado"
+ echo "Controle original NeoRadialControls compilado."
+fi
 jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
 # Avoid stale classes2.dex from an earlier optional dependency build.
 rm -f "$STAGE/dex"/classes*.dex
