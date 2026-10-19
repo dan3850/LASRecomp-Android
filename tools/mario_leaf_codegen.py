@@ -388,10 +388,9 @@ def translate(words):
             0x38000000, 0x38400000, 0x78000000, 0x78400000,
             0xB8000000, 0xB8400000, 0xF8000000, 0xF8400000,
         )
-        if (family & ~0xC00) in unscaled_families:
+        # mode=2 belongs to register-offset addressing; do not intercept it.
+        if (family & ~0xC00) in unscaled_families and (word & 0xC00) != 0x800:
             mode = (word >> 10) & 3  # 0=unscaled, 1=post, 3=pre
-            if mode not in (0, 1, 3):
-                return None
             width = 1 << ((word >> 30) & 3)
             load = bool(word & 0x00400000)
             rt, rn = word & 31, (word >> 5) & 31
