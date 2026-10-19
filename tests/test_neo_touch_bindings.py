@@ -50,6 +50,8 @@ assert "key_lx + pad_lx + tx" in input_c
 assert "key_rx + pad_rx + trx" in input_c
 assert "NeoInputBridge.RIGHT_STICK" in ui
 assert "NeoInputBridge.LEFT_STICK" in ui
+assert 'SecondaryDialConfig.SingleButton(1, 1f, 1f, button(NeoInputBridge.LEFT_STICK_BUTTON, "L3"))' in ui
+assert 'SecondaryDialConfig.SingleButton(5, 1f, 1f, button(NeoInputBridge.RIGHT_STICK_BUTTON, "R3"))' in ui
 assert "KEYCODE_F1" in bridge and "SDL_SCANCODE_F1" in menu
 assert "button(DPAD_LEFT, x < -0.35f)" in bridge
 assert "button(DPAD_UP, y < -0.35f)" in bridge
