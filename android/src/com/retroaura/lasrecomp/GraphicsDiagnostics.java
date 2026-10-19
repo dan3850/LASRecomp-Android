@@ -42,6 +42,8 @@ final class GraphicsDiagnostics {
                         + "\npackage=" + activity.getPackageName() + "\n");
                     File root = activity.getFilesDir();
                     add(zip, new File(root, "lasrecomp_boot.txt"), "boot.txt", LOG_LIMIT, true);
+                    add(zip, new File(root, "neo_touch_crash.txt"),
+                            "input/neo-touch-crash.txt", 65536, true);
                     add(zip, new File(root, "lasrecomp.log"), "runtime-tail.txt", LOG_LIMIT, true);
                     add(zip, new File(root, "lasrecomp.log"), "runtime-start.txt", 32768, false);
                     add(zip, new File(root, "mods/stable60-v2.status.txt"), "mods/status.txt", 4096, false);
