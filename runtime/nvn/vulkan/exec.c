@@ -195,7 +195,9 @@ static bool recovery60_on(void) {
     if (atomic_load_explicit(&recovery60_enabled,memory_order_acquire)<0) {
         const char *v=getenv("LARECOMP_VK_RECOVERY60");
 #ifdef __ANDROID__
-        int enabled=!v || atoi(v)!=0;
+        // Keep real GPU timestamp reports unmodified by native 60fps probes.
+        // The experiment can still be enabled explicitly for A/B testing.
+        int enabled=v && atoi(v)!=0;
 #else
         int enabled=v && atoi(v)!=0;
 #endif
