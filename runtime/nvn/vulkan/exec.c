@@ -501,7 +501,10 @@ static void cq_resolve_ready(void) {
     if (eager_counter_mode < 0) {
         const char *v = getenv("LARECOMP_VK_COUNTER_EAGER");
 #ifdef __ANDROID__
-        eager_counter_mode = !v || atoi(v) != 0;
+        // A/B test: keep real GPU timestamps, but resolve them at normal
+        // completion/fence points rather than polling during submissions.
+        // Explicit LARECOMP_VK_COUNTER_EAGER=1 restores the old behaviour.
+        eager_counter_mode = v && atoi(v) != 0;
 #else
         eager_counter_mode = v && atoi(v) != 0;
 #endif
