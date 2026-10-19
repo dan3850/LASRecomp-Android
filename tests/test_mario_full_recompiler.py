@@ -33,11 +33,11 @@ ENTRY, CALLEE = 0x40, 0x200
 MAIN, SDK = 0x7000000000, 0x7004000000
 
 
-def make_nso(path, *, sdk=False, increment=5):
+def make_nso(path, *, sdk=False, increment=5, entry_name='start'):
     """Real NSO/MOD0/dynsym layout with a >128-byte caller and two modules."""
     text = bytearray(struct.pack('<I', NOP) * (0x50 // 4 if sdk else 0x210 // 4))
     struct.pack_into('<II', text, 0, 0x14000010, 0x1000)  # entry branch and MOD0 offset
-    symbols = [('start', ENTRY)]
+    symbols = [(entry_name, ENTRY)]
     if sdk:
         words = [0x91000084 | (increment << 10), RET]  # add x4,x4,#increment
     else:

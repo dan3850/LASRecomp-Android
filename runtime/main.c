@@ -11,9 +11,13 @@
 #include "hle.h"
 #include "kernel.h"
 #include "rando.h"
+#ifdef LASRECOMP_MARIO_TEST
+#include "mario_startup.h"
+#endif
 
 const char *g_romfs_dir;
 
+#ifndef LASRECOMP_MARIO_TEST
 // rtld normally passes these to nn::init::Start: run every module's init/fini arrays.
 static void run_array(Cpu *c, uint64_t arr, uint64_t size) {
     for (uint64_t i = 0; i < size / 8; i++) {
@@ -34,6 +38,7 @@ static void module_init(Cpu *c, Module *m) {
 
 static void rtld_init_sdk(Cpu *c) { module_init(c, &g_modules[1]); }
 static void rtld_init_main(Cpu *c) { module_init(c, &g_modules[0]); }
+#endif
 
 // Claim the guest address range before anything else can map there. The host allocator places
 // regions at random addresses in the same window; on a collision, re-exec for a fresh layout.
@@ -181,6 +186,9 @@ static void boot(const char *root) {
     }
     LOG("main thread: prio %d, stack 0x%x\n", prio, stack_size);
 
+#ifdef LASRECOMP_MARIO_TEST
+    mario_startup(stack_size, prio);
+#else
     uint64_t start = loader_find_symbol("_ZN2nn4init5StartEmmPFvvES2_");
     if (!start) FATAL("nn::init::Start not found\n");
     uint64_t init_fn = hle_register("<rtld_init_sdk>", rtld_init_sdk);
@@ -190,6 +198,7 @@ static void boot(const char *root) {
     fprintf(stderr, "[boot] executing first guest function\n");
 #endif
     kernel_run_main(t, t->handle, 0, init_fn, fini_fn);  // nn::init::Start(thread_handle, args_region, init, fini)
+#endif
 }
 
 static int lasrecomp_run(int argc, char **argv) {

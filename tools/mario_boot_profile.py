@@ -12,6 +12,21 @@ import struct
 
 from nso import Nso
 
+START_ABIS = (('_ZN2nn4init5StartEmmPFvvES2_S2_', 5),
+              ('_ZN2nn4init5StartEmmPFvvES2_', 4))
+
+
+def sdk_startup(nso, base):
+    lo, size = nso.text
+    functions = {name: value for name, info, section, value, _ in nso.syms
+                 if section and (info & 15) == 2 and lo <= value < lo + size and value % 4 == 0}
+    for name, arguments in START_ABIS:
+        if name in functions:
+            return {'symbol': name, 'address': hex(base + functions[name]), 'arguments': arguments}
+    candidates = sorted(n for n, *_ in nso.syms if n.startswith('_ZN2nn4init5Start'))
+    raise ValueError('sdk: no supported nn::init::Start export (4 or 5 arguments); candidates: ' +
+                     (', '.join(candidates) if candidates else 'none'))
+
 
 def sha256(path):
     with Path(path).open('rb') as stream:
@@ -67,6 +82,8 @@ def prepare(report_path, exefs, output, *, host_test=False):
             stream.seek(0x40)
             builds[name] = stream.read(32)
         images[name], bases[name] = nso.size, base
+        if name == 'sdk':
+            startup = sdk_startup(nso, base)
     if bases['main'] != 0x7000000000 or bases['sdk'] < bases['main'] + images['main'] or \
             bases['sdk'] + images['sdk'] > 0x7080000000 or bases['sdk'] & 0xFFFF:
         raise ValueError('invalid or overlapping Mario module bases')
@@ -83,7 +100,7 @@ def prepare(report_path, exefs, output, *, host_test=False):
     metadata = {'profile': 'mario', 'library_id': identity, 'boot_tested': False,
                 'build_ids': {n: b.hex() for n, b in builds.items()},
                 'bases': {n: hex(b) for n, b in bases.items()},
-                'library_sha256': report['link']['sha256']}
+                'library_sha256': report['link']['sha256'], 'startup': startup}
     write_changed(output / 'mario_boot_profile.json', json.dumps(metadata, indent=2, sort_keys=True) + '\n')
     return metadata
 
@@ -97,6 +114,8 @@ def main():
     metadata = prepare(args.report, args.game, args.output)
     print('Perfil Mario vinculado a biblioteca existente: ' + metadata['library_id'])
     print('MAIN=' + metadata['bases']['main'] + ' SDK=' + metadata['bases']['sdk'])
+    print('START=' + metadata['startup']['symbol'] + ' ENDERECO=' + metadata['startup']['address'] +
+          ' ARGUMENTOS=' + str(metadata['startup']['arguments']))
 
 
 if __name__ == '__main__':

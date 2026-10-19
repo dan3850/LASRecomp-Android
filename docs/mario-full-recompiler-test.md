@@ -86,6 +86,19 @@ O runtime repete essa verificação ao carregar os NSOs. O jogo é executado pel
 ciclo SDL Android existente, com o dispatcher e os inicializadores de módulos
 do runtime. Serviços HLE ausentes encerram o teste com nome e endereço no log.
 
+A entrada do SDK é selecionada pelo export real de `nn::init::Start`: quatro
+argumentos (`_ZN2nn4init5StartEmmPFvvES2_`) ou cinco
+(`_ZN2nn4init5StartEmmPFvvES2_S2_`). O comando imprime `START`, `ENDERECO` e
+`ARGUMENTOS` antes da compilação. Uma assinatura desconhecida bloqueia a etapa
+com a lista de candidatos, sem escolher um endereço por aproximação.
+O runtime verifica se há uma função recompilada nesse endereço. Os callbacks
+Mario registram prontidão em `x2`, inicializam SDK e main em `x3` e, na variante
+de cinco argumentos, finalizam main e SDK em `x4`. `DT_INIT`/`DT_FINI` têm
+precedência sobre a execução direta dos respectivos arrays.
+
+A correção da entrada não exige regenerar a biblioteca: o perfil de compilação
+nativa mantém as mesmas flags e os objetos sem alterações continuam em cache.
+
 O perfil Mario desativa os callbacks de gameplay, patches do randomizer,
 leituras de câmera e overlays que dependem dos endereços do Zelda. O menu do
 teste fica restrito a controles, vídeo, áudio e saída.
@@ -118,6 +131,9 @@ e `linked_requires_runtime`, sempre com `boot_tested=false` e `runtime_ready=fal
 Os testes de boot usam a biblioteca sintética existente e os fontes reais de
 `gamelib.c`, `loader.c` e `dispatch.c`: verificam chamadas entre `main` e `sdk`,
 memória, SIMD, rejeição de Build ID incompatível e falha explícita de HLE ausente.
+As duas assinaturas de Start também executam callbacks pelo dispatcher real,
+com código ARM64 sintético recompilado, construtores, finalizadores e relocação
+dos arrays; o teste observa a ordem por escritas na memória do guest.
 Esses testes no host não substituem uma compilação completa do APK ou um teste
 do executável real no Android. Próximo diagnóstico: o primeiro bloqueio de boot
 registrado no aparelho, antes de ampliar serviços ou otimizar o renderer.
