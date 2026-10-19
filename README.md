@@ -1,5 +1,20 @@
 # LAS Recomp
 
+> **Aviso para a branch Android com controles Neo:** a implementação do controle
+> virtual utiliza a biblioteca original [RadialGamePad](https://github.com/Swordfish90/RadialGamePad)
+> (GPL-3.0-or-later), com layout/identificadores inspirados no
+> [Ryujinx Neo](https://github.com/Sunshinin11/Ryujinx_Neo) (MIT).
+> O código original LASRecomp permanece MIT; isso **não** transforma o
+> RadialGamePad em MIT. O APK gerado inclui os textos completos das principais
+> licenças em `assets/licenses/`, conforme
+> [avisos de terceiros](android/licenses/THIRD_PARTY_NOTICES.txt).
+> **Não distribua um APK proprietário/fechado que incorpore o RadialGamePad
+> sem antes resolver as obrigações de GPL e das demais dependências.**
+> Isso vale tanto para distribuições gratuitas quanto pagas; uso pessoal
+> sem distribuição é diferente. Arquivos de jogos e bibliotecas derivadas
+> do jogo não devem ser publicados.
+
+
 > [!IMPORTANT]
 > **This project was made almost exclusively with AI.** Nearly all of the code, tooling, reverse engineering and
 > documentation in this repository was written by and will be maintained by an AI (Anthropic's Claude, through Claude Code),
