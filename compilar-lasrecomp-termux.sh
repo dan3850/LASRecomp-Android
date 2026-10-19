@@ -405,19 +405,35 @@ python3 tools/android-font-fallback.py \
  third_party/imgui/misc/fonts/Roboto-Medium.ttf "$STAGE/assets/lasrecomp_font.ttf"
 mapfile -d '' -t SDLJAVA < <(find "$SDL_JAVA" -type f -name '*.java' -print0)
 (( ${#SDLJAVA[@]} > 0 )) || fail "SDL Java nao encontrado"
-# Optional original RadialGamePad AAR. Never silently download or substitute
-# a lookalike. All runtime dependencies must be supplied and audited separately.
+# Optional original RadialGamePad. Explicit local dependencies only; no download.
 RADIAL_AAR="${LASRECOMP_RADIAL_AAR:-}"
+RADIAL_DEPS="${LASRECOMP_RADIAL_DEPS_DIR:-}"
 RADIAL_JARS=()
 RADIAL_CP="$ANDROID_JAR"
 if [[ -n "$RADIAL_AAR" ]]; then
  [[ -s "$RADIAL_AAR" ]] || fail "RadialGamePad AAR nao encontrado: $RADIAL_AAR"
+ [[ -d "$RADIAL_DEPS" ]] || fail "Configure LASRECOMP_RADIAL_DEPS_DIR com os JAR/AAR Kotlin, coroutines e AndroidX"
  mkdir -p "$STAGE/radial"
  unzip -p "$RADIAL_AAR" classes.jar > "$STAGE/radial/radial-classes.jar" || fail "AAR invalido"
  [[ -s "$STAGE/radial/radial-classes.jar" ]] || fail "AAR sem classes.jar"
  RADIAL_JARS+=("$STAGE/radial/radial-classes.jar")
  RADIAL_CP="$RADIAL_CP:$STAGE/radial/radial-classes.jar"
- echo "RadialGamePad AAR externo habilitado (dependencias Kotlin/AndroidX exigidas)."
+ mapfile -d '' -t RADIAL_DEP_FILES < <(find "$RADIAL_DEPS" -maxdepth 1 -type f \\( -name '*.jar' -o -name '*.aar' \\) -print0 | sort -z)
+ (( ${#RADIAL_DEP_FILES[@]} > 0 )) || fail "Diretorio de dependencias RadialGamePad vazio"
+ index=0
+ for dep in "${RADIAL_DEP_FILES[@]}"; do
+  if [[ "$dep" == *.aar ]]; then
+   index=$((index+1))
+   extracted="$STAGE/radial/dep-$index.jar"
+   unzip -p "$dep" classes.jar > "$extracted" || fail "AAR de dependencia invalido: $dep"
+   [[ -s "$extracted" ]] || fail "AAR sem classes.jar: $dep"
+   RADIAL_JARS+=("$extracted")
+  else
+   RADIAL_JARS+=("$dep")
+  fi
+ done
+ for dep in "${RADIAL_JARS[@]}"; do RADIAL_CP="$RADIAL_CP:$dep"; done
+ echo "RadialGamePad: ${#RADIAL_JARS[@]} arquivos Java/Kotlin incluidos no DEX"
 fi
 javac -source 8 -target 8 -encoding UTF-8 -cp "$RADIAL_CP" \
  -d "$STAGE/classes" android/src/com/retroaura/lasrecomp/*.java "${SDLJAVA[@]}"
@@ -462,7 +478,7 @@ APK="$OUT/LASRecomp-Android-Termux.apk"
 rm -f -- "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml -o "$OUT/unsigned.apk"
 (cd "$STAGE" && zip -q -r "$OUT/unsigned.apk" lib assets)
-(cd "$STAGE/dex" && zip -q "$OUT/unsigned.apk" classes.dex)
+(cd "$STAGE/dex" && zip -q "$OUT/unsigned.apk" classes*.dex)
 if [[ -n "$ZIPALIGN_CMD" ]]; then
  "$ZIPALIGN_CMD" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 else
