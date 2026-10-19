@@ -246,7 +246,7 @@ mkdir -p "$OBJ/inc"
 python3 tools/vulkan-cache-build-id.py --output "$OBJ/inc/vulkan_cache_build_id.h"
 LC_ALL=C tr -d '\r' < third_party/smaa/SMAA.hlsl \
  | LC_ALL=C tr '\200-\377' '?' \
- | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$/\\n"/' \
+ | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$/\n"/' \
  > "$OBJ/inc/smaa_hlsl.inc"
 INC=(-idirafter "$VULKAN_INCLUDE" -Iruntime -Iruntime/nvn -Ithird_party/imgui \
  -Ithird_party/imgui/backends -Ithird_party/smaa/Textures \
@@ -427,7 +427,7 @@ if [[ "$NEO_ENABLE" == 1 ]]; then
  python3 tools/neo_radial_deps.py "$CACHE/neo-radial-maven" > "$STAGE/radial/artifacts.tsv" ||
   fail "Falha ao preparar as dependencias do RadialGamePad"
  artifact_index=0
- while IFS=$'\\t' read -r kind artifact namespace; do
+ while IFS=$'\t' read -r kind artifact namespace; do
   [[ -s "$artifact" ]] || fail "Artefato Neo ausente: $artifact"
   artifact_index=$((artifact_index+1))
   if [[ "$kind" == jar ]]; then
@@ -464,10 +464,10 @@ if [[ "$NEO_ENABLE" == 1 ]]; then
  resource_args=()
  for compiled in "${NEO_RES_ZIPS[@]}"; do resource_args+=(-R "$compiled"); done
  if (( ${#NEO_PACKAGES[@]} > 0 )); then
-  package_list="$(printf '%s\\n' "${NEO_PACKAGES[@]}" | sort -u | paste -sd: -)"
+  package_list="$(printf '%s\n' "${NEO_PACKAGES[@]}" | sort -u | paste -sd: -)"
   resource_args+=(--extra-packages "$package_list")
  fi
- aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml \\
+ aapt2 link -I "$ANDROID_JAR" --manifest android/bootstrap/AndroidManifest.xml \
   --auto-add-overlay --java "$NEO_JAVA_RES" "${resource_args[@]}" -o "$NEO_BASE_APK" ||
   fail "Falha ao mesclar recursos AndroidX / RadialGamePad"
  mapfile -d '' -t NEO_RJAVA < <(find "$NEO_JAVA_RES" -type f -name 'R.java' -print0)
