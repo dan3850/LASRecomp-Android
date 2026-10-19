@@ -273,13 +273,6 @@ int SDL_main(int argc, char **argv) {
 
     boot_mark(files, "motor loaded", 0);
 #ifdef __ANDROID__
-    pthread_mutex_lock(&touch_axis_lock);
-    touch_axis_setter = (TouchAxisSetter)dlsym(engine, "lasrecomp_touch_set_axis");
-    pthread_mutex_unlock(&touch_axis_lock);
-    if (!touch_axis_setter) {
-        boot_mark(files, "engine lacks native touchscreen axes", 0);
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LASRecomp: touch sticks unavailable in runtime");
-    }
     typedef void (*SetDocumentBridge)(LasOpenDocument, LasRomfsManifest);
     SetDocumentBridge set_documents = (SetDocumentBridge)dlsym(engine, "lasrecomp_android_set_document_bridge");
     if (!set_documents) {
@@ -304,6 +297,17 @@ int SDL_main(int argc, char **argv) {
     }
 
     boot_mark(files, "entering engine", 0);
+#ifdef __ANDROID__
+    // Publish only after every required engine symbol was validated. Early
+    // bootstrap errors dlclose(engine), so they must never leave a dangling
+    // pointer reachable from the Java UI thread.
+    TouchAxisSetter axis = (TouchAxisSetter)dlsym(engine, "lasrecomp_touch_set_axis");
+    pthread_mutex_lock(&touch_axis_lock);
+    touch_axis_setter = axis;
+    pthread_mutex_unlock(&touch_axis_lock);
+    if (!axis)
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LASRecomp: touch sticks unavailable in runtime");
+#endif
     atomic_store(&graphics_capture_request, (GraphicsCaptureRequest)dlsym(engine, "lasrecomp_graphics_capture_request"));
     int result = start(files);
     atomic_store(&graphics_capture_request, NULL);
