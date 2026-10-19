@@ -418,6 +418,11 @@ if [[ -n "$RADIAL_AAR" ]]; then
  [[ -s "$STAGE/radial/radial-classes.jar" ]] || fail "AAR sem classes.jar"
  RADIAL_JARS+=("$STAGE/radial/radial-classes.jar")
  RADIAL_CP="$RADIAL_CP:$STAGE/radial/radial-classes.jar"
+ # Android resources in an AAR cannot be linked by the current manifest-only aapt2 call.
+ # Refuse silent packaging of a resource-dependent AAR until resource merging exists.
+ if unzip -Z1 "$RADIAL_AAR" | grep -qE "^(res/|R.txt$)"; then
+  fail "RadialGamePad AAR contem recursos Android: integrar compilacao aapt2 de recursos antes de ativar"
+ fi
  mapfile -d '' -t RADIAL_DEP_FILES < <(find "$RADIAL_DEPS" -maxdepth 1 -type f \( -name '*.jar' -o -name '*.aar' \) -print0 | sort -z)
  (( ${#RADIAL_DEP_FILES[@]} > 0 )) || fail "Diretorio de dependencias RadialGamePad vazio"
  index=0
@@ -438,6 +443,8 @@ fi
 javac -source 8 -target 8 -encoding UTF-8 -cp "$RADIAL_CP" \
  -d "$STAGE/classes" android/src/com/retroaura/lasrecomp/*.java "${SDLJAVA[@]}"
 jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
+# Avoid stale classes2.dex from an earlier optional dependency build.
+rm -f "$STAGE/dex"/classes*.dex
 "${D8_CMD[@]}" --min-api 26 --lib "$ANDROID_JAR" --output "$STAGE/dex" "$STAGE/classes.jar" "${RADIAL_JARS[@]}"
 [[ -s "$STAGE/dex/classes.dex" ]] || fail "D8 nao gerou classes.dex"
 # libc++ ARM64 do NDK, necessaria para simbolos C++ do runtime.
