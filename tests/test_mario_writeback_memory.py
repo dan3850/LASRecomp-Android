@@ -19,14 +19,12 @@ from mario_leaf_verify import State, snapshot
 
 RET = 0xD65F03C0
 BASE = 0x30000000
-MASK64 = (1 << 64) - 1
 
 
 def pair(load, width, mode, rt=1, rt2=2, rn=0, imm=0):
     bases = {4: 0x29000000, 8: 0xA9000000}
-    mode_bits = {"offset": 0, "post": 0xFF800000, "pre": 0x00800000}
-    # Post-index changes 0x29000000 to 0x28800000; for W/X alike.
-    mode_bits["post"] = -0x00800000
+    # Post-index base is 0x28800000/0xA8800000; pre-index adds bit 23.
+    mode_bits = {"offset": 0, "post": -0x00800000, "pre": 0x00800000}
     return ((bases[width] + mode_bits[mode]) | (int(load) << 22) |
             ((imm & 127) << 15) | (rt2 << 10) | (rn << 5) | rt)
 
