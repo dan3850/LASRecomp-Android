@@ -6,6 +6,9 @@
 
 #include "hle.h"
 #include "kernel.h"
+#if defined(__ANDROID__) && defined(LASRECOMP_MARIO_TEST)
+#include "mario_abort_diag.h"
+#endif
 
 // ------------------------------------------------------------------ results
 #undef R_OK
@@ -732,6 +735,9 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x26:  // Break
         if (x[0] & 0x80000000u) { LOG("[kernel] Break notification %llx\n", x[0]); x[0] = R_OK; break; }
+#if defined(__ANDROID__) && defined(LASRECOMP_MARIO_TEST)
+        mario_abort_diag(x[1], x[2], c->sp, x[29]);
+#endif
         FATAL("svcBreak(reason=%llx, info=%llx, size=%llx) at %llx\n", x[0], x[1], x[2], pc);
     case 0x27: debug_string(x[0], x[1]); x[0] = R_OK; break;
     case 0x29: {  // GetInfo(_, id0, handle, id1)
