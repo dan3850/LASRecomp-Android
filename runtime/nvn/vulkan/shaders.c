@@ -10,6 +10,7 @@
 #include "shaders.h"
 #include "diagnostics.h"
 #include "cache_identity.h"
+#include "amd_fsr1_reference.inc"
 
 void vk_shaders_init(void) {  // (compilers are per thread: check shaderc works at all)
     shaderc_compiler_t c = shaderc_compiler_initialize();
@@ -353,104 +354,60 @@ static const char *builtin_src(const char *name, int *stage) {
         }
         return src[k];
     }
-    // AMD FidelityFX Super Resolution 1 (MIT), EASU: edge-adaptive upscale. a = (in / out scale xy, offset zw),
-    // b.xy = input size. 12 taps around the source pixel, direction / edge length from luma, Lanczos-2-like
-    // weights stretched along the edge, clamped to the nearest 4 (no ringing).
-    if (!strcmp(name, "easu.frag")) {
+    // AMD FSR 1 reference, FP32 Vulkan path. Original EASU / RCAS algorithms from AMD (MIT).
+    // Unlike the previous approximation, the filter functions are the official AMD shader sources.
+    // Keep the existing 32-byte present push constants: derive AMD's EASU integer constants in GLSL.
+    if (!strcmp(name, "easu.frag") || !strcmp(name, "rcas.frag")) {
         *stage = STAGE_FRAGMENT;
-        return "#version 450\n"
-               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
-               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
-               "layout(location = 0) out vec4 o;\n"
-               "vec3 tap(ivec2 p) { return texelFetch(t, clamp(p, ivec2(0), ivec2(pc.b.xy) - 1), 0).rgb; }\n"
-               "float lum(vec3 c) { return c.g + 0.5 * (c.r + c.b); }\n"
-               "void setf(inout vec2 dir, inout float len, float w, float lA, float lB, float lC, float lD, float lE) {\n"
-               "  float dx = lD - lB, dy = lE - lA;\n"
-               "  float lx = clamp(abs(dx) / max(max(abs(lD - lC), abs(lC - lB)), 1.0 / 65536.0), 0.0, 1.0);\n"
-               "  float ly = clamp(abs(dy) / max(max(abs(lE - lC), abs(lC - lA)), 1.0 / 65536.0), 0.0, 1.0);\n"
-               "  dir += vec2(dx, dy) * w;\n"
-               "  len += (lx * lx + ly * ly) * w;\n"
-               "}\n"
-               "void tapf(inout vec3 ac, inout float aw, vec2 off, vec2 dir, vec2 len2, float lob, float clp, vec3 c) {\n"
-               "  vec2 v = vec2(dot(off, dir), dot(off, vec2(-dir.y, dir.x))) * len2;\n"
-               "  float d2 = min(dot(v, v), clp);\n"
-               "  float wb = 0.4 * d2 - 1.0, wa = lob * d2 - 1.0;\n"
-               "  wb *= wb; wa *= wa;\n"
-               "  float w = (1.5625 * wb - 0.5625) * wa;\n"
-               "  ac += c * w; aw += w;\n"
-               "}\n"
-               "void main() {\n"
-               "  vec2 pp = floor(gl_FragCoord.xy) * pc.a.xy + pc.a.zw;\n"
-               "  vec2 fpf = floor(pp); pp -= fpf;\n"
-               "  ivec2 fp = ivec2(fpf);\n"
-               "  //    b c\n"
-               "  //  e f g h\n"
-               "  //  i j k l\n"
-               "  //    n o\n"
-               "  vec3 bC = tap(fp + ivec2(0, -1)), cC = tap(fp + ivec2(1, -1));\n"
-               "  vec3 eC = tap(fp + ivec2(-1, 0)), fC = tap(fp), gC = tap(fp + ivec2(1, 0)), hC = tap(fp + ivec2(2, 0));\n"
-               "  vec3 iC = tap(fp + ivec2(-1, 1)), jC = tap(fp + ivec2(0, 1)), kC = tap(fp + ivec2(1, 1)), lC = tap(fp + ivec2(2, 1));\n"
-               "  vec3 nC = tap(fp + ivec2(0, 2)), oC = tap(fp + ivec2(1, 2));\n"
-               "  float bL = lum(bC), cL = lum(cC), eL = lum(eC), fL = lum(fC), gL = lum(gC), hL = lum(hC);\n"
-               "  float iL = lum(iC), jL = lum(jC), kL = lum(kC), lL = lum(lC), nL = lum(nC), oL = lum(oC);\n"
-               "  vec2 dir = vec2(0.0);\n"
-               "  float len = 0.0;\n"
-               "  setf(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);\n"
-               "  setf(dir, len, pp.x * (1.0 - pp.y), cL, fL, gL, hL, kL);\n"
-               "  setf(dir, len, (1.0 - pp.x) * pp.y, fL, iL, jL, kL, nL);\n"
-               "  setf(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);\n"
-               "  float dr = dot(dir, dir);\n"
-               "  bool zro = dr < 1.0 / 32768.0;\n"
-               "  dir = zro ? vec2(1.0, 0.0) : dir * inversesqrt(dr);\n"
-               "  len = len * 0.5; len *= len;\n"
-               "  float stretch = dot(dir, dir) / max(abs(dir.x), abs(dir.y));\n"
-               "  vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);\n"
-               "  float lob = 0.5 - 0.29 * len, clp = 1.0 / lob;\n"
-               "  vec3 mn = min(min(fC, gC), min(jC, kC)), mx = max(max(fC, gC), max(jC, kC));\n"
-               "  vec3 ac = vec3(0.0);\n"
-               "  float aw = 0.0;\n"
-               "  tapf(ac, aw, vec2(0.0, -1.0) - pp, dir, len2, lob, clp, bC);\n"
-               "  tapf(ac, aw, vec2(1.0, -1.0) - pp, dir, len2, lob, clp, cC);\n"
-               "  tapf(ac, aw, vec2(-1.0, 1.0) - pp, dir, len2, lob, clp, iC);\n"
-               "  tapf(ac, aw, vec2(0.0, 1.0) - pp, dir, len2, lob, clp, jC);\n"
-               "  tapf(ac, aw, vec2(0.0, 0.0) - pp, dir, len2, lob, clp, fC);\n"
-               "  tapf(ac, aw, vec2(-1.0, 0.0) - pp, dir, len2, lob, clp, eC);\n"
-               "  tapf(ac, aw, vec2(1.0, 1.0) - pp, dir, len2, lob, clp, kC);\n"
-               "  tapf(ac, aw, vec2(2.0, 1.0) - pp, dir, len2, lob, clp, lC);\n"
-               "  tapf(ac, aw, vec2(2.0, 0.0) - pp, dir, len2, lob, clp, hC);\n"
-               "  tapf(ac, aw, vec2(1.0, 0.0) - pp, dir, len2, lob, clp, gC);\n"
-               "  tapf(ac, aw, vec2(1.0, 2.0) - pp, dir, len2, lob, clp, oC);\n"
-               "  tapf(ac, aw, vec2(0.0, 2.0) - pp, dir, len2, lob, clp, nC);\n"
-               "  o = vec4(min(mx, max(mn, ac / aw)), 1.0);\n"
-               "}\n";
-    }
-    // FSR 1 RCAS: contrast-adaptive sharpening of the EASU output (same size). a.x = sharpness (exp2(-stops)),
-    // b.xy = image size. The lobe is limited so the result stays inside the neighbours' range; noise is damped.
-    if (!strcmp(name, "rcas.frag")) {
-        *stage = STAGE_FRAGMENT;
-        return "#version 450\n"
-               "layout(set = 0, binding = 0) uniform sampler2D t;\n"
-               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
-               "layout(location = 0) out vec4 o;\n"
-               "vec3 tap(ivec2 p) { return texelFetch(t, clamp(p, ivec2(0), ivec2(pc.b.xy) - 1), 0).rgb; }\n"
-               "float lum(vec3 c) { return c.g + 0.5 * (c.r + c.b); }\n"
-               "void main() {\n"
-               "  ivec2 ip = ivec2(gl_FragCoord.xy);\n"
-               "  //    b\n"
-               "  //  d e f\n"
-               "  //    h\n"
-               "  vec3 b = tap(ip + ivec2(0, -1)), d = tap(ip + ivec2(-1, 0)), e = tap(ip), f = tap(ip + ivec2(1, 0)), h = tap(ip + ivec2(0, 1));\n"
-               "  float bL = lum(b), dL = lum(d), eL = lum(e), fL = lum(f), hL = lum(h);\n"
-               "  float nz = 0.25 * (bL + dL + fL + hL) - eL;\n"
-               "  float rng = max(max(max(bL, dL), max(eL, fL)), hL) - min(min(min(bL, dL), min(eL, fL)), hL);\n"
-               "  nz = 1.0 - 0.5 * clamp(abs(nz) / max(rng, 1.0 / 65536.0), 0.0, 1.0);\n"
-               "  vec3 mn4 = min(min(b, d), min(f, h)), mx4 = max(max(b, d), max(f, h));\n"
-               "  vec3 hitMin = min(mn4, e) / max(4.0 * mx4, vec3(1.0 / 65536.0));\n"
-               "  vec3 hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, vec3(-1.0 / 65536.0));\n"
-               "  vec3 lobeRGB = max(-hitMin, hitMax);\n"
-               "  float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * pc.a.x * nz;\n"
-               "  o = vec4((lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0), 1.0);\n"
-               "}\n";
+        int k = !strcmp(name, "easu.frag") ? 0 : 1;
+        static char *src[2];
+        if (!src[k]) {
+            static const char *prefix =
+                "#version 450\n"
+                "#extension GL_EXT_shader_explicit_arithmetic_types : require\n"
+                "#define A_GPU 1\n"
+                "#define A_GLSL 1\n"
+                "#define FSR_RCAS_PASSTHROUGH_ALPHA 1\n"
+                "layout(set=0, binding=0) uniform sampler2D t;\n"
+                "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+                "layout(location=0) out vec4 o;\n";
+            static const char *easu_cb =
+                "#define FSR_EASU_F 1\n"
+                "AF4 FsrEasuRF(AF2 p) { return textureGather(t, p, 0); }\n"
+                "AF4 FsrEasuGF(AF2 p) { return textureGather(t, p, 1); }\n"
+                "AF4 FsrEasuBF(AF2 p) { return textureGather(t, p, 2); }\n";
+            static const char *rcas_cb =
+                "#define FSR_RCAS_F 1\n"
+                "AF4 FsrRcasLoadF(ASU2 p) { return texelFetch(t, ivec2(p), 0); }\n"
+                "void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b) {}\n";
+            static const char *easu_main =
+                "void main() {\n"
+                "  vec2 inv = 1.0 / pc.b.xy;\n"
+                "  uvec4 c0 = floatBitsToUint(pc.a);\n"
+                "  uvec4 c1 = floatBitsToUint(vec4(inv.x, inv.y, inv.x, -inv.y));\n"
+                "  uvec4 c2 = floatBitsToUint(vec4(-inv.x, 2.0*inv.y, inv.x, 2.0*inv.y));\n"
+                "  uvec4 c3 = floatBitsToUint(vec4(0.0, 4.0*inv.y, 0.0, 0.0));\n"
+                "  AF3 c; FsrEasuF(c, AU2(gl_FragCoord.xy), c0, c1, c2, c3);\n"
+                "  o = vec4(c, 1.0);\n"
+                "}\n";
+            static const char *rcas_main =
+                "void main() {\n"
+                "  // exec.c supplies AMD's exp2(-sharpness_stops) in a.x.\n"
+                "  uvec4 con = uvec4(floatBitsToUint(pc.a.x), 0u, 0u, 0u);\n"
+                "  AF4 c; FsrRcasF(c.r, c.g, c.b, c.a, AU2(gl_FragCoord.xy), con);\n"
+                "  o = vec4(c);\n"
+                "}\n";
+            const char *cb = k ? rcas_cb : easu_cb;
+            const char *main_src = k ? rcas_main : easu_main;
+            size_t n = strlen(prefix) + strlen(amd_fsr1_arithmetic_glsl) +
+                       strlen(cb) + strlen(amd_fsr1_kernel_glsl) + strlen(main_src) + 1;
+            char *assembled = malloc(n);
+            if (!assembled) FATAL("FSR 1 reference GLSL allocation failed\n");
+            snprintf(assembled, n, "%s%s%s%s%s", prefix, amd_fsr1_arithmetic_glsl,
+                     cb, amd_fsr1_kernel_glsl, main_src);
+            src[k] = assembled;
+        }
+        return src[k];
     }
     if (!strcmp(name, "clear.vert")) {
         *stage = STAGE_VERTEX;
