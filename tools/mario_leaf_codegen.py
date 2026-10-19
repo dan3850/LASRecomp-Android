@@ -409,18 +409,28 @@ def translate(words):
             lines.append("    }")
             continue
 
-        # Signed scaled-offset STP/LDP, W/X general-purpose registers only.
-        # Pre/post-index and SIMD variants remain unsupported.
+        # Scaled STP/LDP W/X: offset, pre-index, and post-index.
+        # Reject architecturally constrained-unpredictable writeback overlap.
         family = word & 0xFFC00000
-        if family in (0x29000000, 0x29400000, 0xA9000000, 0xA9400000):
+        pair_bases = (
+            0x29000000, 0x29400000, 0xA9000000, 0xA9400000,
+            0x29800000, 0x29C00000, 0xA9800000, 0xA9C00000,
+            0x28800000, 0x28C00000, 0xA8800000, 0xA8C00000,
+        )
+        if family in pair_bases:
             width = 8 if word & 0x80000000 else 4
             load = bool(word & 0x00400000)
+            mode = (word >> 23) & 3  # 1=post, 2=offset, 3=pre
+            writeback = mode != 2
             rt, rt2, rn = word & 31, (word >> 10) & 31, (word >> 5) & 31
+            if writeback and rn != 31 and rn in (rt, rt2):
+                return None
             imm7 = (word >> 15) & 0x7F
             offset = (imm7 - 128 if imm7 & 0x40 else imm7) * width
             base = "s->sp" if rn == 31 else f"s->x[{rn}]"
             lines.append("    {")
-            lines.append(f"        uint64_t addr = {base} + (uint64_t)({offset}LL);")
+            lines.append(f"        uint64_t base_value = {base};")
+            lines.append(f"        uint64_t addr = base_value + (uint64_t)({0 if mode == 1 else offset}LL);")
             lines.append("        size_t off0, off1;")
             lines.append(f"        if (!mario_offset(s, addr, {width}, &off0) ||")
             lines.append(f"            !mario_offset(s, addr + {width}ULL, {width}, &off1)) {{")
@@ -444,6 +454,8 @@ def translate(words):
                 lines.append("            s->mem[off0 + i] = (uint8_t)(value0 >> (8 * i));")
                 lines.append("            s->mem[off1 + i] = (uint8_t)(value1 >> (8 * i));")
                 lines.append("        }")
+            if writeback:
+                lines.append(f"        {base} = base_value + (uint64_t)({offset}LL);")
             lines.append("    }")
             continue
 
@@ -468,7 +480,9 @@ def candidates(nso, limit, min_instructions=2, allow_memory=False, use_fde=False
         if not allow_memory and any((w & 0xFFC00000) in
                 (0x39000000, 0x39400000, 0x79000000, 0x79400000,
                  0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000,
-                 0x29000000, 0x29400000, 0xA9000000, 0xA9400000)
+                 0x29000000, 0x29400000, 0xA9000000, 0xA9400000,
+                 0x29800000, 0x29C00000, 0xA9800000, 0xA9C00000,
+                 0x28800000, 0x28C00000, 0xA8800000, 0xA8C00000)
                 for w in words):
             continue
         code = translate(words)
