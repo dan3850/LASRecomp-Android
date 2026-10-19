@@ -91,6 +91,21 @@ def run_reference(code, initial, ram=None, ram_base=0):
                 regs[dest] = value if op & 0x80000000 else value & 0xFFFFFFFF
             continue
 
+        # ADR/ADRP: derive effective address using guest instruction PC,
+        # not the host's code address or the NSO file offset.
+        if (op & 0x1F000000) == 0x10000000:
+            imm = ((op >> 29) & 3) | (((op >> 5) & 0x7FFFF) << 2)
+            if imm & 0x100000:
+                imm -= 0x200000
+            address = (int(initial.pc) + (index - 1) * 4) & MASK64
+            if op & 0x80000000:
+                address &= ~0xFFF
+                imm *= 4096
+            rd = op & 31
+            if rd != 31:
+                regs[rd] = (address + imm) & MASK64
+            continue
+
         # AArch64 move-wide immediate encoding (32/64 bit, shift 0..48).
         move_class = (op >> 23) & 0x3F
         if move_class == 0b100101:
