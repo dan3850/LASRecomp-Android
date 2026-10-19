@@ -1,7 +1,7 @@
 """Independent tiny AArch64 reference interpreter for restricted Mario leaf tests.
 
 It is intentionally separate from the C code generator. Supports only NOP,
-RET X30, move-wide immediate, and ADD/SUB immediate without flags. Invalid
+RET X30, move-wide immediates, ADD/SUB immediate and bounded LDR/STR. Invalid
 or unsupported guest instruction encodings cause a hard error.
 This is an *approximate secondary oracle*, not a substitute for Unicorn.
 """
@@ -10,7 +10,7 @@ import struct
 MASK64 = (1 << 64) - 1
 
 
-def run_reference(code, initial):
+def run_reference(code, initial, ram=None, ram_base=0):
     if not code or len(code) % 4:
         raise ValueError("AArch64 code must contain whole 4-byte instructions")
     regs = [int(initial.x[i]) for i in range(31)]
@@ -69,6 +69,27 @@ def run_reference(code, initial):
                 stack = result
             else:
                 regs[dest] = result
+            continue
+
+        # Independent decode for unsigned-offset 32/64-bit LDR/STR.
+        # Memory is a caller-provided bytearray, never a raw host address.
+        family = op & 0xFFC00000
+        if family in (0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000):
+            width = 8 if (op >> 30) & 1 else 4
+            load = (op >> 22) & 1
+            rt, rn = op & 31, (op >> 5) & 31
+            address = ((stack if rn == 31 else regs[rn])
+                       + ((op >> 10) & 0xFFF) * width) & MASK64
+            offset = address - ram_base
+            if ram is None or offset < 0 or offset + width > len(ram):
+                raise MemoryError(f"Guest memory access outside mapped buffer at 0x{address:x}")
+            if load:
+                value = int.from_bytes(ram[offset:offset + width], "little")
+                if rt != 31:
+                    regs[rt] = value
+            else:
+                value = 0 if rt == 31 else regs[rt]
+                ram[offset:offset + width] = value.to_bytes(8, "little")[:width]
             continue
 
         raise ValueError(f"Unsupported instruction: {op:08x}")
