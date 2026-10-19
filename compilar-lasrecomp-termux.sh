@@ -403,6 +403,10 @@ CXX_SHARED="$(find "$NDK/toolchains/llvm/prebuilt" -type f -path '*/sysroot/usr/
 cp "$CXX_SHARED" "$STAGE/lib/arm64-v8a/libc++_shared.so"
 python3 tools/android-font-fallback.py \
  third_party/imgui/misc/fonts/Roboto-Medium.ttf "$STAGE/assets/lasrecomp_font.ttf"
+# Attribution required by the Ryujinx Neo / Kenji-NX MIT license.
+# Ship the notice with the APK as well as keeping it in the repository.
+mkdir -p "$STAGE/assets/licenses"
+cp licenses/Ryujinx_Neo_Android_MIT.txt "$STAGE/assets/licenses/Ryujinx_Neo_Android_MIT.txt"
 mapfile -d '' -t SDLJAVA < <(find "$SDL_JAVA" -type f -name '*.java' -print0)
 (( ${#SDLJAVA[@]} > 0 )) || fail "SDL Java nao encontrado"
 javac -source 8 -target 8 -encoding UTF-8 -cp "$ANDROID_JAR" \
