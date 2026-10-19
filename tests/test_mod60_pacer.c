@@ -23,5 +23,11 @@ int main(void) {
     assert(las_mod60_deadline(&p,false,p.last_present_ns+1)==0);
     assert(p.last_present_ns==0);
     assert(las_mod60_deadline(&p,true,UINT64_C(5000000000))==0);
+    // FIFO swapchains pace at acquire; a second host sleep is redundant.
+    assert(!las_mod60_host_pace_enabled(false,false,false));
+    assert(las_mod60_host_pace_enabled(true,false,false));  // MAILBOX
+    assert(las_mod60_host_pace_enabled(true,false,true));   // MAILBOX override
+    assert(!las_mod60_host_pace_enabled(true,true,false));  // FIFO
+    assert(las_mod60_host_pace_enabled(true,true,true));    // A/B restore
     puts("TEST_MOD60_PACER_PASS");
 }
