@@ -4,7 +4,6 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.RectF;
 import android.util.Log;
 import android.util.SparseIntArray;
 import android.view.KeyEvent;
@@ -293,6 +292,13 @@ public final class GameTouchControls extends View {
             if(next==control)return;
             releaseControl(control,id);
             pointers.delete(id);
+            if(next>=A && next<BUTTON_COUNT) {
+                key(next,true);
+                pointers.put(id,next);
+            }
+        } else if(control<0) {
+            // A finger that briefly left a button may re-enter it before UP.
+            int next=hit(x,y);
             if(next>=A && next<BUTTON_COUNT) {
                 key(next,true);
                 pointers.put(id,next);
