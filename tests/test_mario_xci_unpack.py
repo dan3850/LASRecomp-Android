@@ -79,7 +79,7 @@ class TestYanuXciExtraction(unittest.TestCase):
     def test_current_termux_command_yanu_is_autodetected(self):
         # Current Yanu bootstrap explicitly replaced yanu-cli with yanu.
         current = self.root / "yanu"
-        current.write_text("#!" + sys.executable + "\\n" + FAKE_YANU)
+        current.write_text("#!" + sys.executable + "\n" + FAKE_YANU)
         current.chmod(0o755)
         env = os.environ.copy()
         env["PATH"] = str(self.root) + os.pathsep + env.get("PATH", "")
