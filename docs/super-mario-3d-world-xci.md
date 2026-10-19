@@ -29,9 +29,17 @@ O caminho de saída padrão será:
 `/storage/emulated/0/SwitchRoms/Super-extraido/`, com
 `exefs/main`, `exefs/` e `romfs/`.
 
-Se o XCI gerar **vários NSPs** (por exemplo, base e patch), a ferramenta não
-chuta qual é o base. Lista os candidatos e pede nova chamada usando
-`--base-nsp NOME_DO_BASE.nsp`.
+Se o XCI gerar **o NSP base mais uma atualização [UPD]**, como acontece
+com o Super Mario 3D World + Bowser's Fury, a ferramenta identifica o par
+pelos nomes e chama `yanu unpack --base ARQUIVO_BASE --update ARQUIVO_UPD`.
+Não reconverte o XCI quando os dois NSPs já estão na pasta de cache.
+Isso produz os recursos combinados do jogo base e da atualização (por
+exemplo, **1.2.0**).
+
+Quando houver vários jogos base, DLCs extras ou várias atualizações,
+ela não tenta adivinhar. Nesse caso, os nomes podem ser selecionados com
+`--base-nsp NOME_DO_BASE.nsp` e `--update-nsp NOME_DA_ATUALIZACAO.nsp`;
+os NSPs não selecionados são preservados.
 
 Os NSPs intermediários são mantidos na pasta `_yanu_converted/`, para
 permitir reaproveitar a conversão sem repetir o trabalho nem perder o XCI
