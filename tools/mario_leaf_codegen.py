@@ -329,10 +329,12 @@ def translate(words):
             lines.append(f"    {dst} = {expression};")
             continue
 
-        # Unsigned-offset LDR/STR, W/X only. Rn=31 is SP; Rt=31 is WZR/XZR.
+        # Unsigned-offset LDR/STR: byte, halfword, word, doubleword.
+        # Rn=31 is SP and Rt=31 reads zero or discards loaded data.
         family = word & 0xFFC00000
-        if family in (0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000):
-            width = 8 if word & 0x40000000 else 4
+        if family in (0x39000000, 0x39400000, 0x79000000, 0x79400000,
+                      0xB9000000, 0xB9400000, 0xF9000000, 0xF9400000):
+            width = 1 << ((word >> 30) & 3)
             load = bool(word & 0x00400000)
             rt, rn = word & 31, (word >> 5) & 31
             offset = ((word >> 10) & 0xFFF) * width
@@ -435,7 +437,8 @@ def candidates(nso, limit, min_instructions=2, allow_memory=False, use_fde=False
             continue
         words = struct.unpack_from(f"<{span // 4}I", nso.image, start)
         if not allow_memory and any((w & 0xFFC00000) in
-                (0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000,
+                (0x39000000, 0x39400000, 0x79000000, 0x79400000,
+                 0xB9400000, 0xB9000000, 0xF9400000, 0xF9000000,
                  0x29000000, 0x29400000, 0xA9000000, 0xA9400000)
                 for w in words):
             continue
