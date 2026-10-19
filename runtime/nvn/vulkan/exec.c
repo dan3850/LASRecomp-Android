@@ -249,6 +249,31 @@ static int vk_counter_mode(void) {
     return counter_mode;
 }
 
+// A/B isolation: keep collecting hardware Vulkan timestamps, but optionally
+// preserve the known-good 16 ms virtual clock in guest memory. A clean image
+// with shadow enabled implicates guest-visible clock feedback, whereas a
+// persistent artifact implicates Vulkan query/command side effects instead.
+// This does NOT deliver real GPU timing to the game; it only measures it.
+static bool vk_counter_shadow_guest(void) {
+#ifdef __ANDROID__
+    static _Atomic int shadow_mode = -1;
+    int state = atomic_load_explicit(&shadow_mode, memory_order_acquire);
+    if (state < 0) {
+        const char *v = getenv("LARECOMP_VK_COUNTER_SHADOW");
+        int desired = !v || atoi(v) != 0;
+        int expected = -1;
+        if (atomic_compare_exchange_strong_explicit(&shadow_mode, &expected, desired,
+                memory_order_release, memory_order_acquire))
+            LOG("[counter-shadow] guest=%s gpu-queries=real (LARECOMP_VK_COUNTER_SHADOW=%s)\n",
+                desired ? "virtual" : "real", v ? v : "unset");
+        state = atomic_load_explicit(&shadow_mode, memory_order_acquire);
+    }
+    return state != 0;
+#else
+    return false;
+#endif
+}
+
 // ---- frame pacing: the game's own 30 fps mode when we can't hold 60
 // The game advances its world one fixed step per frame in its 60 fps mode, and two steps per frame in its 30 fps mode
 // (measured: Link walks twice as far per frame there) - so a 60-mode frame that takes 20 ms plays in slow motion, while
@@ -453,7 +478,9 @@ static void cq_resolve(int i) {  // (cq_lock held) submission slot i is done: it
                 (double)(t[k]-t[k-1])*per <= 12000000.0) {
                 delivered = q->out[k-1][1] + ns_to_gpu_ticks(2000000ull);
             }
-            q->out[k][1] = delivered;
+            // In shadow mode these physical timestamps are diagnostic only.
+// Do not overwrite the virtual clock already visible to Zelda.
+            if (!vk_counter_shadow_guest()) q->out[k][1] = delivered;
         }
         stat_counters_gpu += q->n;
         counter_pace_diag_flush();
@@ -5463,12 +5490,13 @@ static void exec_list(uint64_t handle, int depth) {
             static uint32_t seen;
             if (type < 32 && !(seen & (1u << type))) { seen |= 1u << type; LOG("[nvn] ReportCounter type %u\n", type); }
             int mode = vk_counter_mode();
+            bool guest_virtual = mode == 2 && vk_counter_shadow_guest();
             static uint64_t frame_seen = ~0ull, frame_ts, virtual_base_frame, virtual_base_ns;
             extern uint64_t vk_frame_counter(void);
-            if (mode == 1 || mode == 4) {
+            if (mode == 1 || mode == 4 || guest_virtual) {
                 uint64_t frame = vk_frame_counter();
                 if (frame != frame_seen) {
-                    if (mode == 4) {
+                    if (mode == 4 || guest_virtual) {
                         if (frame_seen == ~0ull || frame < virtual_base_frame) {
                             virtual_base_frame = frame;
                             virtual_base_ns = plat_now_ns();
@@ -5482,15 +5510,15 @@ static void exec_list(uint64_t handle, int depth) {
             }
             if (!out) break;
             out[0] = 0;
-            out[1] = (mode == 1 || mode == 4) ? frame_ts : mode == 3 ? SDL_GetTicksNS() : ns_to_gpu_ticks(plat_now_ns());  // (3 legacy: ns, the old bug)
+            out[1] = (mode == 1 || mode == 4 || guest_virtual) ? frame_ts : mode == 3 ? SDL_GetTicksNS() : ns_to_gpu_ticks(plat_now_ns());  // (3 legacy: ns, the old bug)
             static uint64_t *prev_out;  // (frame pacing: the pair's start)
-            if (mode == 0 || mode == 2) out[1] = pace_end_counter(prev_out, out, out[1]);
+            if ((mode == 0 || mode == 2) && !guest_virtual) out[1] = pace_end_counter(prev_out, out, out[1]);
             // A bounded RECOVERY probe is NOT permanent virtual time:
             // during a measured real 30fps plateau with ample GPU headroom,
             // briefly report optimistic GPU work so the unmodified Zelda
             // logic can attempt its own 60fps branch. Otherwise real clocks.
             // A real over-budget GPU interval aborts the probe.
-            bool recovery_end = mode==2 && type==0 &&
+            bool recovery_end = mode==2 && !guest_virtual && type==0 &&
                                 recovery60_report_end(prev_out,out);
             if(recovery_end) {
                 out[1]=prev_out[1]+ns_to_gpu_ticks(2000000ull);
