@@ -189,7 +189,7 @@ def main():
         print("Compared x0..x30, SP, PC, NZCV" + (" and memory" if args.with_memory else "") + ".")
         print("Backend: Unicorn executing original ARM64" if uc is not None else
               "Backend: independent Python ARM64 subset interpreter (not Unicorn)")
-        print("Still unsupported: indexed RAM operations, SIMD, branches/calls, dynamic linking.")
+        print("Still unsupported: many memory variants, SIMD, backward/indirect branches, calls and dynamic linking.")
 
 if __name__ == "__main__":
     main()
