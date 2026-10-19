@@ -70,11 +70,12 @@ def snapshot(state):
     return tuple(state.x), state.sp, state.pc, state.nzcv & 0xF0000000
 
 
-def run_original(code, initial, original_ram=None):
+def run_original(code, initial, original_ram=None, allow_multiple_ret=False):
     if uc is None:
         guest_ram = bytearray(original_ram) if original_ram is not None else None
         try:
-            result = run_reference(code, initial, guest_ram, RAM_BASE)
+            result = run_reference(code, initial, guest_ram, RAM_BASE,
+                                   allow_multiple_ret=allow_multiple_ret)
         except MemoryError:
             return None, bytes(guest_ram) if guest_ram is not None else None, True
         return result, bytes(guest_ram) if guest_ram is not None else None, False
@@ -122,6 +123,8 @@ def main():
                    help="Fail instead of using the Python reference interpreter")
     p.add_argument("--use-fde", action="store_true",
                    help="validate FDE-bounded candidates (experimental)")
+    p.add_argument("--multi-ret", action="store_true",
+                   help="opt in to forward-only multiple-RET function validation")
     args = p.parse_args()
     if args.require_unicorn and uc is None:
         p.error("Unicorn Python module unavailable; omit --require-unicorn for reference comparison")
@@ -132,7 +135,8 @@ def main():
         p.error("clang is required for native validation")
     nso = Nso(args.nso)
     matches = list(candidates(nso, args.limit, min_instructions=2,
-                              allow_memory=args.with_memory, use_fde=args.use_fde))
+                              allow_memory=args.with_memory, use_fde=args.use_fde,
+                              allow_multiple_ret=args.multi_ret))
     if not matches:
         raise SystemExit("No supported leaf candidates found")
     with tempfile.TemporaryDirectory(prefix="mario-leaf-verify-") as dirname:
@@ -154,7 +158,7 @@ def main():
                 state, buf = new_state(rng, serial, args.with_memory)
                 before_ram = bytes(buf) if buf is not None else None
                 expected, expected_ram, expected_fault = run_original(
-                    code, state, before_ram)
+                    code, state, before_ram, allow_multiple_ret=args.multi_ret)
                 fn(ctypes.byref(state))
                 if bool(state.fault) != expected_fault:
                     raise SystemExit(f"FAIL 0x{start:x} case {serial}: fault mismatch")
