@@ -26,8 +26,15 @@ with Path(os.environ["FAKE_YANU_LOG"]).open("a") as file:
 if args[0] == "convert":
     (output / "game-base.nsp").write_bytes(b"converted-not-a-real-rom")
     if os.environ.get("FAKE_MULTI"):
-        (output / "game-update.nsp").write_bytes(b"update-not-a-real-rom")
+        (output / "game-base[UPD][1.2.0].nsp").write_bytes(b"patch-not-a-real-rom")
+    if os.environ.get("FAKE_TWO_UPDATES"):
+        (output / "game-base[UPD][1.1.0].nsp").write_bytes(b"older-patch")
+    if os.environ.get("FAKE_UNRELATED"):
+        (output / "another-game.nsp").write_bytes(b"not-a-real-game")
 elif args[0] == "unpack":
+    if os.environ.get("FAKE_REQUIRE_UPDATE"):
+        assert "--update" in args, "Update argument must be forwarded to Yanu"
+        assert "game-base[UPD][1.2.0].nsp" in args[args.index("--update") + 1]
     (output / "exefs").mkdir(exist_ok=True)
     (output / "romfs").mkdir(exist_ok=True)
     if not os.environ.get("FAKE_NO_MAIN"):
@@ -53,8 +60,9 @@ class TestYanuXciExtraction(unittest.TestCase):
     def run_tool(self, *args, env_extra=None):
         env = os.environ.copy()
         env["FAKE_YANU_LOG"] = str(self.log)
-        env.pop("FAKE_MULTI", None)
-        env.pop("FAKE_NO_MAIN", None)
+        for key in ("FAKE_MULTI", "FAKE_TWO_UPDATES", "FAKE_UNRELATED",
+                    "FAKE_REQUIRE_UPDATE", "FAKE_NO_MAIN"):
+            env.pop(key, None)
         env.update(env_extra or {})
         return subprocess.run(
             [sys.executable, str(TOOL), str(self.xci),
@@ -102,14 +110,51 @@ class TestYanuXciExtraction(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), ["convert", "unpack"])
 
-    def test_multiple_nsps_require_explicit_base_choice(self):
-        first = self.run_tool(env_extra={"FAKE_MULTI": "1"})
+    def test_detects_base_plus_120_update_and_reuses_existing_nsps(self):
+        result = self.run_tool(env_extra={
+            "FAKE_MULTI": "1", "FAKE_REQUIRE_UPDATE": "1",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("game-base[UPD][1.2.0].nsp", result.stdout)
+        output = self.root / "Super Mario 3D World-extraido"
+        self.assertTrue((output / "exefs" / "main").exists())
+        self.assertTrue((output / "_yanu_converted" / "game-base.nsp").exists())
+        self.assertTrue((output / "_yanu_converted" / "game-base[UPD][1.2.0].nsp").exists())
+        self.assertEqual(self.calls(), ["convert", "unpack"])
+
+    def test_fails_safely_when_more_than_one_update_matches(self):
+        first = self.run_tool(env_extra={
+            "FAKE_MULTI": "1", "FAKE_TWO_UPDATES": "1",
+        })
+        self.assertNotEqual(first.returncode, 0)
+        self.assertIn("--update-nsp", first.stderr)
+        self.assertEqual(self.calls(), ["convert"])
+        second = self.run_tool(
+            "--update-nsp", "game-base[UPD][1.2.0].nsp",
+            env_extra={"FAKE_REQUIRE_UPDATE": "1"},
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.calls(), ["convert", "unpack"])
+
+    def test_does_not_guess_between_multiple_base_games(self):
+        first = self.run_tool(env_extra={"FAKE_UNRELATED": "1"})
         self.assertNotEqual(first.returncode, 0)
         self.assertIn("--base-nsp", first.stderr)
         self.assertEqual(self.calls(), ["convert"])
         second = self.run_tool("--base-nsp", "game-base.nsp")
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.calls(), ["convert", "unpack"])
+
+    def test_reuses_previously_converted_base_and_update(self):
+        output = self.root / "Super Mario 3D World-extraido"
+        converted = output / "_yanu_converted"
+        converted.mkdir(parents=True)
+        (converted / "game-base.nsp").write_bytes(b"cached-base")
+        (converted / "game-base[UPD][1.2.0].nsp").write_bytes(b"cached-update")
+        result = self.run_tool(env_extra={"FAKE_REQUIRE_UPDATE": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["unpack"])
+        self.assertTrue((output / "exefs" / "main").exists())
 
     def test_partial_extraction_is_not_overwritten(self):
         first = self.run_tool(env_extra={"FAKE_NO_MAIN": "1"})
