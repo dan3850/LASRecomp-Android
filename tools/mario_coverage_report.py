@@ -19,6 +19,10 @@ def analyze(nso, max_bytes=128, examples=5):
     counts = Counter()
     counts["discovered"] = len(starts)
     blockers = Counter()
+    source_all = Counter(funcs.values())
+    source_eligible = Counter()
+    source_accepted = Counter()
+    prefix_accepted = 0
     samples = {}
     md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
     total_instructions = 0
@@ -38,10 +42,16 @@ def analyze(nso, max_bytes=128, examples=5):
             counts["too_long"] += 1
             continue
         counts["eligible"] += 1
+        source_eligible[funcs[start]] += 1
         words = struct.unpack_from("<" + "I" * (size // 4), nso.image, start)
         total_instructions += len(words)
+        if 0xD65F03C0 in words[:-1]:
+            first = words.index(0xD65F03C0)
+            if first >= 1 and translate(words[:first + 1]) is not None:
+                prefix_accepted += 1
         if translate(words) is not None:
             counts["accepted"] += 1
+            source_accepted[funcs[start]] += 1
             accepted_instructions += len(words)
             continue
         counts["rejected"] += 1
@@ -76,6 +86,10 @@ def analyze(nso, max_bytes=128, examples=5):
             if len(samples.get(mnemonic, [])) < examples:
                 samples.setdefault(mnemonic, []).append((start + j * 4, word))
     counts["early_ret"] = rejected_with_early_ret
+    counts["source_all"] = source_all
+    counts["source_eligible"] = source_eligible
+    counts["source_accepted"] = source_accepted
+    counts["prefix_accepted"] = prefix_accepted
     counts["zero_word"] = rejected_with_zero_word
     return counts, blockers, samples, total_instructions, accepted_instructions
 
@@ -98,6 +112,10 @@ def main():
     print(f"Eligible: {counts['eligible']}; accepted: {counts['accepted']}; rejected: {counts['rejected']}")
     print(f"Excluded: short={counts['too_short']} long={counts['too_long']} invalid={counts['invalid_boundary']}")
     print(f"Eligible instructions: {total}; accepted instructions: {accepted}")
+    print("Discovery source: all / eligible / accepted")
+    for source in ("eh", "sym", "ptr", "bl"):
+        print(f"  {source}: {counts['source_all'][source]} / {counts['source_eligible'][source]} / {counts['source_accepted'][source]}")
+    print(f"Translatable first-RET prefixes: {counts['prefix_accepted']} (diagnostic only, not verified function boundaries)")
     print(f"Rejected candidates with early RET: {counts['early_ret']}; containing zero word: {counts['zero_word']}")
     print("Rejected candidates containing each unsupported mnemonic (not unique blockers):")
     for mnemonic, count in blockers.most_common(args.top):
