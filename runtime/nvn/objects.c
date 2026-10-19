@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "../kernel.h"
+#include "../settings.h"
 #include "nvn.h"
 
 void renderer_sync(void);
