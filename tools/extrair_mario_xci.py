@@ -171,7 +171,15 @@ def run(args: argparse.Namespace) -> Path:
     # failing (the wrapper's EXIT trap can mask its status), the existing
     # exefs/main + romfs postcondition still catches the failure.
     if Path(yanu).name == "yanu":
-        with tempfile.TemporaryDirectory(prefix=".yanu-args-", dir=convdir) as tmp:
+        # The *whole* argument path must be free of spaces, including
+        # its parent directory and --outdir. Place the aliases next to the
+        # original XCI (not inside 'Super Mario ...-extraido').
+        alias_parent = source.parent
+        if any(char.isspace() for char in str(alias_parent)):
+            fail("O caminho da pasta que contém o XCI tem espaços; "
+                 "o wrapper do Yanu não consegue encaminhar esses argumentos: "
+                 + str(alias_parent))
+        with tempfile.TemporaryDirectory(prefix=".yanu-args-", dir=alias_parent) as tmp:
             temp = Path(tmp)
             safe_base = temp / "base.nsp"
             safe_base.symlink_to(base.resolve())
@@ -180,7 +188,9 @@ def run(args: argparse.Namespace) -> Path:
                 safe_update = temp / "update.nsp"
                 safe_update.symlink_to(update.resolve())
                 unpack_command.extend(["--update", str(safe_update)])
-            unpack_command.extend(["--outdir", str(dest)])
+            safe_output = temp / "output"
+            safe_output.symlink_to(dest.resolve(), target_is_directory=True)
+            unpack_command.extend(["--outdir", str(safe_output)])
             subprocess.run(unpack_command, check=True)
     else:
         unpack_command = [yanu, "unpack", "--base", str(base)]
