@@ -66,6 +66,16 @@ class TestMarioCodegen(unittest.TestCase):
         self.assertIsNone(translate([0x54000000, RET]))
         self.assertIsNone(translate([0x54000000 | (3 << 5), RET]))
 
+    def test_cmp_subs_flags_translation(self):
+        # CMP W0,#10 ; B.EQ +2 ; ADD X1,X1,#1 ; RET
+        cmp_w = 0x7100001F | (10 << 10)
+        beq = 0x54000000 | (2 << 5)
+        self.assertIsNotNone(translate([cmp_w, beq, add_imm(1, 1, 1), RET]))
+        # SUBS X2,X0,#1; 32-bit ADDS W3,W3,#1
+        self.assertIsNotNone(translate([0xF1000402, 0x31000463, RET]))
+        # Reserved shift
+        self.assertIsNone(translate([0x7100001F | (2 << 22), RET]))
+
     def test_supported_translation(self):
         self.assertIsNotNone(translate([add_imm(0, 0, 0x180), RET]))
         self.assertIsNotNone(translate([add_imm(31, 31, 16), RET]))
