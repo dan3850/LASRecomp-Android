@@ -13,20 +13,29 @@ import sys
 
 BEG = b"# BEGIN LICENSE_ASSET_PACKAGING\n"
 END = b"# END LICENSE_ASSET_PACKAGING\n"
+BUILD_BEG = b"# BEGIN BUILD_SHA_REFRESH\n"
+BUILD_END = b"# END BUILD_SHA_REFRESH\n"
 OLD = b"""HASH="$(sha256sum "$0" | cut -d' ' -f1)" """
 NEW = b"""HASH="$(python3 tools/termux_compile_id.py "$0")" """
 
 
 def original_build_text(updated: bytes) -> bytes:
     text = updated
-    if text.count(BEG) != text.count(END):
-        raise ValueError("Mismatched legal packaging markers")
-    while BEG in text:
-        first = text.index(BEG)
-        last = text.find(END, first + len(BEG))
-        if last < 0:
-            raise ValueError("Missing license packaging end marker")
-        text = text[:first] + text[last + len(END):]
+    # Version stamp refresh modifies only the diagnostic object's cache
+    # invalidation, not native compilation flags. Strip this guarded block
+    # before calculating the existing native fingerprint.
+    for begin, end, label in (
+        (BEG, END, "legal packaging"),
+        (BUILD_BEG, BUILD_END, "build SHA refresh"),
+    ):
+        if text.count(begin) != text.count(end):
+            raise ValueError(f"Mismatched {label} markers")
+        while begin in text:
+            first = text.index(begin)
+            last = text.find(end, first + len(begin))
+            if last < 0:
+                raise ValueError(f"Missing {label} end marker")
+            text = text[:first] + text[last + len(end):]
     old = OLD.rstrip()
     new = NEW.rstrip()
     if text.count(new) != 1:
