@@ -105,6 +105,16 @@ int plat_protect(uint64_t a,uint64_t n,int p) {(void)a;(void)n;(void)p;return 0;
 const char *plat_symbol(uint64_t pc,uint64_t *off) {(void)pc;*off=0;return NULL;}
 Cpu *kernel_current_cpu(void) {return NULL;}
 uint64_t kernel_heap_size(void) {return 0;}
+// The resource observer added after this fixture needs a safe reader. These
+// tests map exactly the two synthetic module windows and no guest heap.
+bool mario_debug_read(uint64_t a,void *out,size_t n) {
+    const uint64_t bases[]={MAIN_BASE,SDK_BASE};
+    for (int i=0;i<2;i++)
+        if (a>=bases[i] && a-bases[i]<0x10000 && n<=0x10000-(a-bases[i])) {
+            memcpy(out,(const void *)(uintptr_t)a,n);return true;
+        }
+    return false;
+}
 void rt_unwind_point(void) {}
 bool rt_resource(const char *a,const char *b,char *c,size_t n) {(void)a;(void)b;(void)c;(void)n;return false;}
 // Scheduling glue only: run the actual startup function synchronously so the
@@ -122,7 +132,11 @@ void kernel_run_main(KThread *t,uint64_t x0,uint64_t x1,uint64_t x2,uint64_t x3)
     memcpy(initial,t->cpu.x,sizeof initial);
     guest_call(&t->cpu,t->entry);
 }
-HLE_FUNC("test_implemented_service", implemented_service) {c->x[0]=101;}
+static void implemented_service(Cpu *c) {c->x[0]=101;}
+// Retain the fixture's sole HLE entry even with a compiler driver that enables
+// section GC by default. Production uses whole-archive runtime registration.
+__attribute__((used,retain,section(HLE_SECTION)))
+static const HleImplEntry test_impl={"test_implemented_service",implemented_service};
 int main(int argc,char **argv) {
     if (argc<3) return 1;
     setenv("LARECOMP_DATA_ROOT",argv[2],1);

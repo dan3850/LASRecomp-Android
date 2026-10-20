@@ -185,3 +185,11 @@ registrado no aparelho, antes de ampliar serviços ou otimizar o renderer.
 
 Todo código gerado do jogo fica em `build/`, ignorado pelo Git. Não publicar
 essa biblioteca ou os arquivos gerados a partir do jogo.
+
+## Auditoria posterior da tela preta
+
+A [auditoria do boot e do timeout](mario-black-screen-audit.md) registra a
+correção de `WaitProcessWideKeyAtomic`, as evidências, os testes e os limites
+da conclusão. O comando único de atualização e compilação é
+`bash atualizar-compilar-mario-termux.sh`; reutiliza a biblioteca privada
+existente. A correção do kernel ainda exige teste visual no aparelho.
