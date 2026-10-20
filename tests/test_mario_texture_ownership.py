@@ -1,4 +1,4 @@
-"""Regression for Mario's corrupted NVN texture host pointer (Scudo SIGABRT)."""
+"""Regression: Mario copies NVN texture handles out of temporary guest structs."""
 from pathlib import Path
 import os
 import subprocess
@@ -10,18 +10,22 @@ SOURCE = ROOT / "runtime/nvn/objects.c"
 
 
 class MarioTextureOwnership(unittest.TestCase):
-    def test_finalizer_never_frees_guest_supplied_pointer(self):
+    def test_finalizer_uses_live_allocation_not_temporary_guest_address(self):
         source = SOURCE.read_text()
-        start = source.index("NVN(nvnTextureFinalize) {")
-        end = source.index("\nNVN(nvnTextureSetDebugLabel)", start)
-        finalizer = source[start:end]
-        self.assertIn("mario_texture_owner_take(A(0))", finalizer)
+        init = source[source.index("NVN(nvnTextureInitialize) {"):
+                      source.index("\nNVN(nvnTextureFinalize)", source.index("NVN(nvnTextureInitialize) {"))]
+        finalizer = source[source.index("NVN(nvnTextureFinalize) {"):
+                           source.index("\nNVN(nvnTextureSetDebugLabel)", source.index("NVN(nvnTextureFinalize) {"))]
+        self.assertIn("mario_texture_owner_add(t)", init)
+        self.assertNotIn("backend_texture_destroyed", init)
+        self.assertNotIn("mario_texture_owner_replace", init)
+        self.assertIn("mario_texture_owner_take(claimed)", finalizer)
         self.assertIn("SET_HOST(A(0), 0)", finalizer)
         self.assertIn("backend_texture_destroyed(t)", finalizer)
         self.assertIn("if (claimed != (uint64_t)(uintptr_t)t)", finalizer)
-        self.assertIn("#else", finalizer)  # Zelda keeps its existing behavior.
+        self.assertIn("#else", finalizer)  # Zelda retains previous behavior.
 
-    def test_real_registry_handles_corrupt_tag_duplicates_and_reinitialization(self):
+    def test_real_registry_supports_copied_guest_handles_and_invalid_top_byte(self):
         source = SOURCE.read_text()
         start = source.index("typedef struct MarioTextureOwner {")
         end = source.index("\n#endif\n\nstatic NvnTexture *texture_from_builder", start)
@@ -33,46 +37,47 @@ class MarioTextureOwnership(unittest.TestCase):
 #include <pthread.h>
 #include <assert.h>
 typedef struct NvnTexture { uint64_t marker; } NvnTexture;
+typedef struct { uint64_t host; } GuestTexture;
 """ + registry + r"""
 int main(void) {
-    const uint64_t guest = 0x7000100080ULL;
-    NvnTexture *one = calloc(1, sizeof *one), *two = calloc(1, sizeof *two);
-    NvnTexture *old = NULL;
-    assert(one && two);
-
-    assert(mario_texture_owner_replace(guest, one, &old));
-    assert(old == NULL);
-    uint64_t original = (uint64_t)(uintptr_t)one;
-    uint64_t damaged = (original & 0x00ffffffffffffffULL) | 0x0200000000000000ULL;
-    if (damaged == original)
-        damaged ^= 0x0100000000000000ULL;
-    // The guest slot is corrupt, but the trusted allocation remains intact.
-    assert(mario_texture_owner_take(guest) == one);
-    assert(mario_texture_owner_take(guest) == NULL);
-    free(one); // Free the known original allocation, never 'damaged'.
-
-    assert(mario_texture_owner_replace(guest, two, &old));
-    assert(old == NULL);
+    NvnTexture *one = calloc(1, sizeof *one);
+    NvnTexture *two = calloc(1, sizeof *two);
     NvnTexture *three = calloc(1, sizeof *three);
-    assert(three);
-    assert(mario_texture_owner_replace(guest, three, &old));
-    assert(old == two);
-    free(two);
-    assert(mario_texture_owner_take(guest) == three);
-    free(three);
+    assert(one && two && three);
+    GuestTexture temp = {(uint64_t)(uintptr_t)one};
+    assert(mario_texture_owner_add(one));
+    GuestTexture copied = temp; // Guest copies the NVNtexture into permanent memory.
+    temp.host = (uint64_t)(uintptr_t)two; // Same temporary object reused.
+    assert(mario_texture_owner_add(two));
+    temp.host = (uint64_t)(uintptr_t)three;
+    assert(mario_texture_owner_add(three));
 
-    // Colliding buckets must still distinguish guest objects.
+    // Reinitializing the temporary must not destroy the copied allocation.
+    uint64_t damaged = (copied.host & UINT64_C(0x00ffffffffffffff)) |
+                        UINT64_C(0x0200000000000000);
+    if (damaged == copied.host)
+        damaged ^= UINT64_C(0x0100000000000000);
+    assert(mario_texture_owner_take(damaged) == one);
+    assert(mario_texture_owner_take(copied.host) == NULL);
+    free(one);
+    assert(mario_texture_owner_take((uint64_t)(uintptr_t)two) == two);
+    free(two);
+    assert(mario_texture_owner_take(temp.host) == three);
+    free(three);
+    assert(mario_texture_owner_take(temp.host) == NULL);
+
+    // Independent registrations must be found even when the buckets collide.
     NvnTexture *values[64];
     for (unsigned i = 0; i < 64; ++i) {
         values[i] = calloc(1, sizeof **values);
-        assert(values[i]);
-        assert(mario_texture_owner_replace(0x7000200000ULL + (uint64_t)i * 4096, values[i], &old));
-        assert(old == NULL);
+        assert(values[i] && mario_texture_owner_add(values[i]));
     }
     for (unsigned i = 0; i < 64; ++i) {
-        assert(mario_texture_owner_take(0x7000200000ULL + (uint64_t)i * 4096) == values[i]);
+        assert(mario_texture_owner_take((uint64_t)(uintptr_t)values[i]) == values[i]);
         free(values[i]);
     }
+    assert(mario_texture_owner_take(UINT64_C(0x200007874686c70)) == NULL);
+    assert(mario_texture_owner_take(0) == NULL);
     return 0;
 }
 """
