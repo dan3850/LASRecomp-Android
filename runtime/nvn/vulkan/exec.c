@@ -973,14 +973,33 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
 // Per-draw constants that usually repeat the previous draw's (scale table, tint, driver constants): reuse that copy
 // while it's identical, within one submission. slot: one per kind of data.
 enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_GMAP_V, DEDUPE_GMAP_F, DEDUPE_GMAP_C, DEDUPE_SLOTS };
+// Four immutable snapshots per constant kind: alternating A/B/A/B draws can
+// reuse their earlier upload instead of re-copying A when B was the last draw.
+// Entries only reference spans from the current pending Vulkan submission.
+// Evicting metadata never overwrites a span still referenced by GPU commands.
+#define DEDUPE_WAYS 4
 static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
-    static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; } last[DEDUPE_SLOTS];
+    static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; }
+        recent[DEDUPE_SLOTS][DEDUPE_WAYS];
+    static uint8_t victim[DEDUPE_SLOTS];
     uint64_t seq = vk_pending_seq();
-    if (size > sizeof last[0].data) return vk_transient_copy(data, size, align);
-    if (last[slot].seq == seq && last[slot].size == size && !memcmp(last[slot].data, data, size)) return last[slot].span;
-    VkSpan s = vk_transient_copy(data, size, align);
-    last[slot].seq = seq; last[slot].size = size; memcpy(last[slot].data, data, size); last[slot].span = s;
-    return s;
+    if (size > sizeof recent[0][0].data) return vk_transient_copy(data, size, align);
+    for (unsigned way = 0; way < DEDUPE_WAYS; way++) {
+        if (recent[slot][way].seq == seq && recent[slot][way].size == size &&
+            !memcmp(recent[slot][way].data, data, size))
+            return recent[slot][way].span;
+    }
+    unsigned way = DEDUPE_WAYS;
+    for (unsigned i = 0; i < DEDUPE_WAYS; i++) {
+        if (recent[slot][i].seq != seq) { way = i; break; }
+    }
+    if (way == DEDUPE_WAYS) way = victim[slot]++ % DEDUPE_WAYS;
+    VkSpan span = vk_transient_copy(data, size, align);
+    recent[slot][way].seq = seq;
+    recent[slot][way].size = size;
+    memcpy(recent[slot][way].data, data, size);
+    recent[slot][way].span = span;
+    return span;
 }
 
 // Guest memory uploads are immutable snapshots within a submission. Android's
@@ -4664,8 +4683,17 @@ static void draw_(CmdRec *r, bool indexed) {
         if (!(k.used_streams & (1u << s))) continue;
         VkSpan sp;
         if (s == ZERO_BINDING) {
+            // Immutable fallback vertex: one upload per Vulkan submission.
+            // A new submission must not inherit a span from an older ring slot.
             static const float zero[4] = {0, 0, 0, 1};
-            sp = vk_transient_copy(zero, 16, 16);
+            static uint64_t zero_seq = UINT64_MAX;
+            static VkSpan zero_span;
+            uint64_t pending_seq = vk_pending_seq();
+            if (zero_seq != pending_seq) {
+                zero_span = vk_transient_copy(zero, 16, 16);
+                zero_seq = pending_seq;
+            }
+            sp = zero_span;
         } else {
             Range v = st.vbuf[s];
             VkBuffer dbuf;
