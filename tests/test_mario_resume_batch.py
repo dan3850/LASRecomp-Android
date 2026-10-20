@@ -34,6 +34,11 @@ class MarioBatchTests(unittest.TestCase):
         self.assertTrue(blocks[0]["forced"])
         self.assertTrue(blocks[1]["indirect"])
 
+    def test_plain_neighbors_are_not_expanded_speculatively(self):
+        self.words.clear()
+        blocks = self.plan(limit=8)
+        self.assertEqual([b["offset"] for b in blocks], [0x48])
+
     def test_previously_expanded_block_is_not_rebuilt(self):
         owner = self.base + 0x80
         for pc in range(owner + 4, self.base + 0xc0, 4):
