@@ -4096,13 +4096,13 @@ static void *pipeline_recipe_build(const ReplayRecipe *r, void *context) {
                 (unsigned)k.poly_fill, (unsigned)k.depth,
                 (unsigned)k.stencil, (int)g_vk.divisor);
             for (unsigned i = 0; i < 32; ++i) if (k.attr_mask & (1u << i))
-                LOG("[mario-pipeline-reject] attr=%u bind=%u fmt=%u off=%u\\n",
+                LOG("[mario-pipeline-reject] attr=%u bind=%u fmt=%u off=%u\n",
                     i, (unsigned)k.attr_bind[i], (unsigned)k.attr_fmt[i],
                     (unsigned)k.attr_off[i]);
             for (unsigned i = 0; i < 17; ++i) if (k.used_streams & (1u << i))
-                LOG("[mario-pipeline-reject] stream=%u stride=%u divisor=%u\\n",
+                LOG("[mario-pipeline-reject] stream=%u stride=%u divisor=%u\n",
                     i, (unsigned)k.stride[i], (unsigned)k.divisor[i]);
-        } else LOG("[mario-pipeline-reject] kind=%u state_bytes=%u expected=%u\\n",
+        } else LOG("[mario-pipeline-reject] kind=%u state_bytes=%u expected=%u\n",
                    (unsigned)r->kind, (unsigned)r->state_size, (unsigned)PIPE_STATE_SIZE);
 #endif
         return NULL;
