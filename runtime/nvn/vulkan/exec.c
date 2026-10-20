@@ -4350,6 +4350,7 @@ typedef struct {
     bool vertex_ranges_valid;
     _Atomic int state;
 } IndexedGeometryJob;
+static uint64_t vertex_bytes_saturating(uint64_t elements, uint64_t stride);
 static void prepare_indexed_geometry(void *arg) {
     IndexedGeometryJob *g = arg;
     if (g->itype != 0 && g->mode <= 5) {
@@ -4374,9 +4375,10 @@ static void prepare_indexed_geometry(void *arg) {
             uint64_t step = g->stride[s], need;
             if (!step) need = 256;
             else if (g->divisor[s])
-                need = ((uint64_t)g->base_instance + g->instances +
-                        g->divisor[s] - 1) / g->divisor[s] * step + 256;
-            else need = limit * step + 256;
+                need = vertex_bytes_saturating(
+                    ((uint64_t)g->base_instance + g->instances +
+                     g->divisor[s] - 1) / g->divisor[s], step);
+            else need = vertex_bytes_saturating(limit, step);
             if (g->stream_size[s] && need > g->stream_size[s])
                 need = g->stream_size[s];
             g->vertex_need[s] = need ? need : 16;
@@ -4423,6 +4425,14 @@ static void free_indexed_geometry(IndexedGeometryJob *g) {
     free(g->widened);
     free(g);
 }
+// Saturate before multiplying. A malformed or very large index/stride must
+// never wrap into a small vertex upload size. The caller still clamps to the
+// NVN buffer's declared size, as in the original path.
+static uint64_t vertex_bytes_saturating(uint64_t elements, uint64_t stride) {
+    if (stride && elements > (UINT64_MAX - 256u) / stride)
+        return UINT64_MAX;
+    return elements * stride + 256u;
+}
 // CPU-only, immutable vertex-range preparation. This is deliberately
 // restricted to non-indexed draws: indexed range bounds depend on actual
 // indices and must not be predicted before GMEM synchronization.
@@ -4439,9 +4449,10 @@ static void prepare_vertex_ranges(void *arg) {
         uint64_t stride = v->stride[s], need;
         if (!stride) need = 256;
         else if (v->divisor[s])
-            need = ((uint64_t)v->base_instance + v->instances +
-                    v->divisor[s] - 1) / v->divisor[s] * stride + 256;
-        else need = (uint64_t)v->max_index * stride + 256;
+            need = vertex_bytes_saturating(
+                ((uint64_t)v->base_instance + v->instances +
+                 v->divisor[s] - 1) / v->divisor[s], stride);
+        else need = vertex_bytes_saturating(v->max_index, stride);
         if (v->size[s] && need > v->size[s]) need = v->size[s];
         v->need[s] = need ? need : 16;
     }
@@ -5081,8 +5092,9 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                 need = vertex_job.need[s];
             } else {
                 if (!stride) need = 256;
-                else if (k.divisor[s]) need = ((uint64_t)base_inst + inst + k.divisor[s] - 1) / k.divisor[s] * stride + 256;
-                else need = (uint64_t)max_index * stride + 256;
+                else if (k.divisor[s]) need = vertex_bytes_saturating(
+                    ((uint64_t)base_inst + inst + k.divisor[s] - 1) / k.divisor[s], stride);
+                else need = vertex_bytes_saturating(max_index, stride);
                 if (v.size && need > v.size) need = v.size;
             }
             if (!v.addr) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
