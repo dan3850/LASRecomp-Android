@@ -143,9 +143,13 @@ mario_build_main() {
     else
         echo "Reutilizando biblioteca recompilada e objetos main/sdk existentes."
     fi
-    # A kernel-only correction needs no speculative reentry batch. The ordinary
-    # boot script validates the existing library and NSO hashes before building.
-    env -u MARIO_BATCH_ANCHOR -u MARIO_BATCH_RETURN_SITE -u MARIO_RESUME_AT \
+    # An explicitly supplied MARIO_RESUME_AT repairs only its containing
+    # recompiled block. Without opt-in the ordinary build stays unchanged.
+    # Disable speculative batch parameters, but preserve the explicit target.
+    if [[ -n "${MARIO_RESUME_AT:-}" ]]; then
+        echo "MARIO_RESUME_AT=$MARIO_RESUME_AT"
+    fi
+    env -u MARIO_BATCH_ANCHOR -u MARIO_BATCH_RETURN_SITE \
         bash compilar-mario-boot-termux.sh "$mario_game"
     [[ -s "$mario_apk" ]] || { echo "ERRO: APK nao produzido: $mario_apk" >&2; return 1; }
     echo "BRANCH=$(git branch --show-current)"
