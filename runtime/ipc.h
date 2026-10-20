@@ -19,6 +19,12 @@ typedef struct IpcReq {
     uint32_t domain_obj;  // 0 if not a domain message
     uint32_t domain_in_objs[8];
     int ndomain_in;
+#ifdef LASRECOMP_MARIO_TEST
+    // Resolved incoming CMIF service objects, from domain IDs or moved session handles.
+    // The Mario controller applet uses the corresponding IStorage payloads.
+    Service *input_services[8];
+    int ninput_services;
+#endif
 } IpcReq;
 
 typedef struct Service Service;

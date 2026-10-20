@@ -152,21 +152,105 @@ static Service *new_am_storage(const void *data, uint64_t size) {
 // Command 0 must return an ILibraryAppletAccessor. An empty success response
 // makes the SDK dereference a null interface (Mario boot: f_70040398a0).
 typedef struct {
+    uint8_t *data;
+    uint64_t size;
+} MarioAppletInput;
+
+typedef struct {
     uint32_t applet_id, mode;
+    MarioAppletInput input[3];
+    unsigned input_count;
+    uint32_t state_event_read;
+    KEvent *state_event;
+    bool started, completed, output_pending;
+    uint8_t output[12];
 } MarioLibraryApplet;
 
 #define MARIO_APPLET_UNSUPPORTED 0xF201u
 
 static void mario_library_applet_release(Service *s) {
-    free(s->state);
+    MarioLibraryApplet *a = s->state;
+    if (a) {
+        for (unsigned i = 0; i < a->input_count; i++) free(a->input[i].data);
+        free(a);
+    }
     s->state = NULL;
 }
 
 static void mario_library_applet_accessor(Service *s, IpcReq *req, IpcResp *resp) {
-    const MarioLibraryApplet *a = s->state;
-    LOG("[mario-applet] accessor id=%u mode=%u cmd=%u unsupported (no applet process)\n",
-        a->applet_id, a->mode, req->cmd);
-    // Never claim Start, GetResult or PopOutData worked without running the applet.
+    MarioLibraryApplet *a = s->state;
+    LOG("[mario-applet] accessor id=%u mode=%u cmd=%u started=%d completed=%d inputs=%u\n",
+        a->applet_id, a->mode, req->cmd, (int)a->started, (int)a->completed, a->input_count);
+    switch (req->cmd) {
+    case 0: // GetAppletStateChangedEvent: only signaled once the applet completes.
+        resp->copy_handles[resp->ncopy++] = a->state_event_read;
+        return;
+    case 1: // IsCompleted
+        OUT(uint8_t, 0) = a->completed ? 1 : 0;
+        resp_size(resp, 1);
+        return;
+    case 100: { // PushInData(IStorage)
+        if (a->started || a->input_count >= 3 || req->ninput_services != 1 ||
+            !req->input_services[0] ||
+            strcmp(req->input_services[0]->name, "IStorage") != 0 ||
+            !req->input_services[0]->state) break;
+        const AmStorage *storage = req->input_services[0]->state;
+        if (storage->size > 65536 || (storage->size && !storage->data)) break;
+        uint8_t *copy = malloc(storage->size ? (size_t)storage->size : 1);
+        if (!copy) break;
+        if (storage->size) memcpy(copy, storage->data, (size_t)storage->size);
+        MarioAppletInput *in = &a->input[a->input_count++];
+        in->data = copy;
+        in->size = storage->size;
+        LOG("[mario-applet] PushInData index=%u size=%llu\n", a->input_count - 1,
+            (unsigned long long)storage->size);
+        return;
+    }
+    case 10: { // Start: locally accept a compatible single-player controller setup.
+        if (a->started || a->applet_id != 0x0c || a->input_count != 3 ||
+            a->input[1].size < 0x14 || a->input[2].size < 2) break;
+        uint8_t support_mode = a->input[1].data[0x0a];
+        int8_t min_players = (int8_t)a->input[2].data[0];
+        int8_t max_players = (int8_t)a->input[2].data[1];
+        LOG("[mario-applet] ControllerSupport mode=%u min=%d max=%d\n",
+            support_mode, min_players, max_players);
+        // No external controller picker is emulated. Never claim success when
+        // the game requires multiple players or an unsupported applet mode.
+        if (support_mode > 1 || min_players > 1 || max_players < 1) break;
+        a->started = a->completed = a->output_pending = true;
+        // ControllerSupportResultInfo: playerCount=1, selected NpadId=No1 (0),
+        // followed by ControllerSupportResult=success (0), total 0xC bytes.
+        a->output[0] = 1;
+        pthread_mutex_lock(&g_klock);
+        kernel_signal(a->state_event);
+        pthread_mutex_unlock(&g_klock);
+        LOG("[mario-applet] ControllerSupport completed: player=1 npad=0\n");
+        return;
+    }
+    case 101: // PopOutData: a real 12-byte IStorage with the controller result.
+        if (!a->completed || !a->output_pending) break;
+        ipc_return_object(resp, new_am_storage(a->output, sizeof a->output));
+        a->output_pending = false;
+        return;
+    case 30: // GetResult: success only when the controller setup finished.
+        if (a->completed) return;
+        break;
+    case 120: // GetLibraryAppletInfo (AppletId, LibAppletMode).
+        OUT(uint32_t, 0) = a->applet_id;
+        OUT(uint32_t, 4) = a->mode;
+        resp_size(resp, 8);
+        return;
+    case 20: case 25: // RequestExit / Terminate.
+        if (a->started && !a->completed) {
+            a->completed = true;
+            pthread_mutex_lock(&g_klock);
+            kernel_signal(a->state_event);
+            pthread_mutex_unlock(&g_klock);
+        }
+        return;
+    default: break;
+    }
+    LOG("[mario-applet] accessor id=%u cmd=%u unsupported state\n", a->applet_id, req->cmd);
     resp->result = MARIO_APPLET_UNSUPPORTED;
 }
 
@@ -183,6 +267,15 @@ static void mario_library_applet_creator(Service *s, IpcReq *req, IpcResp *resp)
         if (!a) { resp->result = MARIO_APPLET_UNSUPPORTED; break; }
         a->applet_id = id;
         a->mode = mode;
+        // The controller applet is locally handled without launching another game.
+        if (id != 0x0c) {
+            LOG("[mario-applet] unsupported applet id=%u\n", id);
+            free(a);
+            resp->result = MARIO_APPLET_UNSUPPORTED;
+            break;
+        }
+        uint32_t event_w;
+        a->state_event = kernel_create_event_pair(&event_w, &a->state_event_read);
         Service *accessor = service_new("ILibraryAppletAccessor", mario_library_applet_accessor, a);
         if (!accessor) { free(a); resp->result = MARIO_APPLET_UNSUPPORTED; break; }
         accessor->on_close = mario_library_applet_release;

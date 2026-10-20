@@ -182,6 +182,23 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
             capture_thread->capture_ipc_command = req.cmd;
         }
 #endif
+#ifdef LASRECOMP_MARIO_TEST
+        // Preserve CMIF object input semantics: domains pass object IDs, regular
+        // sessions pass transferred handles. No game ABI or non-Mario IPC changes.
+        if (sess->domain) {
+            for (int i = 0; i < req.ndomain_in && i < 8; i++) {
+                uint32_t id = req.domain_in_objs[i];
+                req.input_services[req.ninput_services++] =
+                    id < 256 ? sess->domain->objs[id] : NULL;
+            }
+        } else {
+            for (int i = 0; i < req.nmove && i < 8; i++) {
+                KObject *object = handle_get(req.move_handles[i]);
+                req.input_services[req.ninput_services++] =
+                    object && object->type == KOBJ_SESSION ? ((KSession *)object)->svc : NULL;
+            }
+        }
+#endif
         target->handler(target, &req, &resp);
 #ifdef LASRECOMP_MARIO_TEST
         if (capture_thread) {
