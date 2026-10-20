@@ -4220,39 +4220,6 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     stat_dispatches++;
 }
 
-// Start shader translation/compilation when a program is bound, before its
-// first draw. This is a resource-only preparation stage: it never reads GMEM,
-// changes Vulkan command order or waits for a worker. A draw still calculates
-// its exact key and waits for its exact program as before. The key uses the
-// state at bind time, so a subsequent attribute/RT change simply causes the
-// normal draw-time lookup; no incorrect speculative result can be consumed.
-// LARECOMP_VK_PROGRAM_PREFETCH=0 disables the speculative work for A/B testing.
-static void prefetch_bound_program(void) {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *e = getenv("LARECOMP_VK_PROGRAM_PREFETCH");
-#ifdef __ANDROID__
-        enabled = !e || atoi(e) != 0;
-#else
-        enabled = e && atoi(e) != 0;
-#endif
-    }
-    if (!enabled || !st.program || st.nattrib < 0 || st.nattrib > 16 ||
-        st.rt.ncolor < 0 || st.rt.ncolor > 8) return;
-    ShaderKey vk = {0}, fk = {0};
-    vk.glsl = fk.glsl = 1;
-    vk.flip_y = fk.flip_y = nvn_window_origin() == 0;
-    vk.depth_minus_one = nvn_depth_mode() == 0;
-    for (int i = 0; i < st.nattrib; i++)
-        vk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-    for (int i = 0; i < st.rt.ncolor; i++)
-        if (st.rt.color[i])
-            fk.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
-    // get_program queues the translation job and returns immediately.
-    // It does not record or submit any Vulkan commands.
-    (void)get_program(st.program, &vk, &fk);
-}
-
 // ================================================================== draws
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed);
 
@@ -5412,6 +5379,106 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
     vmaDestroyImage(g_vk.vma, img, mem);
 }
 
+// ================================================================== shader preflight
+// Preflight just the initial, state-only prefix of a command list. This
+// captures the exact shader variant at upcoming DRAW records before recording
+// Vulkan commands. The translation/compilation workers then overlap that work
+// with ordered NVN command execution. Unlike speculative bind-time prefetch,
+// variants use the attributes and attachments present at the actual draw.
+// Calls/jumps, memory-writing commands and unknown operations terminate the
+// lookahead: do not guess whether guest shader code might have changed.
+// The preflight never touches global render state, GMEM or Vulkan objects.
+// Bounded to avoid spending a frame scanning the entire list.
+// LARECOMP_VK_LIST_PREFLIGHT=0 restores the old first-draw scheduling.
+static void shader_list_preflight(uint64_t handle) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("LARECOMP_VK_LIST_PREFLIGHT");
+#ifdef __ANDROID__
+        enabled = !e || atoi(e) != 0;
+#else
+        enabled = e && atoi(e) != 0;
+#endif
+    }
+    if (!enabled) return;
+    NvnProgram *program = st.program;
+    int nattrib = st.nattrib, ncolor = st.rt.ncolor;
+    uint32_t attrib[16];
+    uint8_t color_kind[8] = {0};
+    if (nattrib < 0 || nattrib > 16 || ncolor < 0 || ncolor > 8) return;
+    memcpy(attrib, st.attrib, sizeof attrib);
+    for (int i = 0; i < ncolor; i++)
+        if (st.rt.color[i])
+            color_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    uint64_t p = handle;
+    unsigned launched = 0;
+    for (unsigned step = 0; step < 512 && launched < 32; step++) {
+        if (!p) break;
+        const CmdRec *r = (const CmdRec *)(uintptr_t)p;
+        if (r->size < sizeof *r) break;
+        switch (r->op) {
+        case CMD_END: return;
+        case CMD_BIND_PROGRAM:
+            program = (NvnProgram *)(uintptr_t)r->x[0];
+            break;
+        case CMD_BIND_VERTEX_ATTRIB:
+            nattrib = (int)(r->x[0] > 16 ? 16 : r->x[0]);
+            if (nattrib && !r->extra) return;
+            if (nattrib) memcpy(attrib, r->extra, (size_t)nattrib * 4);
+            break;
+        case CMD_SET_RENDER_TARGETS: {
+            const struct {
+                uint64_t tex[8];
+                NvnTextureView views[8];
+                uint8_t has_view[8];
+                uint64_t depth;
+                NvnTextureView dview;
+                uint8_t has_dview;
+            } *rt = r->extra;
+            if (!rt) return;
+            ncolor = (int)(r->x[0] > 8 ? 8 : r->x[0]);
+            memset(color_kind, 0, sizeof color_kind);
+            for (int i = 0; i < ncolor; i++) {
+                NvnTexture *t = (NvnTexture *)(uintptr_t)rt->tex[i];
+                if (t) color_kind[i] = (uint8_t)rt_kind(t->format);
+            }
+            break;
+        }
+        case CMD_DRAW_ARRAYS:
+        case CMD_DRAW_ELEMENTS:
+            if (program && (program->stage_mask & 3) == 3) {
+                ShaderKey vk = {0}, fk = {0};
+                vk.glsl = fk.glsl = 1;
+                vk.flip_y = fk.flip_y = nvn_window_origin() == 0;
+                vk.depth_minus_one = nvn_depth_mode() == 0;
+                for (int i = 0; i < nattrib; i++)
+                    vk.attr_kind[i] = (uint8_t)attr_kind(attrib[i] & 0xff);
+                for (int i = 0; i < ncolor; i++)
+                    fk.rt_kind[i] = color_kind[i];
+                (void)get_program(program, &vk, &fk);
+                launched++;
+            }
+            break;
+        // State-only operations: no guest memory modifications.
+        case CMD_BIND_BLEND: case CMD_BIND_CHANNEL_MASK: case CMD_BIND_COLOR:
+        case CMD_BIND_DEPTH_STENCIL: case CMD_BIND_MULTISAMPLE:
+        case CMD_BIND_POLYGON: case CMD_BIND_VERTEX_STREAM:
+        case CMD_BIND_VERTEX_BUFFERS: case CMD_BIND_UNIFORM_BUFFERS:
+        case CMD_BIND_STORAGE_BUFFERS: case CMD_BIND_TEXTURES:
+        case CMD_BIND_IMAGES: case CMD_SET_TEXTURE_POOL:
+        case CMD_SET_SAMPLER_POOL: case CMD_SET_VIEWPORTS:
+        case CMD_SET_SCISSORS: case CMD_SET_DEPTH_RANGES:
+        case CMD_SET_BLEND_COLOR: case CMD_SET_STENCIL:
+        case CMD_SET_POLYGON_OFFSET: case CMD_SET_PRIMITIVE_RESTART:
+        case CMD_SET_COPY_STRIDES:
+            break;
+        default:
+            return;
+        }
+        p += r->size;
+    }
+}
+
 // ================================================================== executor (renderer.m exec_list)
 static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
@@ -5427,10 +5494,7 @@ static void exec_list(uint64_t handle, int depth) {
             for (uint64_t i = 0; i < r->x[0] && depth < 8; i++) exec_list(h[i], depth + 1);
             break;
         }
-        case CMD_BIND_PROGRAM:
-            st.program = (NvnProgram *)(uintptr_t)r->x[0];
-            prefetch_bound_program();
-            break;
+        case CMD_BIND_PROGRAM: st.program = (NvnProgram *)(uintptr_t)r->x[0]; break;
         case CMD_BIND_BLEND: { uint8_t *b = x; memcpy(st.blend[b[0] & 7], b, 8); break; }
         case CMD_BIND_CHANNEL_MASK: memcpy(&st.channel_mask, x, 4); break;
         case CMD_BIND_COLOR: memcpy(st.color_state, x, 4); break;
@@ -5674,6 +5738,7 @@ static void exec_list(uint64_t handle, int depth) {
 
 void backend_execute(uint64_t handle) {
     PROF_T0();
+    shader_list_preflight(handle);
     exec_list(handle, 0);
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;
