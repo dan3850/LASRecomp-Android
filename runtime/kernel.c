@@ -11,6 +11,9 @@
 
 #include "hle.h"
 #include "kernel.h"
+#if defined(LASRECOMP_MARIO_TEST) && defined(__aarch64__) && defined(LASRECOMP_MARIO_NATIVE_SVC_BRIDGE)
+#include "mario_native_svc_bridge.h"
+#endif
 #if defined(__ANDROID__) && defined(LASRECOMP_MARIO_TEST)
 #include "mario_abort_diag.h"
 #endif
@@ -632,6 +635,56 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc);
 
 static _Atomic uint64_t svc_wait_ns[32][0x80], svc_calls[32][0x80];
 static int prof_svc = -1;
+
+// Optional path for future direct ARM64 guest execution. Not wired to the
+// default APK or to the SVC islands. Frame is owned by the assembly trampoline;
+// rt_svc must only run with the existing kernel-managed host thread TLS.
+//
+// IMPORTANT: Horizon ExitThread/reboot may longjmp out of rt_svc; this bridge
+// must be reached only from thread_main's existing setjmp lifetime. The
+// production trampoline must also save/restore the Android host x18 and TLS
+// independently, on an ABI-safe host stack, before enabling this path.
+#if defined(LASRECOMP_MARIO_TEST) && defined(__aarch64__) && defined(LASRECOMP_MARIO_NATIVE_SVC_BRIDGE)
+int mario_native_svc_from_frame(MarioNativeSvcFrame *frame, uint32_t svc_id, uint64_t guest_pc) {
+    if (!frame || ((uintptr_t)frame & 15) || (frame->guest_sp & 15))
+        return MARIO_NATIVE_SVC_BAD_FRAME;
+    if (!t_cur || !t_cur->started || t_cur->finished ||
+        !pthread_equal(t_cur->host, pthread_self()) ||
+        t_cur->cpu.thread != t_cur)
+        return MARIO_NATIVE_SVC_NO_THREAD;
+    // PC is an address in the guest module's executable range; never accept a
+    // host callback or an address outside the actual guest modules.
+    bool pc_ok = false;
+    for (int i = 0; i < g_nmodules; ++i) {
+        const Module *m = &g_modules[i];
+        uint64_t start = m->base + m->text_off;
+        uint64_t size = m->text_size;
+        if (guest_pc >= start && guest_pc - start < size &&
+            (guest_pc & 3) == 0) { pc_ok = true; break; }
+    }
+    if (!pc_ok || svc_id >= 0x80) return MARIO_NATIVE_SVC_BAD_PC;
+
+    Cpu *c = &t_cur->cpu;
+    memcpy(c->x, frame->x, sizeof(frame->x));
+    memcpy(c->v, frame->v, sizeof(frame->v));
+    c->sp = frame->guest_sp;
+    c->pc = guest_pc;
+    c->nzcv = frame->nzcv;
+    c->fpcr = frame->fpcr;
+    c->fpsr = frame->fpsr;
+    // Keep c->thread, c->tpidr and c->tpidrro from the live kernel thread.
+    rt_svc(c, svc_id, guest_pc);
+    // Only return modified guest state after the Horizon service completes.
+    // Longjmp-based ExitThread/reboot does not return through this function.
+    memcpy(frame->x, c->x, sizeof(frame->x));
+    memcpy(frame->v, c->v, sizeof(frame->v));
+    frame->nzcv = c->nzcv;
+    frame->fpcr = c->fpcr;
+    frame->fpsr = c->fpsr;
+    frame->guest_sp = c->sp;
+    return MARIO_NATIVE_SVC_OK;
+}
+#endif
 
 static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc);
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
