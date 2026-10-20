@@ -178,6 +178,20 @@ No host, os dez testes de bootstrap passaram. O teste de alocação durante
 mas não identifica o motivo específico do `mmap` no aparelho, pois faltava o
 erro da chamada naquele log. A nova execução no Termux e o APK seguem pendentes.
 
+No teste ARM64 de `28241f7`, os callbacks passaram, mas outra execução informou
+`fixture guest mapping at 7000000000 failed: File exists` antes de carregar a
+biblioteca. Na fixture anterior, essa mensagem também representava um endereço
+retornado diferente do solicitado; a nova mensagem distingue isso de um erro
+real de `mmap`. Reservar antes de `dlopen` não evita colisões com mapeamentos do
+próprio executável e suas dependências, já carregados antes de `main` pelo
+sistema. A fixture agora identifica exclusivamente essa colisão e pode iniciar
+um novo processo de teste, obtendo uma nova distribuição ASLR, até oito vezes.
+Não usa `MAP_FIXED`, não sobrescreve o mapeamento ocupado e não muda o runtime,
+o timing ou a sincronização do jogo. Só aceita sucesso se o teste executar de
+fato suas verificações; oito colisões continuam sendo falha. Erros do loader,
+guest, callbacks e outros erros de memória não são repetidos nem ignorados.
+Quatro regressões verificam essas regras de execução.
+
 ## Compilar no Termux
 
 No worktree já usado pelo Mario (`~/LASRecomp-Mario-Teste` neste ambiente).

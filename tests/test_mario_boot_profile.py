@@ -8,12 +8,60 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from test_mario_full_recompiler import ROOT, make_nso
 
 sys.path.insert(0, str(ROOT / 'tools'))
 from mario_boot_profile import START_ABIS, prepare, sdk_startup
 from nso import Nso
+
+
+ADDRESS_COLLISION = '[fixture-address-collision]'
+
+
+def run_boot_fixture(command, attempts=8):
+    """Re-exec only when native process ASLR already occupies guest addresses.
+
+    This happens before any library/guest execution. Never retry dispatch,
+    callback, loader, or other mmap errors, and never turn exhaustion into a skip.
+    """
+    for _ in range(attempts):
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        if result.returncode != 3 or ADDRESS_COLLISION not in result.stderr:
+            return result
+    return result  # Still a failure: the caller must assert actual execution.
+
+
+class TestFixtureExecution(unittest.TestCase):
+    def test_reexecutes_collision_then_requires_a_successful_execution(self):
+        collision = subprocess.CompletedProcess(['boot'], 3, '', ADDRESS_COLLISION)
+        success = subprocess.CompletedProcess(['boot'], 0, 'guest executed', '')
+        with patch('subprocess.run', side_effect=[collision, success]) as run:
+            result = run_boot_fixture(['boot'])
+        self.assertIs(result, success)
+        self.assertEqual(run.call_count, 2)
+
+    def test_does_not_retry_other_mapping_errors(self):
+        failure = subprocess.CompletedProcess(['boot'], 3, '', 'mapping: permission denied')
+        with patch('subprocess.run', return_value=failure) as run:
+            self.assertIs(run_boot_fixture(['boot']), failure)
+        self.assertEqual(run.call_count, 1)
+
+    def test_does_not_retry_guest_or_loader_failure(self):
+        for code in (2, 5, 7, 8, -6):
+            with self.subTest(code=code):
+                failure = subprocess.CompletedProcess(['boot'], code, '', 'execution failed')
+                with patch('subprocess.run', return_value=failure) as run:
+                    self.assertIs(run_boot_fixture(['boot']), failure)
+                self.assertEqual(run.call_count, 1)
+
+    def test_collision_exhaustion_remains_a_failure(self):
+        failure = subprocess.CompletedProcess(['boot'], 3, '', ADDRESS_COLLISION)
+        with patch('subprocess.run', return_value=failure) as run:
+            result = run_boot_fixture(['boot'])
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(run.call_count, 8)
 
 
 def make_startup_nso(path, *, sdk, arguments, arrays=False, symbol=None):
@@ -145,10 +193,16 @@ static bool reserve_fixture_window(uint64_t base) {
     void *p=mmap(wanted,0x10000,PROT_READ|PROT_WRITE,
                  MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     if (p==wanted) return true;
-    int error=p==MAP_FAILED?errno:EEXIST;
-    if (p!=MAP_FAILED) munmap(p,0x10000);
-    fprintf(stderr,"fixture guest mapping at %llx failed: %s\n",
-            (unsigned long long)base,strerror(error));
+    if (p==MAP_FAILED) {
+        int error=errno;
+        if (error==EEXIST) fputs("[fixture-address-collision]\n",stderr);
+        fprintf(stderr,"fixture guest mapping at %llx failed: %s\n",
+                (unsigned long long)base,strerror(error));
+    } else {
+        munmap(p,0x10000);
+        fprintf(stderr,"[fixture-address-collision] fixture guest mapping requested %llx, returned %p\n",
+                (unsigned long long)base,p);
+    }
     return false;
 }
 int main(int argc,char **argv) {
@@ -276,8 +330,7 @@ class TestMarioBoot(unittest.TestCase):
 
     def test_real_android_loader_and_dispatch_execute_existing_library(self):
         executable = self.build_harness()
-        result = subprocess.run([str(executable), str(self.exefs), str(self.folder)],
-                                capture_output=True, text=True)
+        result = run_boot_fixture([str(executable), str(self.exefs), str(self.folder)])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('real dispatch executed main and sdk', result.stdout)
 
@@ -297,17 +350,15 @@ void *__wrap_dlopen(const char *path,int flags) {
 }
 '''
         executable = self.build_harness(source, ('-Wl,--wrap=dlopen',))
-        result = subprocess.run([str(executable), str(self.exefs), str(self.folder)],
-                                capture_output=True, text=True)
+        result = run_boot_fixture([str(executable), str(self.exefs), str(self.folder)])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('real dispatch executed main and sdk', result.stdout)
 
     def test_guest_window_collision_is_rejected_without_overwriting_memory(self):
         source = HARNESS[:HARNESS.index('int main(int argc')] + r'''
 int main(void) {
-    unsigned char *p=mmap((void *)(uintptr_t)MAIN_BASE,0x10000,PROT_READ|PROT_WRITE,
-                          MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-    if (p!=(void *)(uintptr_t)MAIN_BASE) return 10;
+    if (!reserve_fixture_window(MAIN_BASE)) return 3;
+    unsigned char *p=(void *)(uintptr_t)MAIN_BASE;
     memset(p,0x5a,0x10000);
     if (reserve_fixture_window(MAIN_BASE)) return 11;
     for (int i=0;i<0x10000;i++) if (p[i]!=0x5a) return 12;
@@ -318,7 +369,7 @@ int main(void) {
 }
 '''
         executable = self.build_harness(source)
-        result = subprocess.run([str(executable)], capture_output=True, text=True)
+        result = run_boot_fixture([str(executable)])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('fixture guest mapping', result.stderr)
         self.assertIn('occupied guest window preserved', result.stdout)
@@ -342,14 +393,12 @@ int main(void) {
                     before = (library.stat().st_mtime_ns, library.read_bytes())
                     executable = self.build_harness()
                     mode = f'startup{arguments}' + ('-arrays' if arrays else '')
-                    result = subprocess.run([str(executable), str(self.exefs), str(root), mode],
-                                            capture_output=True, text=True)
+                    result = run_boot_fixture([str(executable), str(self.exefs), str(root), mode])
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn(f'arguments={arguments}', result.stderr)
                     self.assertIn('real SDK Start dispatch and module callback order passed', result.stdout)
                     self.assertEqual((library.stat().st_mtime_ns, library.read_bytes()), before)
-                    missing = subprocess.run([str(executable), str(self.exefs), str(root), 'startup-missing'],
-                                             capture_output=True, text=True)
+                    missing = run_boot_fixture([str(executable), str(self.exefs), str(root), 'startup-missing'])
                     self.assertNotEqual(missing.returncode, 0)
                     self.assertIn('neither supported nn::init::Start ABI', missing.stderr)
 
@@ -397,12 +446,10 @@ int main(void) {
         image = bytearray((changed / 'main').read_bytes())
         image[0x40] ^= 1
         (changed / 'main').write_bytes(image)
-        wrong = subprocess.run([str(executable), str(changed), str(self.folder)],
-                               capture_output=True, text=True)
+        wrong = run_boot_fixture([str(executable), str(changed), str(self.folder)])
         self.assertNotEqual(wrong.returncode, 0)
         self.assertIn('NSO Build ID mismatch', wrong.stderr)
-        missing = subprocess.run([str(executable), str(self.exefs), str(self.folder), 'missing-service'],
-                                 capture_output=True, text=True)
+        missing = run_boot_fixture([str(executable), str(self.exefs), str(self.folder), 'missing-service'])
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn('[mario-hle] unimplemented Mario::RequiredMissingService', missing.stderr)
 
