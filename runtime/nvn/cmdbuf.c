@@ -100,7 +100,7 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
         uint64_t before_mem = cb->mem, before_used = cb->used, before_size = cb->size;
         guest_call(c, cb->callback);
 #ifdef LASRECOMP_MARIO_TEST
-        fprintf(stderr, "[mario-nvn-memory] callback attempt=%d op=%u need=%u before=%llx/%llu/%llu after=%llx/%llu/%llu changed=%d\\n",
+        fprintf(stderr, "[mario-nvn-memory] callback attempt=%d op=%u need=%u before=%llx/%llu/%llu after=%llx/%llu/%llu changed=%d\n",
                 tries + 1, op, size,
                 (unsigned long long)before_mem, (unsigned long long)before_used,
                 (unsigned long long)before_size,
