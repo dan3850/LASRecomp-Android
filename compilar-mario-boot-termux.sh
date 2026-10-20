@@ -70,15 +70,18 @@ if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
     MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_BATCH_POINTS"
     echo "Reentradas selecionadas: $MARIO_BATCH_POINTS"
 fi
-# The on-device Mario boot repeatedly reaches main+0x791a18 (LR main+0x7919a8).
-# It is not an exact entry in the cached private dispatcher. Recompile only
-# its containing block with interior PC entry points; keep all other cached
-# generated objects and the Zelda build unchanged.
-# Explicit MARIO_RESUME_AT may include other targeted repairs.
-if [[ " ${MARIO_RESUME_AT:-} " != *" main:0x791a18 "* ]]; then
-    MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }main:0x791a18"
-fi
-echo "===== MARIO: REENTRADA DO BOOT main+0x791a18 ====="
+# Verified runtime dispatch gaps. Keep previously confirmed boot repair and
+# repair both new missing main-module functions without rebuilding everything.
+# The two latest failures have indirect targets in x10:
+#   main+0x66c48c (LR main+0x66d150)
+#   main+0x669c74 (LR main+0x6698e0)
+for MARIO_REQUIRED_ENTRY in main:0x791a18 main:0x66c48c main:0x669c74; do
+    if [[ " ${MARIO_RESUME_AT:-} " != *" $MARIO_REQUIRED_ENTRY "* ]]; then
+        MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_REQUIRED_ENTRY"
+    fi
+done
+echo "===== MARIO: REENTRADAS CONFIRMADAS ====="
+echo "$MARIO_RESUME_AT"
 if [[ -n "${MARIO_RESUME_AT:-}" ]]; then
     read -r -a MARIO_RESUME_POINTS <<< "$MARIO_RESUME_AT"
     MARIO_RESUME_ARGS=()
