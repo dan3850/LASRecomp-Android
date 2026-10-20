@@ -44,8 +44,8 @@ public final class GameSDLActivity extends SDLActivity {
         marioAutoCaptureActive = true;
         Thread collector = new Thread(() -> {
             int saved = 0;
-            for (int attempt = 0; attempt < 40 && marioAutoCaptureActive && saved < 5; attempt++) {
-                try { Thread.sleep(saved == 0 ? 400L : 1100L); }
+            for (int attempt = 0; attempt < 240 && marioAutoCaptureActive && saved < 5; attempt++) {
+                try { Thread.sleep(saved == 0 ? 500L : 1100L); }
                 catch (InterruptedException interrupted) { return; }
                 if (!marioAutoCaptureActive) return;
                 boolean ok = false;
