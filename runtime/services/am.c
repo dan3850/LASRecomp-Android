@@ -148,6 +148,67 @@ static Service *new_am_storage(const void *data, uint64_t size) {
     return service_new("IStorage", am_storage, st);
 }
 
+#ifdef LASRECOMP_MARIO_TEST
+// Command 0 must return an ILibraryAppletAccessor. An empty success response
+// makes the SDK dereference a null interface (Mario boot: f_70040398a0).
+typedef struct {
+    uint32_t applet_id, mode;
+} MarioLibraryApplet;
+
+#define MARIO_APPLET_UNSUPPORTED 0xF201u
+
+static void mario_library_applet_release(Service *s) {
+    free(s->state);
+    s->state = NULL;
+}
+
+static void mario_library_applet_accessor(Service *s, IpcReq *req, IpcResp *resp) {
+    const MarioLibraryApplet *a = s->state;
+    LOG("[mario-applet] accessor id=%u mode=%u cmd=%u unsupported (no applet process)\n",
+        a->applet_id, a->mode, req->cmd);
+    // Never claim Start, GetResult or PopOutData worked without running the applet.
+    resp->result = MARIO_APPLET_UNSUPPORTED;
+}
+
+static void mario_library_applet_creator(Service *s, IpcReq *req, IpcResp *resp) {
+    (void)s;
+    switch (req->cmd) {
+    case 0: {  // CreateLibraryApplet(id: u32, mode: u32) -> ILibraryAppletAccessor
+        if (req->data_size < 8) { resp->result = MARIO_APPLET_UNSUPPORTED; break; }
+        uint32_t id, mode;
+        memcpy(&id, req->data, sizeof id);
+        memcpy(&mode, req->data + 4, sizeof mode);
+        LOG("[mario-applet] CreateLibraryApplet id=%u (0x%x) mode=%u\n", id, id, mode);
+        MarioLibraryApplet *a = calloc(1, sizeof *a);
+        if (!a) { resp->result = MARIO_APPLET_UNSUPPORTED; break; }
+        a->applet_id = id;
+        a->mode = mode;
+        Service *accessor = service_new("ILibraryAppletAccessor", mario_library_applet_accessor, a);
+        if (!accessor) { free(a); resp->result = MARIO_APPLET_UNSUPPORTED; break; }
+        accessor->on_close = mario_library_applet_release;
+        ipc_return_object(resp, accessor);
+        break;
+    }
+    case 10: {  // CreateStorage(size: s64) -> IStorage
+        if (req->data_size < 8) { resp->result = MARIO_APPLET_UNSUPPORTED; break; }
+        int64_t size;
+        memcpy(&size, req->data, sizeof size);
+        LOG("[mario-applet] CreateStorage size=%lld\n", (long long)size);
+        if (size < 0 || size > 32 * 1024 * 1024) {
+            resp->result = MARIO_APPLET_UNSUPPORTED;
+            break;
+        }
+        ipc_return_object(resp, new_am_storage(NULL, (uint64_t)size));
+        break;
+    }
+    default:
+        LOG("[mario-applet] creator cmd=%u unsupported\n", req->cmd);
+        resp->result = MARIO_APPLET_UNSUPPORTED;
+        break;
+    }
+}
+#endif
+
 extern const uint8_t g_user_id[16];
 
 static void application_functions(Service *s, IpcReq *req, IpcResp *resp) {
@@ -189,7 +250,11 @@ static void application_proxy(Service *s, IpcReq *req, IpcResp *resp) {
         {3, "IAudioController", generic_ok},
         {4, "IDisplayController", generic_ok},
         {10, "IProcessWindingController", generic_ok},
+        #ifdef LASRECOMP_MARIO_TEST
+        {11, "ILibraryAppletCreator", mario_library_applet_creator},
+#else
         {11, "ILibraryAppletCreator", generic_ok},
+#endif
         {20, "IApplicationFunctions", application_functions},
         {1000, "IDebugFunctions", generic_ok},
     };
