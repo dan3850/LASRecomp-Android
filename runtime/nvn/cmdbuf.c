@@ -10,6 +10,19 @@
 
 static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
 
+#ifdef LASRECOMP_MARIO_TEST
+// Observability only: number of NVN commands recorded by the original game.
+// Never count synthetic Vulkan presentation commands as guest draw calls.
+static uint64_t mario_recorded_ops[CMD_COUNT];
+uint64_t mario_nvn_record_count(unsigned op) {
+    return op < CMD_COUNT
+        ? __atomic_load_n(&mario_recorded_ops[op], __ATOMIC_RELAXED)
+        : 0;
+}
+#endif
+
+
+
 NVN(nvnCommandBufferInitialize) {
     NvnCmdBuf *cb = calloc(1, sizeof *cb);
     cb->guest = A(0);
@@ -71,6 +84,10 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
         memcpy(c->x, saved, sizeof saved);
     }
     CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
+#ifdef LASRECOMP_MARIO_TEST
+    if (op < CMD_COUNT)
+        __atomic_fetch_add(&mario_recorded_ops[op], 1, __ATOMIC_RELAXED);
+#endif
     cb->used += size;
     return r;
 }
