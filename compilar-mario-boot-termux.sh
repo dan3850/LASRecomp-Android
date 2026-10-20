@@ -21,6 +21,8 @@ if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
     for MARIO_ANCHOR in "${MARIO_BATCH_ANCHORS[@]}"; do
         MARIO_BATCH_ARGS+=(--anchor "$MARIO_ANCHOR")
     done
+    echo "===== TESTES DA SELECAO DE REENTRADAS ====="
+    python3 tests/test_mario_resume_batch.py
     echo "===== MARIO: PLANEJANDO REENTRADAS EM LOTE ====="
     MARIO_BATCH_POINTS="$(python3 -u tools/mario_resume_batch.py \
         --game "$MARIO_GAME" --output "$MARIO_CODE" \
