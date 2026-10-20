@@ -4,6 +4,9 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../settings.h"
+#ifdef LASRECOMP_MARIO_TEST
+#include "../mario_hid_npad.h"
+#endif
 
 static uint32_t new_event_handle(void) {
     uint32_t w, r;
@@ -14,12 +17,46 @@ static uint32_t new_event_handle(void) {
 // ------------------------------------------------------------------ hid
 KSharedMem *g_hid_shmem;
 static uint32_t hid_shmem_handle;
-RT_ON_RESET(hid_reset) { g_hid_shmem = NULL; hid_shmem_handle = 0; }
+#ifdef LASRECOMP_MARIO_TEST
+static uint64_t mario_hid_sampling;
+
+static void mario_hid_on_map(KSharedMem *shared) {
+    mario_hid_sampling = 1;
+    mario_hid_npad_publish((void *)(uintptr_t)shared->guest_addr, (size_t)shared->size,
+                           mario_hid_sampling, 0, 0, 0, 0, 0);
+    LOG("[mario-hid] mapped=0x%llx npad=0x9a00 player1=fullkey connected=1\n",
+        (unsigned long long)shared->guest_addr);
+}
+
+void mario_hid_shared_frame(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    if (!g_hid_shmem || !g_hid_shmem->guest_addr) return;
+    if (mario_hid_sampling == UINT64_MAX) mario_hid_sampling = 1;
+    mario_hid_npad_publish((void *)(uintptr_t)g_hid_shmem->guest_addr, (size_t)g_hid_shmem->size,
+                           ++mario_hid_sampling, buttons, lx, ly, rx, ry);
+    if (mario_hid_sampling == 2 || mario_hid_sampling % 120 == 0)
+        LOG("[mario-hid] sample=%llu buttons=0x%llx player=1\n",
+            (unsigned long long)mario_hid_sampling, (unsigned long long)buttons);
+}
+#endif
+
+RT_ON_RESET(hid_reset) {
+    g_hid_shmem = NULL;
+    hid_shmem_handle = 0;
+#ifdef LASRECOMP_MARIO_TEST
+    mario_hid_sampling = 0;
+#endif
+}
 
 static void applet_resource(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
     if (req->cmd == 0) {  // GetSharedMemoryHandle
-        if (!g_hid_shmem) g_hid_shmem = kernel_create_shared_memory(0x40000, NULL, &hid_shmem_handle);
+        if (!g_hid_shmem) {
+#ifdef LASRECOMP_MARIO_TEST
+            g_hid_shmem = kernel_create_shared_memory(0x40000, mario_hid_on_map, &hid_shmem_handle);
+#else
+            g_hid_shmem = kernel_create_shared_memory(0x40000, NULL, &hid_shmem_handle);
+#endif
+        }
         resp->copy_handles[resp->ncopy++] = hid_shmem_handle;
     }
 }

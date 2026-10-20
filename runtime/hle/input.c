@@ -350,6 +350,31 @@ void input_frame(uint64_t frame) {
     extern void watch_arm(void);
     watch_arm();
     host_test_frame(frame);
+#ifdef LASRECOMP_MARIO_TEST
+    // Mario's recompiled nn::hid SDK can read the shared-memory Npad ring
+    // directly, bypassing the Zelda HLE GetNpadState function hooks.
+    extern void mario_hid_shared_frame(uint64_t, int32_t, int32_t, int32_t, int32_t);
+    extern bool menu_input_captured(void);
+    const bool mario_ui_captures_input = menu_input_captured();
+    uint64_t mario_buttons = mario_ui_captures_input ? script_buttons :
+                             (key_buttons | pad_buttons | script_buttons);
+    int32_t mario_lx = mario_ui_captures_input ? 0 : (key_lx + pad_lx);
+    int32_t mario_ly = mario_ui_captures_input ? 0 : (key_ly + pad_ly);
+    int32_t mario_rx = mario_ui_captures_input ? 0 : (key_rx + pad_rx);
+    int32_t mario_ry = mario_ui_captures_input ? 0 : (key_ry + pad_ry);
+#ifdef __ANDROID__
+    if (!mario_ui_captures_input) {
+        mario_lx += touch_lx; mario_ly += touch_ly;
+        mario_rx += touch_rx; mario_ry += touch_ry;
+    }
+#endif
+    mario_lx += script_lx; mario_ly += script_ly;
+    mario_rx += script_rx; mario_ry += script_ry;
+    #define MARIO_AXIS_LIMIT(x) ((x) > 32767 ? 32767 : (x) < -32767 ? -32767 : (x))
+    mario_hid_shared_frame(mario_buttons, MARIO_AXIS_LIMIT(mario_lx), MARIO_AXIS_LIMIT(mario_ly),
+                           MARIO_AXIS_LIMIT(mario_rx), MARIO_AXIS_LIMIT(mario_ry));
+    #undef MARIO_AXIS_LIMIT
+#endif
     const char *spec = getenv("LARECOMP_INPUT");
     if (!spec) return;
     static const char *const names[] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS",
