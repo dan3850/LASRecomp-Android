@@ -39,6 +39,39 @@ class MarioBatchTests(unittest.TestCase):
         blocks = self.plan(limit=8)
         self.assertEqual([b["offset"] for b in blocks], [0x48])
 
+    def test_local_cohort_can_include_destinations_without_br(self):
+        # A computed call originates in the caller, not in its destination.
+        self.words.clear()
+        blocks = self.plan(
+            limit=4, budget_bytes=0x100, nearby_radius=0x80
+        )
+        self.assertEqual(
+            [b["offset"] for b in blocks],
+            [0x48, 0x04, 0x84, 0xc4]
+        )
+        self.assertTrue(all(b["nearby"] or b["forced"] for b in blocks))
+
+    def test_cohort_radius_is_bounded(self):
+        self.words.clear()
+        blocks = self.plan(limit=8, nearby_radius=0x40)
+        self.assertEqual(
+            [b["offset"] for b in blocks],
+            [0x48, 0x04, 0x84]
+        )
+        with self.assertRaisesRegex(ValueError, "invalid repair planning"):
+            self.plan(nearby_radius=0x100, radius=0x40)
+
+    def test_two_observed_targets_take_priority(self):
+        self.words.clear()
+        blocks = self.plan(
+            anchors=(0x48, 0x88), limit=2,
+            budget_bytes=0x80, nearby_radius=0x80
+        )
+        self.assertEqual(
+            [b["offset"] for b in blocks],
+            [0x48, 0x88]
+        )
+
     def test_previously_expanded_block_is_not_rebuilt(self):
         owner = self.base + 0x80
         for pc in range(owner + 4, self.base + 0xc0, 4):
