@@ -19,18 +19,20 @@ int main(void) {
     return 0;
 #else
     nx_android_image image = {0};
-    /* mov w0,#1 ; bl +8 ; ret ; ldr x16, +8 ; br x16 ; .quad host_function */
+    /* save LR ; mov w0,#1 ; bl thunk ; restore LR ; ret ; thunk ; pointer */
     uint32_t instructions[] = {
+        0xA9BF7BFDu, /* stp x29,x30,[sp,#-16]! */
         0x52800020u, /* mov w0, #1 (KTLS) */
-        0x94000002u, /* bl to local thunk, 8 bytes ahead */
+        0x94000003u, /* bl to local thunk, 12 bytes ahead */
+        0xA8C17BFDu, /* ldp x29,x30,[sp],#16 */
         0xD65F03C0u, /* ret */
-        0x58000050u, /* ldr x16, [pc,#8] */
+        0x58000070u, /* ldr x16, [pc,#12] */
         0xD61F0200u, /* br x16 */
         0xD503201Fu, /* padding */
         0, 0
     };
     uintptr_t target = (uintptr_t)&nx_android_guest_slot_get;
-    memcpy((char *)instructions + 24, &target, sizeof(target));
+    memcpy((char *)instructions + 32, &target, sizeof(target));
     if (nx_android_guest_slot_set(1, 0x42) != 0) return 1;
     if (nx_android_image_alloc(&image, 4096) != 0) return 2;
     if (nx_android_image_copy(&image, 0, instructions, sizeof(instructions)) != 0) return 3;
