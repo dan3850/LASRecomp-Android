@@ -2,6 +2,9 @@
 // NVN objects, builders, and state objects (everything except command recording).
 #include <stdlib.h>
 #include <string.h>
+#ifdef LASRECOMP_MARIO_TEST
+#include <pthread.h>
+#endif
 
 #include "../kernel.h"
 #include "../settings.h"
@@ -359,6 +362,73 @@ static uint64_t builder_storage_size(uint64_t b) {
 NVN(nvnTextureBuilderGetStorageSize) { RET(builder_storage_size(A(0))); }
 NVN(nvnTextureBuilderGetStorageAlignment) { RET(is_linear(A(0)) ? 32 : 512); }
 
+// Mario's guest NVN texture objects can have their first 8 bytes overwritten
+// during the menu transition (observed Scudo free: 0x0200... instead of the
+// originally tagged 0xb400...). Never use that untrusted guest slot as the
+// pointer to free. Independently track allocations by the guest object address.
+// Keep the Zelda path unchanged until Mario's ownership fault is understood.
+#ifdef LASRECOMP_MARIO_TEST
+typedef struct MarioTextureOwner {
+    uint64_t guest;
+    NvnTexture *host;
+    struct MarioTextureOwner *next;
+} MarioTextureOwner;
+#define MARIO_TEXTURE_OWNER_BUCKETS 4096u
+static MarioTextureOwner *mario_texture_owners[MARIO_TEXTURE_OWNER_BUCKETS];
+static pthread_mutex_t mario_texture_owners_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static unsigned mario_texture_owner_bucket(uint64_t guest) {
+    uint64_t x = guest >> 4;
+    x ^= x >> 13;
+    x ^= x >> 27;
+    return (unsigned)x & (MARIO_TEXTURE_OWNER_BUCKETS - 1u);
+}
+
+// If an NVN guest struct is reinitialized, transfer ownership of the old
+// allocation exactly once. Locking also protects competing guest threads.
+static bool mario_texture_owner_replace(uint64_t guest, NvnTexture *value,
+                                       NvnTexture **previous) {
+    *previous = NULL;
+    unsigned bucket = mario_texture_owner_bucket(guest);
+    pthread_mutex_lock(&mario_texture_owners_lock);
+    for (MarioTextureOwner *e = mario_texture_owners[bucket]; e; e = e->next) {
+        if (e->guest == guest) {
+            *previous = e->host;
+            e->host = value;
+            pthread_mutex_unlock(&mario_texture_owners_lock);
+            return true;
+        }
+    }
+    MarioTextureOwner *e = malloc(sizeof *e);
+    if (!e) {
+        pthread_mutex_unlock(&mario_texture_owners_lock);
+        return false;
+    }
+    e->guest = guest;
+    e->host = value;
+    e->next = mario_texture_owners[bucket];
+    mario_texture_owners[bucket] = e;
+    pthread_mutex_unlock(&mario_texture_owners_lock);
+    return true;
+}
+
+static NvnTexture *mario_texture_owner_take(uint64_t guest) {
+    unsigned bucket = mario_texture_owner_bucket(guest);
+    pthread_mutex_lock(&mario_texture_owners_lock);
+    MarioTextureOwner **link = &mario_texture_owners[bucket];
+    while (*link && (*link)->guest != guest) link = &(*link)->next;
+    NvnTexture *host = NULL;
+    if (*link) {
+        MarioTextureOwner *e = *link;
+        *link = e->next;
+        host = e->host;
+        free(e);
+    }
+    pthread_mutex_unlock(&mario_texture_owners_lock);
+    return host;
+}
+#endif
+
 static NvnTexture *texture_from_builder(uint64_t b) {
     NvnTexture *t = calloc(1, sizeof *t);
     t->target = G(uint32_t, b, 0xC);
@@ -386,13 +456,55 @@ NVN(nvnTextureInitialize) {
     if (t->flags & 2)
         LOG("[nvn] video texture %p: %ux%u fmt %#x flags %#x target %u addr %llx stride %llu\n", t, t->width, t->height,
             t->format, t->flags, t->target, t->addr, t->stride);
+#ifdef LASRECOMP_MARIO_TEST
+    NvnTexture *previous = NULL;
+    if (!mario_texture_owner_replace(A(0), t, &previous)) {
+        free(t);
+        SET_HOST(A(0), 0);
+        RET(0);
+        return;
+    }
+    if (previous) {
+        LOG("[mario-texture-owner] reinitialized guest=%llx old=%p new=%p lr=%llx\n",
+            (unsigned long long)A(0), (void *)previous, (void *)t,
+            (unsigned long long)c->x[30]);
+        backend_texture_destroyed(previous);
+        free(previous);
+    }
+#endif
     SET_HOST(A(0), t);
     RET(1);
 }
 NVN(nvnTextureFinalize) {
+#ifdef LASRECOMP_MARIO_TEST
+    // The guest slot is diagnostic information ONLY. Scudo must receive the
+    // original tagged host pointer from the allocation registry, not a guest-
+    // modified pointer (even when only its top byte has been overwritten).
+    uint64_t claimed = G(uint64_t, A(0), 0);
+    NvnTexture *t = mario_texture_owner_take(A(0));
+    SET_HOST(A(0), 0);
+    if (!t) {
+        static unsigned unknown_logs;
+        if (claimed && unknown_logs++ < 32)
+            LOG("[mario-texture-owner] untracked finalize guest=%llx claimed=%llx lr=%llx\n",
+                (unsigned long long)A(0), (unsigned long long)claimed,
+                (unsigned long long)c->x[30]);
+        return;
+    }
+    if (claimed != (uint64_t)(uintptr_t)t) {
+        static unsigned mismatch_logs;
+        if (mismatch_logs++ < 32)
+            LOG("[mario-texture-owner] corrupted handle guest=%llx claimed=%llx allocated=%p lr=%llx\n",
+                (unsigned long long)A(0), (unsigned long long)claimed,
+                (void *)t, (unsigned long long)c->x[30]);
+    }
+    backend_texture_destroyed(t);
+    free(t);
+#else
     NvnTexture *t = HOST(NvnTexture, A(0));
     if (t) { backend_texture_destroyed(t); free(t); }
     SET_HOST(A(0), 0);
+#endif
 }
 NVN(nvnTextureSetDebugLabel) {
     NvnTexture *t = HOST(NvnTexture, A(0));
