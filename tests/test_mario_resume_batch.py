@@ -61,6 +61,17 @@ class MarioBatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid repair planning"):
             self.plan(nearby_radius=0x100, radius=0x40)
 
+    def test_forward_cohort_favors_later_destination_blocks(self):
+        self.words.clear()
+        blocks = self.plan(
+            limit=4, budget_bytes=0x100, nearby_radius=0x80,
+            prefer_forward=True
+        )
+        self.assertEqual(
+            [b["offset"] for b in blocks],
+            [0x48, 0x84, 0xc4, 0x04]
+        )
+
     def test_two_observed_targets_take_priority(self):
         self.words.clear()
         blocks = self.plan(
