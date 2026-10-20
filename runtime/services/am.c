@@ -73,7 +73,22 @@ static void self_controller(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
     switch (req->cmd) {
     case 0: LOG("[am] application requested exit\n"); exit(0);
-    case 9: resp->copy_handles[resp->ncopy++] = new_event(); break;
+    case 9: {  // GetLibraryAppletLaunchableEvent: an applet may be launched while idle.
+#ifdef LASRECOMP_MARIO_TEST
+        // A newly created, never-signaled event blocks Mario's main thread forever.
+        // Signal through the kernel, not by writing 'signaled': preserve waiters and
+        // the event-origin counters. Other application events remain unsignaled.
+        uint32_t writable, readable;
+        KEvent *launchable = kernel_create_event_pair(&writable, &readable);
+        pthread_mutex_lock(&g_klock);
+        kernel_signal(launchable);
+        pthread_mutex_unlock(&g_klock);
+        resp->copy_handles[resp->ncopy++] = readable;
+#else
+        resp->copy_handles[resp->ncopy++] = new_event();
+#endif
+        break;
+    }
     case 40: OUT(uint64_t, 0) = 1; resp_size(resp, 8); break;  // CreateManagedDisplayLayer
     case 69: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;
     default: UNHANDLED("ISelfController");
