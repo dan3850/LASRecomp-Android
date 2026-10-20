@@ -59,6 +59,7 @@ public final class MarioBootActivity extends Activity {
         play.setEnabled(false);
         play.setOnClickListener(v -> {
             if (selected == null || checking) return;
+            new File(getFilesDir(), "mario-esperas.log").delete();
             startActivity(new Intent(this, GameSDLActivity.class).putExtra("game_tree_uri", selected.toString()));
         });
         layout.addView(play);
@@ -165,10 +166,10 @@ public final class MarioBootActivity extends Activity {
 
     private String readLogs() {
         StringBuilder text = new StringBuilder();
-        for (String name : new String[]{"mario-grafico.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
+        for (String name : new String[]{"mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
             text.append("\n=== ").append(name).append(" ===\n");
             try (RandomAccessFile input = new RandomAccessFile(new File(getFilesDir(), name), "r")) {
-                long start = name.equals("mario-grafico.log") ? 0 : Math.max(0, input.length() - 160000);
+                long start = (name.equals("mario-grafico.log") || name.equals("mario-esperas.log")) ? 0 : Math.max(0, input.length() - 160000);
                 input.seek(start);
                 byte[] bytes = new byte[(int)(input.length() - start)];
                 input.readFully(bytes);
