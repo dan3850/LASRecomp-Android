@@ -165,10 +165,10 @@ public final class MarioBootActivity extends Activity {
 
     private String readLogs() {
         StringBuilder text = new StringBuilder();
-        for (String name : new String[]{"lasrecomp_boot.txt", "lasrecomp.log"}) {
+        for (String name : new String[]{"mario-grafico.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
             text.append("\n=== ").append(name).append(" ===\n");
             try (RandomAccessFile input = new RandomAccessFile(new File(getFilesDir(), name), "r")) {
-                long start = Math.max(0, input.length() - 160000);
+                long start = name.equals("mario-grafico.log") ? 0 : Math.max(0, input.length() - 160000);
                 input.seek(start);
                 byte[] bytes = new byte[(int)(input.length() - start)];
                 input.readFully(bytes);
