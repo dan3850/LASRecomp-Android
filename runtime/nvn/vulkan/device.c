@@ -30,6 +30,19 @@
 #include "../output_scale.h"
 #include "../renderer.h"
 
+#ifdef LASRECOMP_MARIO_TEST
+// Dedicated bounded evidence: the normal log's tail is dominated by audio.
+static void mario_graphics_event(const char *event, uint64_t count, int detail) {
+    static bool first = true;
+    FILE *file = fopen("mario-grafico.log", first ? "w" : "a");
+    if (!file) return;
+    first = false;
+    fprintf(file, "[mario-frame] %s=%llu detail=%d\n",
+            event, (unsigned long long)count, detail);
+    fclose(file);
+}
+#endif
+
 VkG g_vk;
 static SDL_Window *window;
 static atomic_bool ui_ready;
@@ -201,6 +214,9 @@ static void pick_device(void) {
     free(qp);
     if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
     LOG("[vk] using %s\n", g_vk.props.deviceName);
+#ifdef LASRECOMP_MARIO_TEST
+    mario_graphics_event("vulkan-device-ready", 1, 0);
+#endif
 }
 
 static bool g_fault_ext;
@@ -837,6 +853,8 @@ void vk_frame_end(const char *shot_path) {
         if (present_calls <= 3 || present_calls % 300 == 0 || (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR))
             LOG("[mario-frame] queue-present=%llu result=%d image=%u\n",
                 (unsigned long long)present_calls, (int)r, img);
+        if (present_calls <= 3 || present_calls % 300 == 0 || (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR))
+            mario_graphics_event("queue-present", present_calls, (int)r);
     }
 #endif
     // Android may legitimately report SUBOPTIMAL every frame when the compositor
@@ -961,6 +979,8 @@ void backend_present(NvnTexture *t) {
         if (guest_presents <= 3 || guest_presents % 300 == 0)
             LOG("[mario-frame] backend-present=%llu texture=%p\n",
                 (unsigned long long)guest_presents, (void *)t);
+        if (guest_presents <= 3 || guest_presents % 300 == 0)
+            mario_graphics_event("backend-present", guest_presents, t != NULL);
     }
 #endif
     g_last_presented = t;
@@ -980,6 +1000,8 @@ void backend_present(NvnTexture *t) {
             LOG("[mario-frame] frame-begin=%llu acquired=%d image-valid=%d\n",
                 (unsigned long long)begin_calls, (int)have,
                 (int)(b && b->image != VK_NULL_HANDLE));
+        if (begin_calls <= 3 || begin_calls % 300 == 0 || (!have && begin_calls <= 10))
+            mario_graphics_event("frame-begin", begin_calls, (int)have);
     }
 #endif
     uint64_t nd = SDL_GetTicksNS() - t0;
