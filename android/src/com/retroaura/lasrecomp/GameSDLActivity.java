@@ -186,7 +186,8 @@ public final class GameSDLActivity extends SDLActivity {
                 installLegacyTouchControls();
             }
             if (getIntent().getBooleanExtra("mario_thread_capture", false)) {
-                startMarioAutomaticCapture();
+                // Manual thread capture remains available; automatic repeated sampling
+                // interrupts guest threads during startup and can perturb audio.
                 android.widget.Button capture = new android.widget.Button(this);
                 capture.setText("Capturar estado");
                 android.widget.RelativeLayout.LayoutParams placement = new android.widget.RelativeLayout.LayoutParams(
