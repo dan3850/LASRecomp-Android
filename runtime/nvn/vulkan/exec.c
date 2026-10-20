@@ -39,6 +39,7 @@
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
+static uint64_t stat_vb_bind_slots, stat_vb_bind_calls;
 static uint64_t stat_gmem_stream_bytes, stat_gmem_stream_maps;
 static uint64_t stat_gmem_covered, stat_gmem_covered_bytes;
 static uint64_t stat_gmem_device_dispatches, stat_gmem_device_up;
@@ -1368,6 +1369,14 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
+    if (stat_vb_bind_slots) {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 " | vb binds %llu slots/%llu calls",
+                 (unsigned long long)stat_vb_bind_slots,
+                 (unsigned long long)stat_vb_bind_calls);
+        stat_vb_bind_slots = stat_vb_bind_calls = 0;
+    }
     if (stat_gcopy_hit || stat_gcopy_miss) {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n,
@@ -4655,6 +4664,24 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
+    // Reuse the already computed per-binding state filter. Batch only adjacent
+    // bindings that ACTUALLY changed; never bind a gap (which could overwrite
+    // a different stream still used by a later draw). This changes command
+    // recording only, not vertex snapshots, upload ordering or draw order.
+    // A/B: LARECOMP_VK_VB_BIND_BATCH=0 keeps the original individual calls.
+    static int vb_batch = -1;
+    if (vb_batch < 0) {
+        const char *env = getenv("LARECOMP_VK_VB_BIND_BATCH");
+#ifdef __ANDROID__
+        vb_batch = !env || atoi(env) != 0;
+#else
+        vb_batch = env && atoi(env) != 0;
+#endif
+        LOG("[vk-vb] adjacent vertex binding batch %s\n", vb_batch ? "enabled" : "disabled");
+    }
+    VkBuffer pending_vb[17] = {0};
+    VkDeviceSize pending_vo[17] = {0};
+    uint32_t pending_mask = 0;
     for (int s = 0; s < 17; s++) {
         if (!(k.used_streams & (1u << s))) continue;
         VkSpan sp;
@@ -4668,7 +4695,15 @@ static void draw_(CmdRec *r, bool indexed) {
             if (v.addr && v.size && guest_direct(v.addr, v.size, &dbuf, &doff)) {
                 if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == dbuf && ss.vo[s] == doff) continue;
                 ss.vb[s] = dbuf; ss.vo[s] = doff; ss.vb_known |= 1u << s;
-                vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
+                stat_vb_bind_slots++;
+                if (vb_batch) {
+                    pending_vb[s] = dbuf;
+                    pending_vo[s] = doff;
+                    pending_mask |= 1u << s;
+                } else {
+                    vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
+                    stat_vb_bind_calls++;
+                }
                 continue;
             }
             if (scan_src) {  // copying after all: the index scan bounds the copy
@@ -4689,7 +4724,28 @@ static void draw_(CmdRec *r, bool indexed) {
         VkDeviceSize off = sp.off;
         if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == sp.buf && ss.vo[s] == off) continue;
         ss.vb[s] = sp.buf; ss.vo[s] = off; ss.vb_known |= 1u << s;
-        vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &off);
+        stat_vb_bind_slots++;
+        if (vb_batch) {
+            pending_vb[s] = sp.buf;
+            pending_vo[s] = off;
+            pending_mask |= 1u << s;
+        } else {
+            vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &off);
+            stat_vb_bind_calls++;
+        }
+    }
+    if (vb_batch) {
+        // Vulkan permits a single call for contiguous bindings. A command
+        // cannot cross gaps: those retain their previous, correct contents.
+        for (uint32_t first = 0; first < 17;) {
+            if (!(pending_mask & (1u << first))) { first++; continue; }
+            uint32_t end = first + 1;
+            while (end < 17 && (pending_mask & (1u << end))) end++;
+            vkCmdBindVertexBuffers(cb, first, end - first,
+                                   pending_vb + first, pending_vo + first);
+            stat_vb_bind_calls++;
+            first = end;
+        }
     }
 
     if (prof) prof_vtx += SDL_GetTicksNS() - prof_t2_;
