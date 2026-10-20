@@ -2758,7 +2758,21 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     int idx = k - 3;  // cbuf_base
     Range r = (idx >= 0 && idx < 18) ? st.ubuf[stage][idx] : (Range){0, 0};
     uint64_t size = si->cbuf_size[k] ? si->cbuf_size[k] : 256;
-    if (!r.addr) return ubo_span(vk_transient_copy(zeros, size, 256), size);
+    if (!r.addr) {
+        // One immutable zero-filled UBO per Vulkan submission, shared by all
+        // missing constant bindings.  The old path allocated and uploaded
+        // 'size' bytes afresh for every draw even though their contents never
+        // differed.  Do not share across submissions: transient ring slots
+        // can be recycled after GPU completion.
+        static uint64_t zero_seq = UINT64_MAX;
+        static VkSpan zero_ubo;
+        uint64_t seq = vk_pending_seq();
+        if (zero_seq != seq) {
+            zero_ubo = vk_transient_copy(zeros, sizeof zeros, 256);
+            zero_seq = seq;
+        }
+        return ubo_span(zero_ubo, size);
+    }
     if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
