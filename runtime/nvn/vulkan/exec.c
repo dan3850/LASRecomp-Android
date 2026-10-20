@@ -39,7 +39,6 @@
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
-static uint64_t stat_clear_transfer;
 static uint64_t stat_vb_bind_slots, stat_vb_bind_calls;
 static uint64_t stat_gmem_stream_bytes, stat_gmem_stream_maps;
 static uint64_t stat_gmem_covered, stat_gmem_covered_bytes;
@@ -1370,12 +1369,6 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
-    {
-        size_t n = strlen(stats_text);
-        snprintf(stats_text + n, sizeof stats_text - n,
-                 " | clear transfer %llu", (unsigned long long)stat_clear_transfer);
-        stat_clear_transfer = 0;
-    }
     if (stat_vb_bind_slots) {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n,
@@ -1878,61 +1871,8 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
     return p;
 }
 
-// Whole-image clears can avoid a dynamic render pass on Adreno. Transfer
-// clears are limited to standalone full-color clears of a single 2D mip/layer
-// target, with no view reinterpretation, MSAA, depth or channel masks. The
-// original vkCmdClearAttachments/draw path handles every other case.
-// A/B: LARECOMP_VK_CLEAR_TRANSFER=0 disables this optimization.
-static bool clear_whole_color_transfer(int index, const void *color, uint32_t mask,
-                                       bool depth, bool stencil, bool standalone) {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *v = getenv("LARECOMP_VK_CLEAR_TRANSFER");
-#ifdef __ANDROID__
-        enabled = !v || atoi(v) != 0;
-#else
-        enabled = v && atoi(v) != 0;
-#endif
-        LOG("[vk-clear] whole-color transfer clears %s\n",
-            enabled ? "enabled" : "disabled");
-    }
-    if (!enabled || !standalone || !color || index != 0 || (mask & 15) != 15 || depth || stencil ||
-        st.rt.ncolor != 1 || st.rt.depth || st.rt.has_cview[0] ||
-        (in_pass && !st.rt_dirty)) return false;
-    NvnTexture *t = st.rt.color[0];
-    if (!t || !t->width || !t->height ||
-        st.scissor[0][0] != 0 || st.scissor[0][1] != 0 ||
-        st.scissor[0][2] < (int64_t)t->width ||
-        st.scissor[0][3] < (int64_t)t->height) return false;
-
-    // The old path first ends the prior pass before resolving attachments.
-    vk_end_pass();
-    TexBackend *b = vk_tex(t, true);
-    if (!b || !b->image || b->aspect != VK_IMAGE_ASPECT_COLOR_BIT ||
-        b->base_type != VK_IMAGE_VIEW_TYPE_2D ||
-        b->samples != 1 || b->levels != 1 || b->layers != 1) return false;
-
-    // These epoch updates otherwise happen in begin_pass(). Preserve them
-    // so the next draw never clears our transfer-written result implicitly.
-    (void)renderer_texture_level_fresh(t);
-    (void)renderer_texture_frame_fresh(t);
-    (void)renderer_texture_first_write(t);
-    b->color_target_seen = true;
-    VkClearColorValue value;
-    memcpy(&value, color, sizeof value); // same NVN color bits as ClearAttachments
-    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkCommandBuffer cb = vk_cmd();
-    vk_sched_barrier(cb, VKSCHED_BEFORE_TRANSFER);
-    vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
-    vk_sched_barrier(cb, VKSCHED_TRANSFER_TO_ALL);
-    st.rt_dirty = true; // next draw establishes its regular attachment pass
-    stat_clear_transfer++;
-    return true;
-}
-
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil, uint32_t sval,
-                  uint32_t smask, bool standalone) {
-    if (clear_whole_color_transfer(index, color, mask, depth, stencil, standalone)) return;
+                  uint32_t smask) {
     begin_pass();
     VkCommandBuffer cb = vk_cmd();
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
@@ -5537,30 +5477,7 @@ static void exec_list(uint64_t handle, int depth) {
                 LOG("[ct] clear-color %p mask %#x sc %d %d %d %d\n", (void *)st.rt.color[index], (uint32_t)r->x[2], st.scissor[0][0], st.scissor[0][1],
                     st.scissor[0][2], st.scissor[0][3]);
             if (index < st.rt.ncolor && st.rt.color[index]) alias_before_write(st.rt.color[index], 0, "clear");
-            // Only use transfer clears if the following command cannot draw
-            // into the current target. Otherwise an extra transfer/barrier
-            // followed by a normal pass is slower than ClearAttachments.
-            bool standalone = false;
-            if (r->size) {
-                const CmdRec *next = (const CmdRec *)(uintptr_t)(p + r->size);
-                switch (next->op) {
-                case CMD_END:
-                case CMD_DISPATCH:
-                case CMD_COPY_TEXTURE_TO_TEXTURE:
-                case CMD_DOWNSAMPLE:
-                    standalone = true;
-                    break;
-                case CMD_SET_RENDER_TARGETS: {
-                    const uint64_t *next_colors = next->extra;
-                    standalone = next->x[0] != 1 || !next_colors ||
-                                 next_colors[0] != (uint64_t)(uintptr_t)st.rt.color[0];
-                    break;
-                }
-                default: break;
-                }
-            }
-            if (index < st.rt.ncolor && st.rt.color[index])
-                clear(index, (int)r->x[5], x, (uint32_t)r->x[2], false, 0, false, 0, 0, standalone);
+            if (index < st.rt.ncolor && st.rt.color[index]) clear(index, (int)r->x[5], x, (uint32_t)r->x[2], false, 0, false, 0, 0);
             break;
         }
         case CMD_CLEAR_TEXTURE: {
@@ -5582,8 +5499,7 @@ static void exec_list(uint64_t handle, int depth) {
             const int32_t *rg = ct->region;
             if (rg[3] > 0 && rg[4] > 0) { st.scissor[0][0] = rg[0]; st.scissor[0][1] = rg[1]; st.scissor[0][2] = rg[3]; st.scissor[0][3] = rg[4]; }
             else { st.scissor[0][0] = st.scissor[0][1] = 0; st.scissor[0][2] = st.scissor[0][3] = 16384; }
-            clear(0, (int)r->x[6], ct->color, (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 0xF, false, 0, false, 0, 0,
-                  true); // this command unconditionally ends its temporary pass
+            clear(0, (int)r->x[6], ct->color, (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 0xF, false, 0, false, 0, 0);
             vk_end_pass();
             st.rt = saved;
             memcpy(st.scissor[0], sc, sizeof sc);
@@ -5615,8 +5531,7 @@ static void exec_list(uint64_t handle, int depth) {
             }
             if (st.rt.depth) {
                 bool has_stencil = renderer_format_has_stencil(st.rt.depth->format);
-                clear(-1, 0, NULL, 0, r->x[0] != 0, r->f[0], has_stencil && r->x[2] != 0, (uint32_t)r->x[1], (uint32_t)r->x[2],
-                      false);
+                clear(-1, 0, NULL, 0, r->x[0] != 0, r->f[0], has_stencil && r->x[2] != 0, (uint32_t)r->x[1], (uint32_t)r->x[2]);
             }
             break;
         case CMD_DISPATCH: dispatch_compute((uint32_t)r->x[0], (uint32_t)r->x[1], (uint32_t)r->x[2]); break;
