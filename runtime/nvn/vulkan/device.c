@@ -990,7 +990,7 @@ void backend_present(NvnTexture *t) {
         uint64_t draws = mario_guest_draw_count();
         if (total_frames < 3 || total_frames % 60 == 0) {
             mario_graphics_event("draws-total", draws, (int)(draws - last_draw_count));
-            mario_graphics_event("present-frame", guest_presents, (int)g_vk.sc_count);
+            mario_graphics_event("present-frame", total_frames + 1, (int)g_vk.sc_count);
         }
         last_draw_count = draws;
     }
