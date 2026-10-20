@@ -4341,6 +4341,13 @@ typedef struct {
     uint16_t *widened;
     bool restart_enabled;
     uint32_t restart_index;
+    // Captured stream metadata. The worker computes vertex ranges only from
+    // owned index bytes and these immutable values; never accesses NVN state.
+    uint32_t stream_mask, stride[16], divisor[16];
+    uint64_t stream_size[16], vertex_need[16];
+    int32_t base_vertex;
+    uint32_t base_instance, instances;
+    bool vertex_ranges_valid;
     _Atomic int state;
 } IndexedGeometryJob;
 static void prepare_indexed_geometry(void *arg) {
@@ -4360,6 +4367,21 @@ static void prepare_indexed_geometry(void *arg) {
                 if (src[i] != restart && src[i] > g->max_index)
                     g->max_index = src[i];
         }
+        uint64_t limit = (uint64_t)g->max_index + 1 +
+            (g->base_vertex > 0 ? (uint32_t)g->base_vertex : 0);
+        for (int s = 0; s < 16; ++s) {
+            if (!(g->stream_mask & (1u << s))) continue;
+            uint64_t step = g->stride[s], need;
+            if (!step) need = 256;
+            else if (g->divisor[s])
+                need = ((uint64_t)g->base_instance + g->instances +
+                        g->divisor[s] - 1) / g->divisor[s] * step + 256;
+            else need = limit * step + 256;
+            if (g->stream_size[s] && need > g->stream_size[s])
+                need = g->stream_size[s];
+            g->vertex_need[s] = need ? need : 16;
+        }
+        g->vertex_ranges_valid = true;
         build_finished(&g->state, 1);
         return;
     }
@@ -4508,6 +4530,31 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                     g->mode = mode; g->count = n; g->itype = type;
                     g->restart_enabled = st.prim_restart;
                     g->restart_index = st.restart_index;
+                    if (prepare_index_bound) {
+                        g->base_vertex = (int32_t)r->x[4];
+                        g->base_instance = (uint32_t)r->x[5];
+                        g->instances = (uint32_t)r->x[6] ?
+                                       (uint32_t)r->x[6] : 1;
+                        // Build the set of active vertex streams from the
+                        // exact compiled vertex shader and current attributes.
+                        for (int i = 0; i < 32; ++i) {
+                            if (!(pr->vi->attr_mask & (1u << i))) continue;
+                            uint32_t a = i < st.nattrib ? st.attrib[i] : 0x2e;
+                            unsigned fmt = a & 0xffu, stream = (a >> 8) & 31u;
+                            if (i >= st.nattrib || !fmt || stream >= 16) continue;
+                            g->stream_mask |= 1u << stream;
+                        }
+                        for (int i = 0; i < 16; ++i) {
+                            if (!(g->stream_mask & (1u << i))) continue;
+                            uint32_t stride = i < st.nstream ? st.stream[i][0] : 0;
+                            uint32_t divisor = i < st.nstream && stride ?
+                                               st.stream[i][1] : 0;
+                            if (divisor > 1 && !g_vk.divisor) divisor = 1;
+                            g->stride[i] = stride;
+                            g->divisor[i] = divisor;
+                            g->stream_size[i] = st.vbuf[i].size;
+                        }
+                    }
                     *prepared = g;
                     run_job(prepare_indexed_geometry, g);
                 } else free(g);
@@ -5013,7 +5060,17 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                 scan_src = NULL;
             }
             uint64_t stride = k.stride[s], need;
-            if (vertex_job_started) {
+            IndexedGeometryJob *g_range = *prepared;
+            if (g_range && scan_isz && g_range->vertex_ranges_valid &&
+                (g_range->stream_mask & (1u << s)) &&
+                g_range->stride[s] == k.stride[s] &&
+                g_range->divisor[s] == k.divisor[s] &&
+                g_range->stream_size[s] == v.size &&
+                g_range->base_vertex == base_vertex &&
+                g_range->base_instance == base_inst &&
+                g_range->instances == inst) {
+                need = g_range->vertex_need[s];
+            } else if (vertex_job_started) {
                 build_ready(&vertex_job.state, "vertex range preparation");
                 need = vertex_job.need[s];
             } else {
