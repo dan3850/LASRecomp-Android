@@ -4288,16 +4288,18 @@ static void draw_(CmdRec *r, bool indexed) {
 #ifdef LASRECOMP_MARIO_TEST
     // The only observed guest draw is a fullscreen quad. Identify the
     // *sampled* NVN resources, not merely the target/presented texture.
-    // No GPU readback or shader replacement. Five bounded snapshots max.
-    static unsigned mario_src_evidence;
-    if (mario_src_evidence < 5) {
-        ++mario_src_evidence;
+    // No GPU readback or shader replacement. Record startup and then
+    // sparse later frames to distinguish missing initialization from a
+    // permanently unbound source texture.
+    static uint64_t mario_src_evidence;
+    ++mario_src_evidence;
+    if (mario_src_evidence <= 3 || mario_src_evidence % 120 == 0) {
         FILE *evidence = fopen("mario-grafico.log", "a");
         if (evidence) {
             fprintf(evidence,
-                    "[mario-source] sample=%u vs-textures=%d fs-textures=%d "
+                    "[mario-source] sample=%llu vs-textures=%d fs-textures=%d "
                     "pool=%p descriptors=%d vs-gmem=%d fs-gmem=%d\n",
-                    mario_src_evidence, pr->vi->ntex, pr->fi->ntex,
+                    (unsigned long long)mario_src_evidence, pr->vi->ntex, pr->fi->ntex,
                     (void *)st.tpool, st.tpool ? st.tpool->count : -1,
                     pr->vi->uses_gmem, pr->fi->uses_gmem);
             for (int stage = 0; stage < 2; ++stage) {
