@@ -4474,19 +4474,24 @@ static void prepare_vertex_ranges(void *arg) {
     }
     build_finished(&v->state, 1);
 }
-static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared);
+static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
+                  VertexRangeJob *vertex_job, bool *vertex_job_started);
 static void draw(CmdRec *r, bool indexed) {
     PROF_T0();
     IndexedGeometryJob *prepared = NULL;
-    draw_(r, indexed, &prepared);
-    // Also retire jobs when a diagnostic/filter path skips the draw.
+    // Own the worker snapshot in the outer draw frame. Even an unanticipated
+    // early return from draw_ must not invalidate memory held by a worker.
+    VertexRangeJob vertex_job = {0};
+    bool vertex_job_started = false;
+    draw_(r, indexed, &prepared, &vertex_job, &vertex_job_started);
+    if (vertex_job_started)
+        build_ready(&vertex_job.state, "vertex range preparation");
     free_indexed_geometry(prepared);
     PROF_ADD(prof_draw);
 }
 static uint64_t prof_tp_;
-static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
-    VertexRangeJob vertex_job = {0};
-    bool vertex_job_started = false;
+static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
+                  VertexRangeJob *vertex_job, bool *vertex_job_started) {
     if (prof) prof_tp_ = SDL_GetTicksNS();
     if (!st.program) { stat_skipped++; return; }
     ShaderKey vkey = {0}, fkey = {0};
@@ -4706,16 +4711,16 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
             ranges_enabled = !e || atoi(e) != 0;
         }
         if (ranges_enabled) {
-            vertex_job.used_streams = k.used_streams & 0xffffu;
-            vertex_job.max_index = (uint32_t)r->x[1] + (uint32_t)r->x[2];
-            vertex_job.base_instance = (uint32_t)r->x[3];
-            vertex_job.instances = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
-            memcpy(vertex_job.stride, k.stride, sizeof vertex_job.stride);
-            memcpy(vertex_job.divisor, k.divisor, sizeof vertex_job.divisor);
+            vertex_job->used_streams = k.used_streams & 0xffffu;
+            vertex_job->max_index = (uint32_t)r->x[1] + (uint32_t)r->x[2];
+            vertex_job->base_instance = (uint32_t)r->x[3];
+            vertex_job->instances = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
+            memcpy(vertex_job->stride, k.stride, sizeof vertex_job->stride);
+            memcpy(vertex_job->divisor, k.divisor, sizeof vertex_job->divisor);
             for (int i = 0; i < 16; i++)
-                vertex_job.size[i] = st.vbuf[i].size;
-            run_job(prepare_vertex_ranges, &vertex_job);
-            vertex_job_started = true;
+                vertex_job->size[i] = st.vbuf[i].size;
+            run_job(prepare_vertex_ranges, vertex_job);
+            (*vertex_job_started) = true;
         }
     }
     k.a2c = st.ms[0xC] != 0;
@@ -4819,8 +4824,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                 if (b && b->tp > 0 && texpatch_is_item_cursor(b->tp - 1)) {
                 // This skip occurs after a stack-owned vertex job was queued.
                 // Join it before returning so workers never touch dead stack.
-                if (vertex_job_started)
-                    build_ready(&vertex_job.state, "vertex range preparation");
+                if ((*vertex_job_started))
+                    build_ready(&vertex_job->state, "vertex range preparation");
                 stat_skipped++;
                 return;
             }
@@ -5034,8 +5039,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
 
     // Join immediately before consuming the computed ranges; this overlaps
     // geometry CPU work with the entire dynamic-state/descriptor recording.
-    if (vertex_job_started)
-        build_ready(&vertex_job.state, "vertex range preparation");
+    if ((*vertex_job_started))
+        build_ready(&vertex_job->state, "vertex range preparation");
     // ---- vertex streams: the range this draw can read, copied once per submission
     // Batch contiguous changed bindings into one Vulkan call instead of
     // recording a separate vkCmdBindVertexBuffers for each stream.
@@ -5113,9 +5118,9 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                 g_range->base_instance == base_inst &&
                 g_range->instances == inst) {
                 need = g_range->vertex_need[s];
-            } else if (vertex_job_started) {
-                build_ready(&vertex_job.state, "vertex range preparation");
-                need = vertex_job.need[s];
+            } else if ((*vertex_job_started)) {
+                build_ready(&vertex_job->state, "vertex range preparation");
+                need = vertex_job->need[s];
             } else {
                 if (!stride) need = 256;
                 else if (k.divisor[s]) need = vertex_bytes_saturating(
