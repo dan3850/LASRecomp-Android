@@ -1,4 +1,6 @@
 // A small Horizon kernel: handles, threads, synchronization, memory, and the SVC dispatcher.
+#include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -545,6 +547,26 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
 }
 
 static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc) {
+#ifdef LASRECOMP_MARIO_TEST
+    // Record wait entry *before* potentially blocking indefinitely, independently
+    // of the noisy audio runtime log. Does not alter wait arguments or behavior.
+    if (imm == 0x18 || imm == 0x1C || imm == 0x34) {
+        static _Atomic unsigned long long wait_entries;
+        unsigned long long n = atomic_fetch_add(&wait_entries, 1) + 1;
+        if (n <= 64 || n % 1024 == 0) {
+            FILE *trace = fopen("mario-esperas.log", "a");
+            if (trace) {
+                fprintf(trace, "[mario-wait] n=%llu thread=%llu svc=%02x pc=%llx lr=%llx "
+                    "a0=%llx a1=%llx a2=%llx a3=%llx\n",
+                    n, (unsigned long long)(t_cur ? t_cur->id : 0),
+                    imm, (unsigned long long)pc, (unsigned long long)c->x[30],
+                    (unsigned long long)c->x[0], (unsigned long long)c->x[1],
+                    (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
+                fclose(trace);
+            }
+        }
+    }
+#endif
     if (prof_svc < 0) prof_svc = ENV("LARECOMP_PROF_SVC") != NULL;
     if (prof_svc && imm < 0x80) {
         uint64_t a0 = c->x[0], a1 = c->x[1], a2 = c->x[2], a3 = c->x[3], lr = c->x[30];
