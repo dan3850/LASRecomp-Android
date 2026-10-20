@@ -534,6 +534,19 @@ static void debug_string(uint64_t p, uint64_t len) {
 // ------------------------------------------------------------------ SVC dispatch
 static int trace_svc = -1;
 
+#ifdef LASRECOMP_MARIO_TEST
+static void mario_wait_result(unsigned svc, uint64_t lr, uint64_t elapsed, uint32_t result) {
+    static _Atomic unsigned long long completed;
+    unsigned long long n = atomic_fetch_add(&completed, 1) + 1;
+    if (n > 64 && n % 1024 != 0 && elapsed < 1000000000ull) return;
+    FILE *f = fopen("mario-esperas.log", "a");
+    if (!f) return;
+    fprintf(f, "[mario-wait-return] n=%llu thread=%llu svc=%02x lr=%llx result=%x elapsed_ms=%llu\n",
+            n, (unsigned long long)(t_cur ? t_cur->id : 0), svc,
+            (unsigned long long)lr, result, (unsigned long long)(elapsed / 1000000ull));
+    fclose(f);
+}
+#endif
 static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc);
 
 static _Atomic uint64_t svc_wait_ns[32][0x80], svc_calls[32][0x80];
@@ -749,7 +762,16 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x1A: x[0] = svc_arbitrate_lock((uint32_t)x[0], x[1], (uint32_t)x[2]); break;
     case 0x1B: x[0] = svc_arbitrate_unlock(x[0]); break;
-    case 0x1C: x[0] = svc_wait_process_wide_key(x[0], x[1], (uint32_t)x[2], (int64_t)x[3]); break;
+    case 0x1c: {
+#ifdef LASRECOMP_MARIO_TEST
+        uint64_t t0 = plat_now_ns(), lr = c->x[30];
+#endif
+        x[0] = svc_wait_process_wide_key(x[0], x[1], (uint32_t)x[2], (int64_t)x[3]);
+#ifdef LASRECOMP_MARIO_TEST
+        mario_wait_result(0x1c, lr, plat_now_ns() - t0, (uint32_t)x[0]);
+#endif
+        break;
+    }
     case 0x1D: svc_signal_process_wide_key(x[0], (int32_t)x[1]); x[0] = R_OK; break;
     case 0x1E: x[0] = rt_ticks(); break;
     case 0x1F: {  // ConnectToNamedPort(_, name)
@@ -831,7 +853,16 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         region_remove(x[0]);
         x[0] = R_OK;
         break;
-    case 0x34: x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]); break;
+    case 0x34: {
+#ifdef LASRECOMP_MARIO_TEST
+        uint64_t t0 = plat_now_ns(), lr = c->x[30];
+#endif
+        x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]);
+#ifdef LASRECOMP_MARIO_TEST
+        mario_wait_result(0x34, lr, plat_now_ns() - t0, (uint32_t)x[0]);
+#endif
+        break;
+    }
     case 0x35: x[0] = svc_signal_to_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int32_t)x[3]); break;
     case 0x45: {  // CreateEvent -> w1 writable, w2 readable
         KObject *ev = calloc(1, sizeof *ev);
