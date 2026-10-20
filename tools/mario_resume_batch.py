@@ -14,6 +14,27 @@ import re
 import sys
 
 
+def classify_return_site(module, return_offset):
+    """Classify the instruction preceding a reported guest LR, not the target.
+
+    An LR alone is insufficient to prove a direct or indirect call. Only
+    AArch64 BL/BLR are confirmed here; all other cases remain unknown.
+    """
+    address = module.base + return_offset
+    site = address - 4
+    if not module.in_text(site):
+        raise ValueError(f"return site outside executable text: {address:#x}")
+    word = module.word(site)
+    if word & 0xFC000000 == 0x94000000:  # BL immediate
+        imm = word & 0x03FFFFFF
+        if imm & 0x02000000:
+            imm -= 0x04000000
+        return ("BL", site + imm * 4)
+    if word & 0xFFFFFC1F == 0xD63F0000:  # BLR register
+        return ("BLR", None)
+    return ("UNKNOWN", None)
+
+
 def select_blocks(rows, base, text_end, anchor_offsets, read_word, *,
                   limit=8, budget_bytes=65536, radius=65536,
                   max_block_bytes=16384, nearby_radius=0, prefer_forward=False):
@@ -119,8 +140,11 @@ def main():
     p.add_argument("--max-block-bytes", type=int, default=16384)
     p.add_argument("--nearby-radius", type=int, default=0)
     p.add_argument("--prefer-forward", choices=("0", "1"), default="0")
+    p.add_argument("--return-site", action="append", default=[],
+                   help="reported guest LR as main:0xOFFSET or sdk:0xOFFSET")
     args = p.parse_args()
     anchors = parse_anchors(args.anchor)
+    return_sites = parse_anchors(args.return_site)
     from gen import Module
     from mario_resume_repair import parse_table
     from nso import Nso
@@ -142,6 +166,11 @@ def main():
             name, None, base, report["simd"],
             nso=Nso(exefs / name), profile="mario"
         )
+        for offset in return_sites[name]:
+            kind, target = classify_return_site(module, offset)
+            suffix = f" target={target:#x}" if target is not None else ""
+            print(f"[mario-callsite] {name}:0x{offset:x} "
+                  f"instruction={kind}{suffix}", file=sys.stderr)
         # The existing repair tool validates exact NSO hashes and build
         # metadata before any file is modified.
         remaining_bytes = args.budget_bytes - sum(
@@ -158,6 +187,9 @@ def main():
         )
         for b in blocks:
             selection.append((name, b))
+    for name in ("main", "sdk"):
+        if return_sites[name] and name not in active_modules:
+            raise ValueError(f"return site for {name} requires an anchor in that module")
     if not selection:
         raise ValueError("no pending repair blocks; no APK will be rebuilt")
     for name, b in selection:
