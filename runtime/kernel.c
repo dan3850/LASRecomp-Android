@@ -705,7 +705,7 @@ int mario_native_svc_from_frame(MarioNativeSvcFrame *frame, uint32_t svc_id, uin
 // or guest memory updates. A known module .text address is diagnostic only.
 static void mario_native_svc_thread_smoke(KThread *t) {
     if (g_nmodules < 2 || g_modules[1].text_size < 4) {
-        LOG("[mario-native-svc] SKIP: SDK text unavailable\\n");
+        LOG("[mario-native-svc] SKIP: SDK text unavailable\n");
         return;
     }
     Cpu saved = t->cpu;
@@ -722,13 +722,13 @@ static void mario_native_svc_thread_smoke(KThread *t) {
     // Always restore the exact original game Cpu before boot continuation.
     t->cpu = saved;
     if (result == MARIO_NATIVE_SVC_OK && returned_core == (uint64_t)t->core) {
-        LOG("[mario-native-svc] PASS: live Horizon thread -> ARM64 frame -> real rt_svc(0x10) -> frame; core=%llu\\n",
+        LOG("[mario-native-svc] PASS: live Horizon thread -> ARM64 frame -> real rt_svc(0x10) -> frame; core=%llu\n",
             (unsigned long long)returned_core);
     } else {
-        LOG("[mario-native-svc] FAIL: status=%d actual=%llu expected=%d\\n",
+        LOG("[mario-native-svc] FAIL: status=%d actual=%llu expected=%d\n",
             result, (unsigned long long)returned_core, t->core);
     }
-    LOG("[mario-native-svc] NOTE: synthetic frame and diagnostic PC; no SDK SVC executed, no x18/TLS transition yet\\n");
+    LOG("[mario-native-svc] NOTE: synthetic frame and diagnostic PC; no SDK SVC executed, no x18/TLS transition yet\n");
 }
 #endif
 
