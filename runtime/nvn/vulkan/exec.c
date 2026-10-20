@@ -4220,6 +4220,39 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     stat_dispatches++;
 }
 
+// Start shader translation/compilation when a program is bound, before its
+// first draw. This is a resource-only preparation stage: it never reads GMEM,
+// changes Vulkan command order or waits for a worker. A draw still calculates
+// its exact key and waits for its exact program as before. The key uses the
+// state at bind time, so a subsequent attribute/RT change simply causes the
+// normal draw-time lookup; no incorrect speculative result can be consumed.
+// LARECOMP_VK_PROGRAM_PREFETCH=0 disables the speculative work for A/B testing.
+static void prefetch_bound_program(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("LARECOMP_VK_PROGRAM_PREFETCH");
+#ifdef __ANDROID__
+        enabled = !e || atoi(e) != 0;
+#else
+        enabled = e && atoi(e) != 0;
+#endif
+    }
+    if (!enabled || !st.program || st.nattrib < 0 || st.nattrib > 16 ||
+        st.rt.ncolor < 0 || st.rt.ncolor > 8) return;
+    ShaderKey vk = {0}, fk = {0};
+    vk.glsl = fk.glsl = 1;
+    vk.flip_y = fk.flip_y = nvn_window_origin() == 0;
+    vk.depth_minus_one = nvn_depth_mode() == 0;
+    for (int i = 0; i < st.nattrib; i++)
+        vk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
+    for (int i = 0; i < st.rt.ncolor; i++)
+        if (st.rt.color[i])
+            fk.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    // get_program queues the translation job and returns immediately.
+    // It does not record or submit any Vulkan commands.
+    (void)get_program(st.program, &vk, &fk);
+}
+
 // ================================================================== draws
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed);
 
@@ -5394,7 +5427,10 @@ static void exec_list(uint64_t handle, int depth) {
             for (uint64_t i = 0; i < r->x[0] && depth < 8; i++) exec_list(h[i], depth + 1);
             break;
         }
-        case CMD_BIND_PROGRAM: st.program = (NvnProgram *)(uintptr_t)r->x[0]; break;
+        case CMD_BIND_PROGRAM:
+            st.program = (NvnProgram *)(uintptr_t)r->x[0];
+            prefetch_bound_program();
+            break;
         case CMD_BIND_BLEND: { uint8_t *b = x; memcpy(st.blend[b[0] & 7], b, 8); break; }
         case CMD_BIND_CHANNEL_MASK: memcpy(&st.channel_mask, x, 4); break;
         case CMD_BIND_COLOR: memcpy(st.color_state, x, 4); break;
