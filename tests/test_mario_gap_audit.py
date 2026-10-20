@@ -53,6 +53,27 @@ class TestGuestGapAudit(unittest.TestCase):
         self.assertEqual(audit.instruction_kind(0xd63f0100), "BLR indirect call")
         self.assertEqual(audit.instruction_kind(0xd65f03c0), "RET")
 
+    def test_direct_bl_target_without_guessing_from_lr(self):
+        import struct
+        memory = bytearray(0x100)
+        # BL from LR-4 == 0x1c to 0x80; 25 instruction displacement.
+        struct.pack_into("<I", memory, 0x1c,
+                         0x94000000 | ((0x80 - 0x1c) // 4))
+        # BL from 0x88 backwards to 0x40: signed 26-bit displacement.
+        struct.pack_into("<I", memory, 0x88,
+                         0x94000000 | (((0x40 - 0x88) // 4) & 0x03ffffff))
+        nso = type("SmallNSO", (), {
+            "image": memory, "text": (0, 0x100),
+            "u32": lambda self, offset: struct.unpack_from("<I", self.image, offset)[0],
+        })()
+        self.assertEqual(audit.direct_bl_target(nso, 0x20), 0x80)
+        self.assertEqual(audit.direct_bl_target(nso, 0x8c), 0x40)
+        self.assertIsNone(audit.direct_bl_target(nso, 0x24))
+        self.assertIsNone(audit.direct_bl_target(nso, 0x104))
+        # An indirect BLR does not encode a static target.
+        struct.pack_into("<I", memory, 0x1c, 0xd63f0100)
+        self.assertIsNone(audit.direct_bl_target(nso, 0x20))
+
     def test_generated_table_is_sorted_and_consistent(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "main_table.c"
