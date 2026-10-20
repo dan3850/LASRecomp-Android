@@ -64,9 +64,11 @@ static void mario_graphics_snapshot(uint64_t presents, const NvnTexture *texture
     };
     FILE *file = fopen("mario-grafico.log", "a");
     if (!file) return;
-    fprintf(file, "[mario-nvn] presents=%llu texture=%ux%u format=%#x flags=%#x "
+    fprintf(file, "[mario-nvn] presents=%llu texture=%p id=%llu "
+                  "size=%ux%u format=%#x flags=%#x "
                   "storage=%#llx backend=%d\n",
-            (unsigned long long)presents,
+            (unsigned long long)presents, (const void *)texture,
+            (unsigned long long)(texture ? texture->debug_id : 0),
             texture ? texture->width : 0, texture ? texture->height : 0,
             texture ? texture->format : 0, texture ? texture->flags : 0,
             (unsigned long long)(texture ? texture->addr : 0),
