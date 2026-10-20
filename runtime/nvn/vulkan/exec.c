@@ -4,6 +4,7 @@
 #include <float.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
