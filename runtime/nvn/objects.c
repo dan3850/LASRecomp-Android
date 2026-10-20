@@ -495,7 +495,7 @@ NVN(nvnTextureFinalize) {
     // pools or deferred command lists may still reference it. The registry
     // retained its ownership node in mario_texture_retired above.
     if (mario_texture_retired_count <= 16)
-        LOG("[mario-texture-owner] deferred finalize host=%p retained=%u\\n",
+        LOG("[mario-texture-owner] deferred finalize host=%p retained=%u\n",
             (void *)t, mario_texture_retired_count);
 #else
     NvnTexture *t = HOST(NvnTexture, A(0));
