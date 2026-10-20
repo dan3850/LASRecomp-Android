@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from mario_resume_batch import parse_anchors, select_blocks
+from mario_resume_batch import parse_anchors, select_blocks, classify_return_site
 
 
 class MarioBatchTests(unittest.TestCase):
@@ -27,6 +27,33 @@ class MarioBatchTests(unittest.TestCase):
             anchors, lambda pc: self.words.get(pc, 0xd503201f),
             **kwargs
         )
+
+    def test_classify_lr_previous_instruction(self):
+        class FakeModule:
+            base = 0x7000000000
+            def __init__(self, word):
+                self.instruction = word
+            def in_text(self, pc):
+                return pc == self.base + 0x100
+            def word(self, pc):
+                if pc != self.base + 0x100:
+                    raise AssertionError("unexpected read")
+                return self.instruction
+
+        self.assertEqual(
+            classify_return_site(FakeModule(0x94000020), 0x104),
+            ("BL", 0x7000000180)
+        )
+        self.assertEqual(
+            classify_return_site(FakeModule(0xD63F0120), 0x104),
+            ("BLR", None)
+        )
+        self.assertEqual(
+            classify_return_site(FakeModule(0xD65F03C0), 0x104),
+            ("UNKNOWN", None)
+        )
+        with self.assertRaisesRegex(ValueError, "outside executable"):
+            classify_return_site(FakeModule(0x94000020), 0x108)
 
     def test_anchor_first_and_indirect_neighbor(self):
         blocks = self.plan(limit=2, budget_bytes=0x80)
