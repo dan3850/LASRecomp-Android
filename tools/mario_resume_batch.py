@@ -58,7 +58,10 @@ def select_blocks(rows, base, text_end, anchor_offsets, read_word, *,
             (read_word(pc) & 0xFFFFFC1F) in (0xD61F0000, 0xD63F0000)
             for pc in range(owner, end, 4)
         )
-        # Ordinary neighboring functions are lower-confidence candidates.
+        # Only expand unobserved blocks with an actual indirect branch.
+        # Proximity alone must not spend compilation time on arbitrary code.
+        if not forced and not indirect:
+            continue
         choices.append({
             "owner": owner, "end": end, "size": size,
             "offset": target - base, "forced": forced,
