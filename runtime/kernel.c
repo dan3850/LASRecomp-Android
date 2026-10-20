@@ -380,14 +380,10 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     t->wait_tag = tag;
     __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     uint32_t r = block_current(timeout);
-    if (r != R_OK) {
-        // timed out / cancelled: still must reacquire the mutex
-        if (!mutex_acquire_or_mark(mutex, tag)) {
-            t->wait_kind = WAIT_MUTEX;
-            t->wait_addr = mutex;
-            block_current(-1);
-        }
-    }
+    // Horizon reacquires the mutex only on a successful signal (in
+    // svc_signal_process_wide_key/mutex_release). On timeout the SDK acquires
+    // it itself. Doing that here can make the SDK wait on its own tag, or
+    // make this timed SVC block indefinitely behind another mutex owner.
     pthread_mutex_unlock(&g_klock);
     return r;
 }
