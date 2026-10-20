@@ -4265,6 +4265,62 @@ static uint32_t *expand_indices(uint32_t mode, uint32_t count, const void *indic
     return out;
 }
 
+// Immutable geometry preparation for non-indexed NVN quads/fans/polygons.
+// Only the draw record parameters are captured. No guest-memory reads and no
+// Vulkan calls are allowed on this worker.
+typedef struct {
+    const CmdRec *command;
+    uint32_t mode, count, first, output_count;
+    uint32_t *indices;
+    _Atomic int state;
+} PreparedGeometry;
+static PreparedGeometry *prepared_geometry[16];
+static unsigned prepared_geometry_count;
+static void prepare_geometry_worker(void *arg) {
+    PreparedGeometry *g = arg;
+    g->indices = expand_indices(g->mode, g->count, NULL, 0,
+                                g->first, &g->output_count);
+    build_finished(&g->state, g->indices ? 1 : 2);
+}
+static void schedule_geometry(const CmdRec *r) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("LARECOMP_VK_GEOMETRY_PREP");
+        enabled = !e || atoi(e) != 0;
+    }
+    if (!enabled || prepared_geometry_count == 16 ||
+        r->op != CMD_DRAW_ARRAYS) return;
+    uint32_t mode = (uint32_t)r->x[0], count = (uint32_t)r->x[2];
+    if ((mode != 6 && mode != 7 && mode != 9) ||
+        count < 6 || count > 4096) return;
+    PreparedGeometry *g = calloc(1, sizeof *g);
+    if (!g) return;
+    g->command = r;
+    g->mode = mode;
+    g->count = count;
+    g->first = (uint32_t)r->x[1];
+    prepared_geometry[prepared_geometry_count++] = g;
+    run_job(prepare_geometry_worker, g);
+}
+static PreparedGeometry *find_prepared_geometry(const CmdRec *r) {
+    for (unsigned i = 0; i < prepared_geometry_count; ++i)
+        if (prepared_geometry[i]->command == r)
+            return prepared_geometry[i];
+    return NULL;
+}
+static void retire_prepared_geometry(void) {
+    for (unsigned i = 0; i < prepared_geometry_count; ++i) {
+        PreparedGeometry *g = prepared_geometry[i];
+        // An earlier command may skip a draw: all jobs must still finish
+        // before the snapshot's storage can be released.
+        build_ready(&g->state, "non-indexed geometry preparation");
+        free(g->indices);
+        free(g);
+        prepared_geometry[i] = NULL;
+    }
+    prepared_geometry_count = 0;
+}
+
 static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
     switch (mode) {
     case 0: *t = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; *cls = 0; return true;
@@ -4666,9 +4722,19 @@ static void draw_(CmdRec *r, bool indexed) {
         first = (uint32_t)r->x[1]; base_inst = (uint32_t)r->x[3]; inst = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
         max_index = first + count;
         if (!native) {
-            uint32_t *e = expand_indices(mode, count, NULL, 0, first, &icount);
-            ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
-            free(e);
+            // Consume the immutable indices built by a CPU worker during
+            // command-list preflight. Keep the original local path for
+            // unprepared draws and any unexpected parameter mismatch.
+            PreparedGeometry *g = find_prepared_geometry(r);
+            if (g && g->mode == mode && g->count == count && g->first == first) {
+                build_ready(&g->state, "non-indexed geometry preparation");
+                icount = g->output_count;
+                ib = vk_transient_copy(g->indices, (uint64_t)icount * 4 + 4, 4);
+            } else {
+                uint32_t *e = expand_indices(mode, count, NULL, 0, first, &icount);
+                ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
+                free(e);
+            }
         }
     } else {
         uint32_t itype = (uint32_t)r->x[1];
@@ -5476,6 +5542,7 @@ static void shader_list_preflight(uint64_t handle) {
         }
         case CMD_DRAW_ARRAYS:
         case CMD_DRAW_ELEMENTS:
+            if (r->op == CMD_DRAW_ARRAYS) schedule_geometry(r);
             if (program && (program->stage_mask & 3) == 3) {
                 ShaderKey vk = {0}, fk = {0};
                 vk.glsl = fk.glsl = 1;
@@ -5795,6 +5862,7 @@ void backend_execute(uint64_t handle) {
     prepared_draw_count = 0;
     shader_list_preflight(handle);
     exec_list(handle, 0);
+    retire_prepared_geometry();
     prepared_draw_count = 0;
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;
