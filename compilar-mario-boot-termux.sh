@@ -75,7 +75,7 @@ fi
 # The two latest failures have indirect targets in x10:
 #   main+0x66c48c (LR main+0x66d150)
 #   main+0x669c74 (LR main+0x6698e0)
-for MARIO_REQUIRED_ENTRY in main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384; do
+for MARIO_REQUIRED_ENTRY in main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384 main:0x66a0fc main:0x8099d0; do
     if [[ " ${MARIO_RESUME_AT:-} " != *" $MARIO_REQUIRED_ENTRY "* ]]; then
         MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_REQUIRED_ENTRY"
     fi
