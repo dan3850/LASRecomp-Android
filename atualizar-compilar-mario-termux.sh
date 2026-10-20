@@ -143,14 +143,22 @@ mario_build_main() {
     else
         echo "Reutilizando biblioteca recompilada e objetos main/sdk existentes."
     fi
-    # An explicitly supplied MARIO_RESUME_AT repairs only its containing
-    # recompiled block. Without opt-in the ordinary build stays unchanged.
-    # Disable speculative batch parameters, but preserve the explicit target.
+    # Repair only when explicitly requested. The boot script validates
+    # targets, input hashes, block sizes, and the bounded optional batch.
+    # Without MARIO_RESUME_AT or MARIO_BATCH_ANCHOR, no guest code is rebuilt.
     if [[ -n "${MARIO_RESUME_AT:-}" ]]; then
         echo "MARIO_RESUME_AT=$MARIO_RESUME_AT"
     fi
-    env -u MARIO_BATCH_ANCHOR -u MARIO_BATCH_RETURN_SITE \
-        bash compilar-mario-boot-termux.sh "$mario_game"
+    if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
+        echo "MARIO_BATCH_ANCHOR=$MARIO_BATCH_ANCHOR"
+        if [[ -n "${MARIO_BATCH_RETURN_SITE:-}" ]]; then
+            echo "MARIO_BATCH_RETURN_SITE=$MARIO_BATCH_RETURN_SITE"
+        fi
+    elif [[ -n "${MARIO_BATCH_RETURN_SITE:-}" ]]; then
+        echo "ERRO: MARIO_BATCH_RETURN_SITE exige MARIO_BATCH_ANCHOR." >&2
+        return 1
+    fi
+    bash compilar-mario-boot-termux.sh "$mario_game"
     [[ -s "$mario_apk" ]] || { echo "ERRO: APK nao produzido: $mario_apk" >&2; return 1; }
     echo "BRANCH=$(git branch --show-current)"
     echo "HEAD=$(git rev-parse HEAD)"
