@@ -4993,8 +4993,25 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
             } else {
                 ib = (uint64_t)count * isz >= VTX_SNAPSHOT_MIN ? guest_vertex_copy(iaddr, (uint64_t)count * isz)
                     : vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
-                if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != (uint16_t)restart) max_index = s[i]; }
-                else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
+                // Use the immutable, post-GMEM index snapshot when its
+                // worker already calculated the bounds. Do not scan the
+                // same 16/32-bit index array twice on the CPU.
+                IndexedGeometryJob *g_bound = *prepared;
+                if (g_bound && g_bound->itype == itype &&
+                    g_bound->mode == mode && g_bound->count == count &&
+                    g_bound->restart_enabled == st.prim_restart &&
+                    g_bound->restart_index == st.restart_index &&
+                    optional_job_ready(&g_bound->state)) {
+                    max_index = g_bound->max_index;
+                } else if (isz == 2) {
+                    const uint16_t *q = src;
+                    for (uint32_t i = 0; i < count; i++)
+                        if (q[i] > max_index && q[i] != (uint16_t)restart) max_index = q[i];
+                } else {
+                    const uint32_t *q = src;
+                    for (uint32_t i = 0; i < count; i++)
+                        if (q[i] > max_index && q[i] != restart) max_index = q[i];
+                }
             }
         } else if (native) {  // 8-bit indices: widen to 16
             IndexedGeometryJob *g = *prepared;
