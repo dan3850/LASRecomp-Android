@@ -14,6 +14,19 @@ static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
 // Observability only: number of NVN commands recorded by the original game.
 // Never count synthetic Vulkan presentation commands as guest draw calls.
 static uint64_t mario_recorded_ops[CMD_COUNT];
+// These guest NVN entrypoints are currently stubs, so they never reach record().
+static uint64_t mario_unimplemented_draw_calls[4];
+uint64_t mario_nvn_unimplemented_draw_count(unsigned kind) {
+    return kind < 4
+        ? __atomic_load_n(&mario_unimplemented_draw_calls[kind], __ATOMIC_RELAXED)
+        : 0;
+}
+#define MARIO_STUB_DRAW(kind) __atomic_fetch_add(&mario_unimplemented_draw_calls[kind], 1, __ATOMIC_RELAXED)
+#else
+#define MARIO_STUB_DRAW(kind) ((void)0)
+#endif
+
+#ifdef LASRECOMP_MARIO_TEST
 uint64_t mario_nvn_record_count(unsigned op) {
     return op < CMD_COUNT
         ? __atomic_load_n(&mario_recorded_ops[op], __ATOMIC_RELAXED)
@@ -380,10 +393,10 @@ NVN(nvnCommandBufferDrawElementsBaseVertex) {
 NVN(nvnCommandBufferDrawElementsInstanced) { trace_draw(c, c->x[3]); Snap s = snap(c); record(c, CMD_DRAW_ELEMENTS, 0, &s); }
 PLAIN(nvnCommandBufferDrawArraysIndirect, CMD_DRAW_ARRAYS_INDIRECT)
 PLAIN(nvnCommandBufferDrawElementsIndirect, CMD_DRAW_ELEMENTS_INDIRECT)
-NVN(nvnCommandBufferMultiDrawArraysIndirectCount) { (void)c; }
-NVN(nvnCommandBufferMultiDrawElementsIndirectCount) { (void)c; }
-NVN(nvnCommandBufferDrawTransformFeedback) { (void)c; }
-NVN(nvnCommandBufferDrawTexture) { (void)c; }
+NVN(nvnCommandBufferMultiDrawArraysIndirectCount) { MARIO_STUB_DRAW(0); (void)c; }
+NVN(nvnCommandBufferMultiDrawElementsIndirectCount) { MARIO_STUB_DRAW(1); (void)c; }
+NVN(nvnCommandBufferDrawTransformFeedback) { MARIO_STUB_DRAW(2); (void)c; }
+NVN(nvnCommandBufferDrawTexture) { MARIO_STUB_DRAW(3); (void)c; }
 PLAIN(nvnCommandBufferDispatchCompute, CMD_DISPATCH)
 PLAIN(nvnCommandBufferDispatchComputeIndirect, CMD_DISPATCH_INDIRECT)
 NVN(nvnCommandBufferBeginTransformFeedback) { (void)c; }
