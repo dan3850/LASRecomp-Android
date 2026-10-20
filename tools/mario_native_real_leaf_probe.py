@@ -39,7 +39,7 @@ def find_leaf(module):
 
 
 def execute_exact_leaf(instructions, expected):
-    if sys.platform != "linux" or "aarch64" not in __import__("platform").machine().lower():
+    if sys.platform not in ("linux", "android") or __import__("platform").machine().lower() not in ("aarch64", "arm64"):
         raise RuntimeError("requires native Android/Termux AArch64")
     page_size = mmap.PAGESIZE
     region = mmap.mmap(-1, page_size, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS,
