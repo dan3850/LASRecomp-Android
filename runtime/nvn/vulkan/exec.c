@@ -4081,7 +4081,32 @@ static void pipeline_recipe_destroy(void *object) {
 }
 
 static void *pipeline_recipe_build(const ReplayRecipe *r, void *context) {
-    if (!pipeline_recipe_state(r)) return NULL;
+    if (!pipeline_recipe_state(r)) {
+#ifdef LASRECOMP_MARIO_TEST
+        if (r->kind == REPLAY_GRAPHICS && r->state_size == PIPE_STATE_SIZE) {
+            PipeKey k = {0};
+            memcpy(k.color, r->state, PIPE_STATE_SIZE);
+            LOG("[mario-pipeline-reject] validation kind=graphics ncolor=%u color0=%u "
+                "write0=%u attr_mask=%#x streams=%#x topo=%u samples=%u "
+                "a2c=%u poly_fill=%u depth=%u stencil=%u divisor_ext=%d\\n",
+                (unsigned)k.ncolor, (unsigned)k.color[0],
+                (unsigned)k.write_mask[0], (unsigned)k.attr_mask,
+                (unsigned)k.used_streams, (unsigned)k.topo_class,
+                (unsigned)k.samples, (unsigned)k.a2c,
+                (unsigned)k.poly_fill, (unsigned)k.depth,
+                (unsigned)k.stencil, (int)g_vk.divisor);
+            for (unsigned i = 0; i < 32; ++i) if (k.attr_mask & (1u << i))
+                LOG("[mario-pipeline-reject] attr=%u bind=%u fmt=%u off=%u\\n",
+                    i, (unsigned)k.attr_bind[i], (unsigned)k.attr_fmt[i],
+                    (unsigned)k.attr_off[i]);
+            for (unsigned i = 0; i < 17; ++i) if (k.used_streams & (1u << i))
+                LOG("[mario-pipeline-reject] stream=%u stride=%u divisor=%u\\n",
+                    i, (unsigned)k.stride[i], (unsigned)k.divisor[i]);
+        } else LOG("[mario-pipeline-reject] kind=%u state_bytes=%u expected=%u\\n",
+                   (unsigned)r->kind, (unsigned)r->state_size, (unsigned)PIPE_STATE_SIZE);
+#endif
+        return NULL;
+    }
     PreparedPipeline *out = calloc(1, sizeof *out);
     if (!out) return NULL;
     Prog *p = NULL;
