@@ -35,6 +35,35 @@ public final class GameSDLActivity extends SDLActivity {
     public String getVulkanHookLibraryDirectory() {
         return getApplicationInfo().nativeLibraryDir;
     }
+    // The menu may crash before a human can tap the diagnostics button.
+    // Collect on a separate Java thread: the native collector signals guest threads
+    // and cannot safely be called from SDL's renderer/guest thread.
+    private volatile boolean marioAutoCaptureActive;
+
+    private void startMarioAutomaticCapture() {
+        marioAutoCaptureActive = true;
+        Thread collector = new Thread(() -> {
+            int saved = 0;
+            for (int attempt = 0; attempt < 40 && marioAutoCaptureActive && saved < 5; attempt++) {
+                try { Thread.sleep(saved == 0 ? 400L : 1100L); }
+                catch (InterruptedException interrupted) { return; }
+                if (!marioAutoCaptureActive) return;
+                boolean ok = false;
+                try { ok = nativeCaptureMarioThreads(); }
+                catch (LinkageError unavailable) {
+                    // SDL/libmain may still be loading. Retry until the native bridge exists.
+                }
+                if (ok) {
+                    saved++;
+                    markActivity("automatic Mario thread capture saved " + saved);
+                }
+            }
+            if (saved == 0) markActivity("automatic Mario thread capture unavailable");
+        }, "mario-auto-thread-capture");
+        collector.setDaemon(true);
+        collector.start();
+    }
+
     private GameTouchControls touchControls;
     private NeoInputBridge neoInput;
     private Object neoControls;
@@ -157,6 +186,7 @@ public final class GameSDLActivity extends SDLActivity {
                 installLegacyTouchControls();
             }
             if (getIntent().getBooleanExtra("mario_thread_capture", false)) {
+                startMarioAutomaticCapture();
                 android.widget.Button capture = new android.widget.Button(this);
                 capture.setText("Capturar estado");
                 android.widget.RelativeLayout.LayoutParams placement = new android.widget.RelativeLayout.LayoutParams(
@@ -220,6 +250,7 @@ public final class GameSDLActivity extends SDLActivity {
     }
     @Override
     protected void onDestroy() {
+        marioAutoCaptureActive = false;
         if (touchControls != null) touchControls.releaseAll();
         closeNeoControls();
         markActivity("onDestroy");
