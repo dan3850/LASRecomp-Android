@@ -5516,7 +5516,7 @@ static void exec_list(uint64_t handle, int depth) {
 #else
                 effective_on = env && atoi(env) != 0;
 #endif
-                LOG("[vk-pass] effective attachment comparison %s\\n",
+                LOG("[vk-pass] effective attachment comparison %s\n",
                     effective_on ? "enabled" : "disabled");
             }
             ++stat_rt_sets;
