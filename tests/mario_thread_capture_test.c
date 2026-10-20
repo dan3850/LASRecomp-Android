@@ -3,7 +3,10 @@
 #include <assert.h>
 #include <errno.h>
 #include "kernel.c"
+#include "ipc.c"
 #include "../android/game/mario_capture_bridge.h"
+
+void rt_fatal_trace(void) { abort(); }
 
 uint64_t plat_now_ns(void) {
     struct timespec now; assert(clock_gettime(CLOCK_MONOTONIC,&now)==0);
@@ -14,15 +17,26 @@ uint32_t vi_vsync_handle(void) { return 0; } // optional environment-controlled 
 static KThread worker,owner;
 static uint32_t mutex_word,key_word,sync_handle=0x121;
 static KEvent event={.type=KOBJ_EVENT};
+static _Alignas(16) uint64_t frames[4];
 static _Atomic bool stop,returned;
 static _Atomic uint64_t iterations;
 static const char *mode;
 static uint32_t wait_result;
 
+static void synthetic_event_service(Service *s,IpcReq *req,IpcResp *resp) {
+    (void)s; (void)resp;
+    assert(req->cmd==23);
+    sync_handle=kernel_new_handle(&event);
+}
+
 static void register_worker(void) {
     t_cur=&worker;
     worker.cpu.pc=MAIN_BASE+0x40; worker.cpu.x[30]=SDK_BASE+0x80;
     worker.cpu.sp=STACK_BASE+0x10000;
+    if (!strcmp(mode,"sync")) {
+        worker.cpu.sp=(uintptr_t)frames;
+        worker.cpu.x[29]=(uintptr_t)frames;
+    }
     pthread_mutex_lock(&g_klock);
     worker.capture_host=pthread_self(); worker.capture_ready=true;
     worker.capture_tid=(uint64_t)syscall(SYS_gettid);
@@ -129,6 +143,31 @@ int main(int argc,char **argv) {
         return 0;
     }
     worker.id=80; worker.handle=0x116; worker.prio=44; worker.obj.type=KOBJ_THREAD;
+    if (!strcmp(mode,"sync")) {
+        t_cur=&worker;
+        worker.capture_in_svc=true;
+        worker.capture_svc_pc=SDK_BASE+0x100;
+        worker.cpu.x[30]=MAIN_BASE+0x200;
+        worker.capture_ipc_service="OuterService";
+        worker.capture_ipc_command=99;
+        Service service={.name="SyntheticEventService",.handler=synthetic_event_service};
+        KSession session={.obj={.type=KOBJ_SESSION},.svc=&service};
+        handles[0x140-0x100]=&session.obj;
+        _Alignas(16) uint32_t message[64]={4,8};
+        memcpy(message+4,"SFCI",4); message[6]=23;
+        worker.cpu.tpidrro=(uintptr_t)message;
+        assert(ipc_handle_request(&worker.cpu,0x140)==0);
+        assert(!strcmp(worker.capture_ipc_service,"OuterService") && worker.capture_ipc_command==99);
+        handles[0x140-0x100]=NULL;
+        worker.capture_ipc_service=NULL;
+        worker.capture_svc_pc=SDK_BASE+0x999;
+        uint32_t alias=kernel_new_handle(&event);
+        assert(handles[alias-0x100]==&event);
+        assert(event.capture_origin_pc==SDK_BASE+0x100);
+        t_cur=NULL;
+        frames[0]=(uintptr_t)(frames+2); frames[1]=MAIN_BASE+0x1234;
+        frames[2]=0; frames[3]=SDK_BASE+0x5678;
+    }
     owner.id=81; owner.handle=0x120; owner.obj.type=KOBJ_THREAD;
     handles[worker.handle-0x100]=&worker.obj;
     handles[owner.handle-0x100]=&owner.obj;
@@ -137,6 +176,7 @@ int main(int argc,char **argv) {
     assert(pthread_cond_init(&worker.cond,NULL)==0);
     regions[0]=(Region){(uintptr_t)&mutex_word,sizeof mutex_word,4,3};
     regions[1]=(Region){(uintptr_t)&sync_handle,sizeof sync_handle,4,1}; nregions=2;
+    regions[nregions++]=(Region){(uintptr_t)frames,sizeof frames,4,1};
     pthread_t host; assert(pthread_create(&host,NULL,run_worker,NULL)==0);
     for (int i=0;;i++) {
         assert(i<2000);
@@ -159,6 +199,7 @@ int main(int argc,char **argv) {
     } else if (!strcmp(mode,"sync")) {
         assert(!event.signaled);
         pthread_mutex_lock(&g_klock); kernel_signal(&event); pthread_mutex_unlock(&g_klock);
+        assert(event.capture_signals==1 && event.capture_last_signaler==0);
     } else {
         assert(atomic_load(&iterations)>before); // native loop keeps running between samples
         atomic_store(&stop,true);

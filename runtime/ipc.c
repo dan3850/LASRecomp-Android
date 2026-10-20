@@ -173,7 +173,22 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
             target = req.domain_obj < 256 ? sess->domain->objs[req.domain_obj] : NULL;
             if (!target) { LOG("[ipc] domain object %u missing\n", req.domain_obj); return 0xE401; }
         }
+#ifdef LASRECOMP_MARIO_TEST
+        KThread *capture_thread = kernel_current_thread();
+        const char *previous_service = capture_thread ? capture_thread->capture_ipc_service : NULL;
+        uint32_t previous_command = capture_thread ? capture_thread->capture_ipc_command : 0;
+        if (capture_thread) {
+            capture_thread->capture_ipc_service = target->name;
+            capture_thread->capture_ipc_command = req.cmd;
+        }
+#endif
         target->handler(target, &req, &resp);
+#ifdef LASRECOMP_MARIO_TEST
+        if (capture_thread) {
+            capture_thread->capture_ipc_service = previous_service;
+            capture_thread->capture_ipc_command = previous_command;
+        }
+#endif
     } else if (req.type == 5 || req.type == 7) {  // control
         req.cmd = *(uint32_t *)(payload + 8);
         LOG("[ipc] control %u on %s (handle %x)\n", req.cmd, sess->svc->name, handle);

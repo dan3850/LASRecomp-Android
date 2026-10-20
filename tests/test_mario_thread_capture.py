@@ -60,7 +60,10 @@ class MarioThreadCapture(unittest.TestCase):
     def test_records_unsignaled_sync_object_without_signaling_it(self):
         report = self.capture('sync')
         self.assertIn('sync_wait=1', report)
-        self.assertIn('sync0=121:type2:signaled0', report)
+        self.assertIn('sync0=101:type2:signaled0', report)
+        self.assertIn('event0_origin=1:thread80:pc7004000100:lr7000000200:'
+                      'serviceSyntheticEventService:cmd23:signals0:last_thread0:svc_resets0', report)
+        self.assertRegex(report, r'frame0=[0-9a-f]+:lr7000001234 frame1=[0-9a-f]+:lr7004005678')
 
     def test_missing_signal_response_is_explicit_not_stale_registers(self):
         report = self.capture('unanswered')

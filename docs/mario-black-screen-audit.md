@@ -296,3 +296,49 @@ o conteúdo dessas amostras será usado para investigar a causa, ainda pendente.
 
 Esses experimentos são próximos discriminadores, não resultados já obtidos
 nem uma afirmação de que a tela preta foi resolvida.
+
+### Captura real de e0aafba: espera pelo evento 0x13f
+
+O relatório do aparelho identifica a biblioteca
+`mario-full:7c753446ca473fbd66a2e5eb` e duas amostras separadas por cerca de
+102 ms. Em ambas, a thread principal 80/handle 0x101 está em SVC 0x18
+(`WaitSynchronization`), com um único evento 0x13f não sinalizado e timeout
+infinito. O despacho salvo é SDK+0x3438e0, LR SDK+0x343968 e SP
+0x723ffff6b0. A inspeção privada da função recompilada confirma a chamada ao
+wrapper do SVC; esse LR pertence à função de espera, não identifica seu
+chamador no Mario. `wait_addr` nessa linha é resíduo de uma espera anterior,
+pois `wait=none` e `sync_wait=1`; não é evidência de mutex bloqueado.
+
+Isso localiza uma espera pendente durante a tela preta, mas não prova sua
+causa nem bloqueio permanente. Os logs disponíveis não registram a origem
+do evento ou a pilha acima dessa função. Os eventos AM/HID sem produtor são
+candidatos, mas notificações de mudança podem permanecer legitimamente
+sem sinal: não há evidência para sinalizá-los artificialmente.
+
+O schema 2 acrescenta origem por objeto (thread, PC/LR e contexto de serviço/
+comando IPC), número de chamadas a `kernel_signal`, último sinalizador e
+resets via SVC. A origem é preservada quando outro handle aponta ao mesmo
+objeto; ela não é deduzida da ordem numérica dos handles. Sinalizador zero
+representa produtor host. Os resets contados são somente os SVCs, não todas
+as limpezas internas dos serviços.
+
+Na espera de sincronização, o coletor também lê até 16 frames encadeados,
+apenas em regiões registradas legíveis, com alinhamento, limites e avanço
+monotônico. Mantém o lock que impede a thread de retornar da espera, confere
+SP/FP contra a amostra e não lê memória arbitrária no handler de sinal.
+Frames omitidos pelo compilador podem limitar o resultado; LRs salvos não
+constituem por si só prova de chamada executada. A ABI `Cpu` e os arquivos
+privados recompilados permanecem iguais.
+
+O experimento mínimo é iniciar novamente o APK, capturar durante a tela
+preta e exportar o log: `event0_origin` identifica o produtor a auditar e
+`frameN` localiza o chamador. `signals0` separa ausência de sinalização de
+um evento que já foi sinalizado e depois limpo. Esta mudança continua sendo
+um experimento direcionado, não uma correção funcional da tela preta.
+
+Validação desta extensão: 192 testes disponíveis aprovados no host. O teste
+de evento passa pelo codec/dispatcher IPC de produção, verifica serviço e
+comando, restauração do contexto externo, preservação da origem no segundo
+handle, frames sintéticos e ausência de despertar durante a captura.
+Os quatro módulos Android/Vulkan indisponíveis continuam excluídos pelos
+motivos já documentados; não foi compilado nem executado um novo APK aqui.

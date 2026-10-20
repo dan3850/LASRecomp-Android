@@ -43,6 +43,20 @@ static __thread KThread *t_cur;
 static KObject *handles[MAX_HANDLES];
 
 static uint32_t handle_alloc(KObject *o) {
+#ifdef LASRECOMP_MARIO_TEST
+    if (o->type == KOBJ_EVENT && !o->capture_origin_set) {
+        o->capture_origin_set = true;
+        if (t_cur) {
+            o->capture_creator = t_cur->id;
+            o->capture_origin_pc = t_cur->capture_in_svc ? t_cur->capture_svc_pc : t_cur->cpu.pc;
+            o->capture_origin_lr = t_cur->cpu.x[30];
+            if (t_cur->capture_ipc_service) {
+                snprintf(o->capture_service, sizeof o->capture_service, "%s", t_cur->capture_ipc_service);
+                o->capture_command = t_cur->capture_ipc_command;
+            }
+        }
+    }
+#endif
     for (int i = 1; i < MAX_HANDLES; i++) {
         if (!handles[i]) {
             handles[i] = o;
@@ -80,6 +94,12 @@ static void wake(KThread *t) { pthread_cond_signal(&t->cond); }
 
 void kernel_signal(KObject *o) {
     // caller holds g_klock
+#ifdef LASRECOMP_MARIO_TEST
+    if (o->type == KOBJ_EVENT) {
+        o->capture_signals++;
+        o->capture_last_signaler = t_cur ? t_cur->id : 0; // 0: host producer
+    }
+#endif
     o->signaled = true;
     for (KThread *t = g_syncwaiters; t; t = t->snext) wake(t);
 }
@@ -750,7 +770,12 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
             else {
                 if (imm == 0x11) kernel_signal(ev);
                 else if (imm == 0x17 && !ev->signaled) { x[0] = R_INVALID_STATE; pthread_mutex_unlock(&g_klock); break; }
-                else ev->signaled = false;
+                else {
+                    ev->signaled = false;
+#ifdef LASRECOMP_MARIO_TEST
+                    ev->capture_svc_resets++;
+#endif
+                }
                 x[0] = R_OK;
             }
         }

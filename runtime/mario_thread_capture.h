@@ -51,6 +51,7 @@ static void mario_capture_signal(int signal_number, siginfo_t *info, void *conte
             atomic_store_explicit(&t->capture_pc,t->cpu.pc,memory_order_relaxed);
             atomic_store_explicit(&t->capture_lr,t->cpu.x[30],memory_order_relaxed);
             atomic_store_explicit(&t->capture_sp,t->cpu.sp,memory_order_relaxed);
+            atomic_store_explicit(&t->capture_fp,t->cpu.x[29],memory_order_relaxed);
             atomic_store_explicit(&t->capture_native_pc,pc,memory_order_relaxed);
             atomic_store_explicit(&t->capture_native_lr,lr,memory_order_relaxed);
             atomic_store_explicit(&t->capture_svc_sample,t->capture_svc,memory_order_relaxed);
@@ -154,6 +155,38 @@ static void capture_thread_row(FILE *out,KThread *t,uint64_t request,int sent) {
                 KObject *object=handle>=0x101 && handle<0x100+MAX_HANDLES?handle_get(handle):NULL;
                 CAPTURE_STATE(" sync%llu=%x:type%d:signaled%d",(unsigned long long)i,handle,
                               object?(int)object->type:0,object?object->signaled:0);
+                if (object && object->type==KOBJ_EVENT) {
+                    CAPTURE_STATE(" event%llu_origin=%d:thread%llu:pc%llx:lr%llx:service%s:cmd%u"
+                                  ":signals%llu:last_thread%llu:svc_resets%llu",
+                                  (unsigned long long)i,object->capture_origin_set,
+                                  (unsigned long long)object->capture_creator,
+                                  (unsigned long long)object->capture_origin_pc,
+                                  (unsigned long long)object->capture_origin_lr,
+                                  object->capture_service[0]?object->capture_service:"none",
+                                  object->capture_command,(unsigned long long)object->capture_signals,
+                                  (unsigned long long)object->capture_last_signaler,
+                                  (unsigned long long)object->capture_svc_resets);
+                }
+            }
+            // Only inspect a sleeping thread while holding the lock that keeps
+            // its SVC from returning. Each word still needs a readable region.
+            // A saved LR is evidence of a frame, not proof of an executed call.
+            uint64_t fp=atomic_load(&t->capture_fp),sp=atomic_load(&t->capture_sp);
+            if (t->cpu.sp!=sp || t->cpu.x[29]!=fp) {
+                CAPTURE_STATE(" frames=sample_changed"); fp=0;
+            }
+            for (unsigned depth=0;depth<16;depth++) {
+                uint32_t words[4]; bool readable=true;
+                if ((fp&15) || fp<sp || fp-sp>0x100000 || fp>UINT64_MAX-16) break;
+                for (unsigned j=0;j<4;j++)
+                    if (!capture_read_word(fp+4*j,&words[j])) { readable=false; break; }
+                if (!readable) break;
+                uint64_t next=words[0]|((uint64_t)words[1]<<32);
+                uint64_t saved_lr=words[2]|((uint64_t)words[3]<<32);
+                CAPTURE_STATE(" frame%u=%llx:lr%llx",depth,(unsigned long long)fp,
+                              (unsigned long long)saved_lr);
+                if (next<=fp) break;
+                fp=next;
             }
         }
         pthread_mutex_unlock(&g_klock);
@@ -216,7 +249,7 @@ __attribute__((visibility("default"))) int lasrecomp_mario_thread_capture(void) 
     installed=true;
     out=fopen("mario-threads.log.partial","w");
     if (!out) goto done;
-    fprintf(out,"mario-thread-capture schema=1 source_commit=%s library_id=%s\n"
+    fprintf(out,"mario-thread-capture schema=2 source_commit=%s library_id=%s\n"
             "guest_dispatch_pc is saved Cpu.pc, not an exact guest instruction; native_pc is interrupted PC.\n"
             "Kernel wait metadata is sampled separately under its lock; sampled=0 means no register response.\n",
             LASRECOMP_MARIO_SOURCE_COMMIT,GAMELIB_ID);
