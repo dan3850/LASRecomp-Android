@@ -13,6 +13,31 @@ MARIO_CODE="$MARIO_ROOT/build/private-mario-full-test"
 MARIO_BOOT="$MARIO_ROOT/build/mario-android-boot"
 echo "BRANCH=$(git branch --show-current)"
 echo "HEAD=$(git rev-parse HEAD)"
+if [[ -n "${MARIO_STATIC_SWITCH_ANCHOR:-}" ]]; then
+    # Verified guarded byte-switch scan: one repair per containing block,
+    # not repeated one-address-per-APK attempts. No full code regeneration.
+    if [[ ! "$MARIO_STATIC_SWITCH_ANCHOR" =~ ^(main|sdk):0x([0-9a-fA-F]+)$ ]]; then
+        echo "ERRO: MARIO_STATIC_SWITCH_ANCHOR exige main:0xOFFSET ou sdk:0xOFFSET." >&2
+        exit 1
+    fi
+    MARIO_SWITCH_MODULE="${BASH_REMATCH[1]}"
+    MARIO_SWITCH_RVA="0x${BASH_REMATCH[2]}"
+    echo "===== MARIO: TESTANDO TABELAS DE SALTO ARM64 ====="
+    python3 tests/test_mario_static_switches.py
+    echo "===== MARIO: REENTRADAS ESTATICAS COMPROVADAS ====="
+    MARIO_SWITCH_ENTRIES="$(python3 -u tools/mario_static_switches.py \
+        --game "$MARIO_GAME" --output "$MARIO_CODE" \
+        --module "$MARIO_SWITCH_MODULE" --anchor "$MARIO_SWITCH_RVA" \
+        --max-blocks "${MARIO_STATIC_SWITCH_BLOCKS:-16}" \
+        --budget-bytes "${MARIO_STATIC_SWITCH_BUDGET:-131072}" \
+        --max-block-bytes "${MARIO_STATIC_SWITCH_BLOCK_BYTES:-16384}")"
+    if [[ -z "$MARIO_SWITCH_ENTRIES" ]]; then
+        echo "ERRO: sem enderecos comprovados para reparar; nao recompilar." >&2
+        exit 1
+    fi
+    MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_SWITCH_ENTRIES"
+    echo "Blocos estaticos selecionados: $MARIO_SWITCH_ENTRIES"
+fi
 if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
     # Opt-in, bounded static lookahead. Keep the ordinary incremental build
     # completely unchanged when MARIO_BATCH_ANCHOR is not supplied.
