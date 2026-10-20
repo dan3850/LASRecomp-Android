@@ -4453,7 +4453,8 @@ static uint64_t vertex_bytes_saturating(uint64_t elements, uint64_t stride) {
 // restricted to non-indexed draws: indexed range bounds depend on actual
 // indices and must not be predicted before GMEM synchronization.
 typedef struct {
-    uint32_t used_streams, max_index, base_instance, instances;
+    uint32_t used_streams, base_instance, instances;
+    uint64_t max_index;  // first + count can exceed 32-bit for large first
     uint32_t stride[16], divisor[16];
     uint64_t size[16], need[16];
     _Atomic int state;
@@ -4712,7 +4713,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
         }
         if (ranges_enabled) {
             vertex_job->used_streams = k.used_streams & 0xffffu;
-            vertex_job->max_index = (uint32_t)r->x[1] + (uint32_t)r->x[2];
+            vertex_job->max_index = (uint64_t)(uint32_t)r->x[1] + (uint32_t)r->x[2];
             vertex_job->base_instance = (uint32_t)r->x[3];
             vertex_job->instances = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
             memcpy(vertex_job->stride, k.stride, sizeof vertex_job->stride);
@@ -4822,10 +4823,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
                 NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
                 const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
                 if (b && b->tp > 0 && texpatch_is_item_cursor(b->tp - 1)) {
-                // This skip occurs after a stack-owned vertex job was queued.
-                // Join it before returning so workers never touch dead stack.
-                if ((*vertex_job_started))
-                    build_ready(&vertex_job->state, "vertex range preparation");
+                // draw() owns the snapshot and joins on every return path.
                 stat_skipped++;
                 return;
             }
@@ -4950,7 +4948,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
 
     uint64_t prof_t2_ = prof ? SDL_GetTicksNS() : 0;
     // ---- indices (copied; the largest index bounds the vertex data copied below)
-    uint32_t first = 0, count = (uint32_t)r->x[2], inst, base_inst, max_index = 0;
+    uint32_t first = 0, count = (uint32_t)r->x[2], inst, base_inst;
+    uint64_t max_index = 0;  // never wrap index + count / positive base_vertex
     int32_t base_vertex = 0;
     VkSpan ib = {0};
     VkIndexType itype_vk = VK_INDEX_TYPE_UINT32;
@@ -4960,7 +4959,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
     uint32_t scan_isz = 0, scan_restart = 0;
     if (!indexed) {
         first = (uint32_t)r->x[1]; base_inst = (uint32_t)r->x[3]; inst = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
-        max_index = first + count;
+        max_index = (uint64_t)first + count;
         if (!native) {
             // Consume the immutable indices built by a CPU worker during
             // command-list preflight. Keep the original local path for
