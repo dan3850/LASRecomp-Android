@@ -91,6 +91,7 @@ HARNESS = r'''
 #include "kernel.h"
 #include "mario_startup.h"
 #include <sys/mman.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -137,17 +138,28 @@ static void implemented_service(Cpu *c) {c->x[0]=101;}
 // section GC by default. Production uses whole-archive runtime registration.
 __attribute__((used,retain,section(HLE_SECTION)))
 static const HleImplEntry test_impl={"test_implemented_service",implemented_service};
+static bool reserve_fixture_window(uint64_t base) {
+    void *wanted=(void *)(uintptr_t)base;
+    // A hint plus an exact-address check never replaces an existing mapping.
+    // This single-threaded fixture needs no kernel-specific NOREPLACE flag.
+    void *p=mmap(wanted,0x10000,PROT_READ|PROT_WRITE,
+                 MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if (p==wanted) return true;
+    int error=p==MAP_FAILED?errno:EEXIST;
+    if (p!=MAP_FAILED) munmap(p,0x10000);
+    fprintf(stderr,"fixture guest mapping at %llx failed: %s\n",
+            (unsigned long long)base,strerror(error));
+    return false;
+}
 int main(int argc,char **argv) {
     if (argc<3) return 1;
     setenv("LARECOMP_DATA_ROOT",argv[2],1);
+    // Match main.c: claim guest addresses before dlopen can allocate there.
+    const uint64_t bases[]={MAIN_BASE,SDK_BASE};
+    for (int i=0;i<2;i++)
+        if (!reserve_fixture_window(bases[i])) return 3;
     char reason[512];
     if (!gamelib_load(argv[1],reason,sizeof reason)) {fprintf(stderr,"%s\n",reason);return 2;}
-    const uint64_t bases[]={MAIN_BASE,SDK_BASE};
-    for (int i=0;i<2;i++) {
-        void *p=mmap((void *)(uintptr_t)bases[i],0x10000,PROT_READ|PROT_WRITE,
-                    MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
-        if (p!=(void *)(uintptr_t)bases[i]) return 3;
-    }
     loader_load(argv[1]);
     dispatch_init();
     if (argc>3 && !strncmp(argv[3],"startup",7)) {
@@ -246,7 +258,7 @@ class TestMarioBoot(unittest.TestCase):
         finally:
             altered.unlink()
 
-    def build_harness(self, source_text=HARNESS):
+    def build_harness(self, source_text=HARNESS, linker_flags=()):
         source = self.folder / 'boot.c'
         source.write_text(source_text)
         executable = self.folder / 'boot'
@@ -256,7 +268,8 @@ class TestMarioBoot(unittest.TestCase):
                    '-DLASRECOMP_MARIO_TEST=1', '-include', str(self.config / 'mario_profile_config.h'),
                    '-I' + str(self.config), '-I' + str(ROOT / 'runtime'), '-Wno-format',
                    '-Wl,--export-dynamic', '-Wl,-rpath,' + str(self.out), str(source),
-                   *(str(ROOT / p) for p in sources), '-ldl', '-lpthread', '-lm', '-o', str(executable)]
+                   *(str(ROOT / p) for p in sources), *linker_flags,
+                   '-ldl', '-lpthread', '-lm', '-o', str(executable)]
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return executable
@@ -267,6 +280,48 @@ class TestMarioBoot(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('real dispatch executed main and sdk', result.stdout)
+
+    def test_guest_windows_are_reserved_before_dynamic_library_allocation(self):
+        # Model a native loader allocation that would occupy the guest window
+        # if the fixture loaded the library before reserving it. The real
+        # dlopen, library identity checks and guest dispatcher still execute.
+        source = HARNESS + r'''
+#include <dlfcn.h>
+void *__real_dlopen(const char *,int);
+void *__wrap_dlopen(const char *path,int flags) {
+    void *p=mmap((void *)(uintptr_t)MAIN_BASE,0x10000,PROT_READ|PROT_WRITE,
+                 MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if (p==MAP_FAILED) abort();
+    if (p!=(void *)(uintptr_t)MAIN_BASE) munmap(p,0x10000);
+    return __real_dlopen(path,flags);
+}
+'''
+        executable = self.build_harness(source, ('-Wl,--wrap=dlopen',))
+        result = subprocess.run([str(executable), str(self.exefs), str(self.folder)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('real dispatch executed main and sdk', result.stdout)
+
+    def test_guest_window_collision_is_rejected_without_overwriting_memory(self):
+        source = HARNESS[:HARNESS.index('int main(int argc')] + r'''
+int main(void) {
+    unsigned char *p=mmap((void *)(uintptr_t)MAIN_BASE,0x10000,PROT_READ|PROT_WRITE,
+                          MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if (p!=(void *)(uintptr_t)MAIN_BASE) return 10;
+    memset(p,0x5a,0x10000);
+    if (reserve_fixture_window(MAIN_BASE)) return 11;
+    for (int i=0;i<0x10000;i++) if (p[i]!=0x5a) return 12;
+    munmap(p,0x10000);
+    if (!reserve_fixture_window(MAIN_BASE)) return 13;
+    puts("occupied guest window preserved; reservation works after release");
+    return 0;
+}
+'''
+        executable = self.build_harness(source)
+        result = subprocess.run([str(executable)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('fixture guest mapping', result.stderr)
+        self.assertIn('occupied guest window preserved', result.stdout)
 
     def test_sdk_start_abis_run_real_guest_callbacks_and_finalizers(self):
         for arguments in (4, 5):

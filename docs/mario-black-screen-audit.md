@@ -153,14 +153,40 @@ Esses módulos foram excluídos explicitamente da rodada de 164 testes.
 Não foram verificados o APK final, Bionic/SAF no aparelho ou uma cena do Mario
 com o runtime corrigido.
 
+### Falha da fixture no Termux
+
+Na execução ARM64 enviada após `98e314d`, os sete testes do kernel passaram,
+mas duas execuções da fixture de boot terminaram com código `3`. Esse retorno
+identifica a reserva de uma janela sintética de memória, antes de `loader_load`,
+`dispatch_init` ou callbacks guest. A linha `[mods] ... unsupported` aparece
+durante o carregamento da biblioteca e não é a mensagem de erro desse retorno.
+O log antigo não registra `errno`, portanto não distingue colisão de endereço
+de incompatibilidade com a flag de mapeamento.
+
+A fixture foi corrigida para reservar os endereços antes de `gamelib_load`,
+seguindo a ordem de reserva/carregamento do aplicativo. Usa uma indicação de
+endereço com conferência estrita do endereço retornado, sem flags que substituam
+mapeamentos existentes e sem depender de `MAP_FIXED_NOREPLACE`. Reservas em
+endereço diferente são desfeitas e causam falha explícita. Os dois testes novos
+simulam uma alocação durante `dlopen` e uma colisão pré-existente; continuam
+executando o loader e o dispatcher reais e verificam que a memória ocupada não
+é sobrescrita. A mudança afeta somente os testes, não a execução do jogo.
+
+No host, os dez testes de bootstrap passaram. O teste de alocação durante
+`dlopen`, executado contra a fixture anterior de `98e314d`, reproduziu o retorno
+`3` com a mesma linha `[mods]`. Isso demonstra o defeito de ordem da fixture,
+mas não identifica o motivo específico do `mmap` no aparelho, pois faltava o
+erro da chamada naquele log. A nova execução no Termux e o APK seguem pendentes.
+
 ## Compilar no Termux
 
-Na cópia existente do repositório, inclusive quando outra branch estiver aberta:
+No worktree já usado pelo Mario (`~/LASRecomp-Mario-Teste` neste ambiente).
+Isso evita tentar abrir a mesma branch em um segundo worktree do Zelda:
 
 ```bash
 bash <<'SH'
 set -euo pipefail
-cd "$HOME/LASRecomp-Android"
+cd "$HOME/LASRecomp-Mario-Teste"
 MARIO_BRANCH="android/mario-full-recompiler-test"
 git fetch --no-tags origin "refs/heads/$MARIO_BRANCH:refs/remotes/origin/$MARIO_BRANCH"
 MARIO_RUNNER="$(mktemp)"
