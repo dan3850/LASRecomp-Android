@@ -11,6 +11,23 @@
 static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
 
 #ifdef LASRECOMP_MARIO_TEST
+// Diagnostic boot mode: keep overflow records in host-owned memory when the
+// guest callback declines to provide another command-memory chunk.
+typedef struct NvnSpillChunk {
+    struct NvnSpillChunk *next;
+    uint8_t bytes[];
+} NvnSpillChunk;
+static void release_spills(NvnCmdBuf *cb) {
+    NvnSpillChunk *chunk = cb->spill_chunks;
+    while (chunk) {
+        NvnSpillChunk *next = chunk->next;
+        free(chunk);
+        chunk = next;
+    }
+}
+#endif
+
+#ifdef LASRECOMP_MARIO_TEST
 // Observability only: number of NVN commands recorded by the original game.
 // Never count synthetic Vulkan presentation commands as guest draw calls.
 static uint64_t mario_recorded_ops[CMD_COUNT];
@@ -42,7 +59,14 @@ NVN(nvnCommandBufferInitialize) {
     SET_HOST(A(0), cb);
     RET(1);
 }
-NVN(nvnCommandBufferFinalize) { free(cb_of(A(0))); SET_HOST(A(0), 0); }
+NVN(nvnCommandBufferFinalize) {
+    NvnCmdBuf *cb = cb_of(A(0));
+#ifdef LASRECOMP_MARIO_TEST
+    release_spills(cb);
+#endif
+    free(cb);
+    SET_HOST(A(0), 0);
+}
 NVN(nvnCommandBufferSetDebugLabel) { (void)c; }
 
 static CmdRec *raw_rec(uint64_t at, uint32_t op, uint32_t size) {
@@ -120,6 +144,35 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
                 cb->mem != before_mem || cb->used != before_used || cb->size != before_size);
 #endif
         memcpy(c->x, saved, sizeof saved);
+#ifdef LASRECOMP_MARIO_TEST
+        // The game can legitimately decline the callback. Our CmdRec format
+        // uses more bytes than native NVN packets, so the guest's small chunk
+        // may be exhausted despite sufficient logical NVN command capacity.
+        // Keep the recorded stream intact instead of aborting the boot test.
+        if (!cb->mem || cb->used + size + JUMP_RESERVE > cb->size) {
+            if (cb->mem && cb->size - cb->used < sizeof(CmdRec))
+                FATAL("nvn: cannot chain command spill (remaining=%llu)\n",
+                      (unsigned long long)(cb->size - cb->used));
+            uint64_t capacity = size + JUMP_RESERVE;
+            if (capacity < 65536) capacity = 65536;
+            NvnSpillChunk *chunk = malloc(sizeof(*chunk) + capacity);
+            if (!chunk) FATAL("nvn: host command spill allocation failed\n");
+            chunk->next = cb->spill_chunks;
+            cb->spill_chunks = chunk;
+            uint64_t next_mem = (uint64_t)(uintptr_t)chunk->bytes;
+            if (cb->recording && cb->mem) {
+                CmdRec *jump = raw_rec(cb->mem + cb->used, CMD_JUMP, sizeof(CmdRec));
+                jump->x[0] = next_mem;
+            }
+            fprintf(stderr, "[mario-nvn-memory] host-spill bytes=%llu op=%u previous=%llx/%llu/%llu next=%llx\n",
+                    (unsigned long long)capacity, op,
+                    (unsigned long long)cb->mem, (unsigned long long)cb->used,
+                    (unsigned long long)cb->size, (unsigned long long)next_mem);
+            cb->mem = next_mem;
+            cb->size = capacity;
+            cb->used = 0;
+        }
+#endif
     }
     CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
 #ifdef LASRECOMP_MARIO_TEST
