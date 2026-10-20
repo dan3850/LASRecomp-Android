@@ -4220,6 +4220,29 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     stat_dispatches++;
 }
 
+// Shader variants prepared by the bounded NVN preflight. The executor reads
+// these only during the same backend_execute call. A lookup must compare the
+// complete shader keys: guest state may differ from the speculative snapshot.
+typedef struct {
+    NvnProgram *program;
+    ShaderKey vertex, fragment;
+    Prog *ready;
+} PreparedDrawProgram;
+static PreparedDrawProgram prepared_draws[32];
+static unsigned prepared_draw_count;
+static Prog *prepared_draw_lookup(NvnProgram *program,
+                                  const ShaderKey *vertex,
+                                  const ShaderKey *fragment) {
+    for (unsigned i = 0; i < prepared_draw_count; i++) {
+        const PreparedDrawProgram *entry = &prepared_draws[i];
+        if (entry->program == program &&
+            !memcmp(&entry->vertex, vertex, sizeof *vertex) &&
+            !memcmp(&entry->fragment, fragment, sizeof *fragment))
+            return entry->ready;
+    }
+    return NULL;
+}
+
 // ================================================================== draws
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed);
 
@@ -4269,7 +4292,10 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
-    Prog *pr = get_program(st.program, &vkey, &fkey);
+    // Consume the exact variant produced by the preflight when the actual
+    // draw state still matches. Otherwise use the original lazy lookup.
+    Prog *pr = prepared_draw_lookup(st.program, &vkey, &fkey);
+    if (!pr) pr = get_program(st.program, &vkey, &fkey);
     if (!pr) { stat_skipped++; return; }
     build_ready(&pr->state, "graphics program");
     g_mirror_w = 0;
@@ -5413,10 +5439,7 @@ static void shader_list_preflight(uint64_t handle) {
     // A bounded work list avoids repeated hash-table probes and work queue
     // traffic for the hundreds of identical draws in an overworld frame.
     // Only distinct shader variants count against the lookahead budget.
-    struct {
-        NvnProgram *program;
-        ShaderKey vertex, fragment;
-    } planned[32];
+    PreparedDrawProgram planned[32] = {0};
     unsigned nplanned = 0;
     uint64_t p = handle;
     for (unsigned step = 0; step < 512; step++) {
@@ -5499,9 +5522,15 @@ static void shader_list_preflight(uint64_t handle) {
         p += r->size;
     }
 submit_planned:
-    for (unsigned i = 0; i < nplanned; i++)
-        (void)get_program(planned[i].program,
-                          &planned[i].vertex, &planned[i].fragment);
+    // Publish after the complete bounded scan, before ordered execution.
+    // Workers only translate/compile resources. They never read this table.
+    prepared_draw_count = 0;
+    for (unsigned i = 0; i < nplanned; i++) {
+        planned[i].ready = get_program(planned[i].program,
+                                       &planned[i].vertex, &planned[i].fragment);
+        if (planned[i].ready)
+            prepared_draws[prepared_draw_count++] = planned[i];
+    }
 }
 
 // ================================================================== executor (renderer.m exec_list)
@@ -5763,8 +5792,10 @@ static void exec_list(uint64_t handle, int depth) {
 
 void backend_execute(uint64_t handle) {
     PROF_T0();
+    prepared_draw_count = 0;
     shader_list_preflight(handle);
     exec_list(handle, 0);
+    prepared_draw_count = 0;
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;
     static int sync_submit = -1;
