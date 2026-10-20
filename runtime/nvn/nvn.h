@@ -94,6 +94,9 @@ typedef struct {
     uint64_t callback, callback_data;
     bool recording;
     uint64_t guest;  // the guest NVNcommandBuffer*
+#ifdef LASRECOMP_MARIO_TEST
+    struct NvnSpillChunk *spill_chunks;
+#endif
 } NvnCmdBuf;
 
 // One recorded command: header, the call's integer and float arguments, then copied data.
