@@ -28,7 +28,7 @@ class MarioTextureOwnership(unittest.TestCase):
     def test_real_registry_supports_copied_guest_handles_and_invalid_top_byte(self):
         source = SOURCE.read_text()
         start = source.index("typedef struct MarioTextureOwner {")
-        end = source.index("\n#endif\n\nstatic NvnTexture *texture_from_builder", start)
+        end = source.index("\n#endif", start)
         registry = source[start:end]
         harness = r"""
 #include <stdint.h>
