@@ -376,6 +376,12 @@ typedef struct MarioTextureOwner {
 #define MARIO_TEXTURE_OWNER_BUCKETS 4096u
 #define MARIO_TEXTURE_PTR_BITS UINT64_C(0x00ffffffffffffff)
 static MarioTextureOwner *mario_texture_owners[MARIO_TEXTURE_OWNER_BUCKETS];
+/* Mario boot diagnostic: descriptor entries and queued draws can outlive an
+ * NVNtexture guest wrapper. Keep finalized host texture objects alive until
+ * this short-lived test process exits. This deliberately trades memory for
+ * avoiding stale renderer pointers; it is NOT the production lifetime policy. */
+static MarioTextureOwner *mario_texture_retired;
+static unsigned mario_texture_retired_count;
 static pthread_mutex_t mario_texture_owners_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static uint64_t mario_texture_owner_key(uint64_t ptr) {
@@ -417,7 +423,9 @@ static NvnTexture *mario_texture_owner_take(uint64_t claimed) {
         MarioTextureOwner *e = *link;
         *link = e->next;
         host = e->host;
-        free(e);
+        e->next = mario_texture_retired;
+        mario_texture_retired = e;
+        mario_texture_retired_count++;
     }
     pthread_mutex_unlock(&mario_texture_owners_lock);
     return host;
@@ -483,8 +491,12 @@ NVN(nvnTextureFinalize) {
                 (unsigned long long)A(0), (unsigned long long)claimed,
                 (void *)t, (unsigned long long)c->x[30]);
     }
-    backend_texture_destroyed(t);
-    free(t);
+    // Do not destroy the host object or its Vulkan backing while descriptor
+    // pools or deferred command lists may still reference it. The registry
+    // retained its ownership node in mario_texture_retired above.
+    if (mario_texture_retired_count <= 16)
+        LOG("[mario-texture-owner] deferred finalize host=%p retained=%u\\n",
+            (void *)t, mario_texture_retired_count);
 #else
     NvnTexture *t = HOST(NvnTexture, A(0));
     if (t) { backend_texture_destroyed(t); free(t); }
