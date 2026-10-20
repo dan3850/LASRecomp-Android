@@ -1,10 +1,104 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Update and build only the existing Mario branch; never reset, stash or clean.
+# Update the existing remote Mario branch without discarding work or caches.
 set -euo pipefail
+
+mario_update_checkout() (
+    # Run in a subshell so the recovery trap covers only the Git transition.
+    local mario_source mario_original mario_target mario_pending='' mario_backup=''
+    local mario_backup_root mario_before mario_saved
+    [[ ! -d "$(git rev-parse --git-path rebase-merge)" &&
+       ! -d "$(git rev-parse --git-path rebase-apply)" &&
+       ! -f "$(git rev-parse --git-path MERGE_HEAD)" &&
+       ! -f "$(git rev-parse --git-path CHERRY_PICK_HEAD)" &&
+       ! -f "$(git rev-parse --git-path REVERT_HEAD)" &&
+       -z "$(git ls-files --unmerged)" ]] || {
+        echo "ERRO: existe uma operacao Git pendente. Arquivos preservados." >&2; return 1;
+    }
+    git fetch --no-tags origin "refs/heads/$mario_branch:refs/remotes/origin/$mario_branch"
+    mario_target="$(git rev-parse "refs/remotes/origin/$mario_branch")"
+    mario_source="$(git branch --show-current)"
+    mario_original="$(git rev-parse HEAD)"
+    if git show-ref --verify --quiet "refs/heads/$mario_branch"; then
+        git merge-base --is-ancestor "refs/heads/$mario_branch" "$mario_target" || {
+            echo "ERRO: $mario_branch possui commits locais fora do origin. Nada foi descartado." >&2
+            return 1
+        }
+    fi
+
+    mario_restore_on_error() {
+        local mario_result=$?
+        trap - EXIT
+        if [[ -n "$mario_pending" ]]; then
+            if [[ -n "$mario_source" ]]; then
+                git switch --no-overwrite-ignore "$mario_source" || true
+            else
+                git switch --no-overwrite-ignore --detach "$mario_original" || true
+            fi
+            if [[ "$(git rev-parse HEAD)" == "$mario_original" &&
+                  "$(git branch --show-current)" == "$mario_source" ]]; then
+                git stash apply --index "$mario_pending" || mario_result=1
+            fi
+            echo "Backup local mantido: $mario_backup (stash $mario_pending)" >&2
+        fi
+        exit "$mario_result"
+    }
+
+    if [[ "$mario_source" != "$mario_branch" || "$mario_original" != "$mario_target" ]] &&
+       [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+        # Keep source-branch edits out of the Mario build. Ignored compilation
+        # caches are deliberately excluded from this local-only backup.
+        mario_backup_root="$(git rev-parse --git-path mario-update-backups)"
+        mkdir -p "$mario_backup_root"
+        mario_backup="$(mktemp -d "$mario_backup_root/$(date +%Y%m%d-%H%M%S)-XXXXXX")"
+        git diff --binary --cached > "$mario_backup/index.patch"
+        git diff --binary > "$mario_backup/working-tree.patch"
+        git status --short --untracked-files=all > "$mario_backup/status.txt"
+        printf '%s\n%s\n' "$mario_source" "$mario_original" > "$mario_backup/origem.txt"
+        mario_before="$(git rev-parse --verify refs/stash 2>/dev/null || true)"
+        git -c user.name='Mario local backup' -c user.email='mario-local@localhost' \
+            stash push --include-untracked --message "Mario: preservar $mario_source $mario_original"
+        mario_saved="$(git rev-parse --verify refs/stash)"
+        [[ -n "$mario_saved" && "$mario_saved" != "$mario_before" ]] || {
+            echo "ERRO: backup Git nao foi criado. Confira $mario_backup." >&2; return 1;
+        }
+        mario_pending="$mario_saved"
+        trap mario_restore_on_error EXIT
+        printf '%s\n' "$mario_saved" > "$mario_backup/stash.txt"
+        [[ -z "$(git status --porcelain --untracked-files=all)" ]] || {
+            echo "ERRO: ha alteracoes que o Git nao conseguiu guardar. Backup: $mario_backup" >&2
+            return 1
+        }
+    fi
+    if [[ "$mario_source" != "$mario_branch" ]]; then
+        if git show-ref --verify --quiet "refs/heads/$mario_branch"; then
+            git switch --no-overwrite-ignore "$mario_branch"
+        else
+            # This is the branch already present on origin, with the same name.
+            git switch --no-overwrite-ignore --track -c "$mario_branch" "refs/remotes/origin/$mario_branch"
+        fi
+    fi
+    git merge --ff-only --no-overwrite-ignore "$mario_target"
+    if [[ -n "$mario_pending" ]]; then
+        mario_pending=''
+        if [[ "$mario_source" == "$mario_branch" ]]; then
+            if ! git stash apply --index "$mario_saved"; then
+                echo "ERRO: conflito nas edicoes do Mario; compilacao interrompida. Backup: $mario_backup" >&2
+                return 1
+            fi
+            echo "Edicoes locais do Mario restauradas. Backup: $mario_backup"
+        else
+            echo "Edicoes de ${mario_source:-HEAD destacado} guardadas em $mario_backup"
+            echo "STASH_ORIGEM=$mario_saved (mantido localmente; nao aplicado ao Mario)"
+        fi
+    fi
+    trap - EXIT
+)
 
 mario_build_main() {
     local mario_root mario_branch mario_game mario_code mario_apk
-    mario_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # MARIO_PROJECT also permits running a freshly fetched copy of this script
+    # when the currently checked-out branch does not yet contain it.
+    mario_root="$(cd "${MARIO_PROJECT:-$(dirname "${BASH_SOURCE[0]}")}" && pwd)"
     mario_branch="android/mario-full-recompiler-test"
     mario_game="${1:-/storage/emulated/0/SwitchRoms/Super-extraido}"
     mario_code="$mario_root/build/private-mario-full-test"
@@ -14,21 +108,20 @@ mario_build_main() {
     [[ "$(uname -m)" == aarch64 && "${PREFIX:-}" == /data/data/com.termux/files/usr ]] || {
         echo "ERRO: execute no Termux ARM64, fora do proot." >&2; return 1;
     }
-    [[ "$(git branch --show-current)" == "$mario_branch" ]] || {
-        echo "ERRO: branch atual: $(git branch --show-current). Exigida: $mario_branch." >&2
-        echo "Nenhuma branch ou alteracao local foi trocada." >&2; return 1;
-    }
+    case "$(git config --get remote.origin.url)" in
+        https://github.com/dan3850/LASRecomp-Android|https://github.com/dan3850/LASRecomp-Android.git|git@github.com:dan3850/LASRecomp-Android.git) ;;
+        *) echo "ERRO: origin nao corresponde a dan3850/LASRecomp-Android." >&2; return 1 ;;
+    esac
     [[ -f "$mario_game/exefs/main" && -f "$mario_game/exefs/sdk" ]] || {
         echo "ERRO: exefs/main ou exefs/sdk ausente em $mario_game." >&2; return 1;
     }
     echo "BRANCH=$(git branch --show-current)"
     echo "HEAD_ANTES=$(git rev-parse HEAD)"
     git status --short
-    git fetch --no-tags origin "refs/heads/$mario_branch:refs/remotes/origin/$mario_branch"
-    if ! git merge --ff-only "refs/remotes/origin/$mario_branch"; then
-        echo "ERRO: atualizacao sem sobrescrita impossivel; historico e arquivos locais preservados." >&2
-        return 1
-    fi
+    mario_update_checkout
+    [[ "$(git branch --show-current)" == "$mario_branch" ]] || {
+        echo "ERRO: branch exigida nao foi selecionada." >&2; return 1;
+    }
     if ! git diff --quiet HEAD -- runtime/kernel.c tests/kernel_condvar_test.c tests/test_kernel_condvar.py; then
         echo "ERRO: kernel ou teste de regressao possui edicoes locais; nada foi descartado." >&2
         git status --short

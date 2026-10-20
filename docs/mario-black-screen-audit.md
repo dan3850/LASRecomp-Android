@@ -155,16 +155,41 @@ com o runtime corrigido.
 
 ## Compilar no Termux
 
-Na cópia existente desta branch:
+Na cópia existente do repositório, inclusive quando outra branch estiver aberta:
 
 ```bash
-bash atualizar-compilar-mario-termux.sh /storage/emulated/0/SwitchRoms/Super-extraido
+bash <<'SH'
+set -euo pipefail
+cd "$HOME/LASRecomp-Android"
+MARIO_BRANCH="android/mario-full-recompiler-test"
+git fetch --no-tags origin "refs/heads/$MARIO_BRANCH:refs/remotes/origin/$MARIO_BRANCH"
+MARIO_RUNNER="$(mktemp)"
+trap 'rm -f "$MARIO_RUNNER"' EXIT
+git show "refs/remotes/origin/$MARIO_BRANCH:atualizar-compilar-mario-termux.sh" > "$MARIO_RUNNER"
+MARIO_PROJECT="$PWD" bash "$MARIO_RUNNER" /storage/emulated/0/SwitchRoms/Super-extraido
+SH
 ```
 
 O script atualiza somente por fast-forward, mantém arquivos/caches locais,
 executa as regressões, reutiliza a biblioteca recompilada existente e chama a
 compilação/assinatura nativa. Só gera main/sdk se a biblioteca ou o relatório
 estiver ausente. Não solicita novos lotes especulativos de reentradas.
+
+O comando busca o atualizador diretamente da branch remota, mesmo se o arquivo
+ainda não existir na branch aberta. O atualizador seleciona a branch do Mario.
+Edições de outra branch, incluindo arquivos não rastreados, ficam em um stash
+local preservado, com SHA e origem registrados em `.git/mario-update-backups/`;
+não são aplicadas ao Mario. Edições do próprio Mario são reaplicadas com o index
+preservado após a atualização. Conflitos interrompem a compilação e mantêm o
+backup. Caches ignorados pelo Git não entram no stash e ficam protegidos contra
+sobrescrita durante checkout/fast-forward. Não há reset, limpeza de caches nem
+alteração dos commits da branch de origem.
+
+As regressões do atualizador usam remotos Git locais e um compilador de APK
+simulado: `python3 tests/test_mario_termux_update.py`. Verificam checkout a partir
+de outra branch, launcher sem o arquivo local, restauração de index/arquivos,
+preservação dos caches, conflitos e recuperação após falha no fast-forward.
+Esses testes verificam o fluxo Git; não comprovam a compilação Android.
 
 Saída principal:
 `build/mario-android-boot/Mario-Recomp-Boot-Test.apk`.
