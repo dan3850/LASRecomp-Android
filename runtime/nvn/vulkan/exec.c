@@ -4243,6 +4243,37 @@ static void draw(CmdRec *r, bool indexed) {
 static uint64_t prof_tp_;
 static void draw_(CmdRec *r, bool indexed) {
     if (prof) prof_tp_ = SDL_GetTicksNS();
+#ifdef LASRECOMP_MARIO_TEST
+    // Single guest draw per frame: identify its shader and actual NVN
+    // attachment, not the distinct fullscreen Vulkan presentation blit.
+    static uint64_t mario_draw_calls;
+    uint64_t observed = ++mario_draw_calls;
+    if (observed <= 3 || observed % 120 == 0) {
+        NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
+        uint64_t vs = st.program ? st.program->stages[0].code_addr : 0;
+        uint64_t fs = st.program ? st.program->stages[1].code_addr : 0;
+        FILE *evidence = fopen("mario-grafico.log", "a");
+        if (evidence) {
+            fprintf(evidence,
+                "[mario-draw] call=%llu indexed=%d primitive=%llu count=%llu "
+                "program=%p vs=%#llx fs=%#llx target=%p id=%llu "
+                "target-size=%ux%u color-mask=%#x ncolor=%d "
+                "viewport=%.0f,%.0f %.0fx%.0f scissor=%d,%d %dx%d\n",
+                (unsigned long long)observed, indexed,
+                (unsigned long long)r->x[0], (unsigned long long)r->x[2],
+                (void *)st.program, (unsigned long long)vs,
+                (unsigned long long)fs, (void *)rt,
+                (unsigned long long)(rt ? rt->debug_id : 0),
+                rt ? rt->width : 0, rt ? rt->height : 0,
+                st.channel_mask, st.rt.ncolor,
+                st.viewport[0][0], st.viewport[0][1],
+                st.viewport[0][2], st.viewport[0][3],
+                st.scissor[0][0], st.scissor[0][1],
+                st.scissor[0][2], st.scissor[0][3]);
+            fclose(evidence);
+        }
+    }
+#endif
     if (!st.program) { stat_skipped++; return; }
     ShaderKey vkey = {0}, fkey = {0};
     vkey.glsl = fkey.glsl = 1;
