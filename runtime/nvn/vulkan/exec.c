@@ -4655,6 +4655,11 @@ static void draw_(CmdRec *r, bool indexed) {
     }
 
     // ---- vertex streams: the range this draw can read, copied once per submission
+    // Batch contiguous changed bindings into one Vulkan call instead of
+    // recording a separate vkCmdBindVertexBuffers for each stream.
+    VkBuffer pending_vb[17] = {0};
+    VkDeviceSize pending_vo[17] = {0};
+    uint32_t pending_mask = 0;
     for (int s = 0; s < 17; s++) {
         if (!(k.used_streams & (1u << s))) continue;
         VkSpan sp;
@@ -4668,7 +4673,8 @@ static void draw_(CmdRec *r, bool indexed) {
             if (v.addr && v.size && guest_direct(v.addr, v.size, &dbuf, &doff)) {
                 if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == dbuf && ss.vo[s] == doff) continue;
                 ss.vb[s] = dbuf; ss.vo[s] = doff; ss.vb_known |= 1u << s;
-                vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
+                pending_vb[s] = dbuf; pending_vo[s] = doff;
+                pending_mask |= 1u << s;
                 continue;
             }
             if (scan_src) {  // copying after all: the index scan bounds the copy
@@ -4689,7 +4695,20 @@ static void draw_(CmdRec *r, bool indexed) {
         VkDeviceSize off = sp.off;
         if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == sp.buf && ss.vo[s] == off) continue;
         ss.vb[s] = sp.buf; ss.vo[s] = off; ss.vb_known |= 1u << s;
-        vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &off);
+        pending_vb[s] = sp.buf; pending_vo[s] = off;
+        pending_mask |= 1u << s;
+    }
+    for (uint32_t first_binding = 0; first_binding < 17;) {
+        if (!(pending_mask & (1u << first_binding))) {
+            first_binding++;
+            continue;
+        }
+        uint32_t end_binding = first_binding + 1;
+        while (end_binding < 17 && (pending_mask & (1u << end_binding)))
+            end_binding++;
+        vkCmdBindVertexBuffers(cb, first_binding, end_binding - first_binding,
+                               &pending_vb[first_binding], &pending_vo[first_binding]);
+        first_binding = end_binding;
     }
 
     if (prof) prof_vtx += SDL_GetTicksNS() - prof_t2_;
