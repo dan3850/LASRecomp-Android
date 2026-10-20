@@ -4398,6 +4398,30 @@ static void free_indexed_geometry(IndexedGeometryJob *g) {
     free(g->widened);
     free(g);
 }
+// CPU-only, immutable vertex-range preparation. This is deliberately
+// restricted to non-indexed draws: indexed range bounds depend on actual
+// indices and must not be predicted before GMEM synchronization.
+typedef struct {
+    uint32_t used_streams, max_index, base_instance, instances;
+    uint32_t stride[16], divisor[16];
+    uint64_t size[16], need[16];
+    _Atomic int state;
+} VertexRangeJob;
+static void prepare_vertex_ranges(void *arg) {
+    VertexRangeJob *v = arg;
+    for (unsigned s = 0; s < 16; ++s) {
+        if (!(v->used_streams & (1u << s))) continue;
+        uint64_t stride = v->stride[s], need;
+        if (!stride) need = 256;
+        else if (v->divisor[s])
+            need = ((uint64_t)v->base_instance + v->instances +
+                    v->divisor[s] - 1) / v->divisor[s] * stride + 256;
+        else need = (uint64_t)v->max_index * stride + 256;
+        if (v->size[s] && need > v->size[s]) need = v->size[s];
+        v->need[s] = need ? need : 16;
+    }
+    build_finished(&v->state, 1);
+}
 static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared);
 static void draw(CmdRec *r, bool indexed) {
     PROF_T0();
@@ -4409,6 +4433,8 @@ static void draw(CmdRec *r, bool indexed) {
 }
 static uint64_t prof_tp_;
 static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
+    VertexRangeJob vertex_job = {0};
+    bool vertex_job_started = false;
     if (prof) prof_tp_ = SDL_GetTicksNS();
     if (!st.program) { stat_skipped++; return; }
     ShaderKey vkey = {0}, fkey = {0};
@@ -4593,6 +4619,28 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
             memcpy(k.blend[i], st.blend[i], 8);
         }
     }
+    // Capture stream sizes and layout after building the actual pipeline
+    // key. The worker never reads st, guest memory or Vulkan/VMA resources.
+    // Draws that use an index buffer continue through their original path.
+    if (!indexed && (uint32_t)r->x[2] <= 65536) {
+        static int ranges_enabled = -1;
+        if (ranges_enabled < 0) {
+            const char *e = getenv("LARECOMP_VK_VERTEX_RANGE_PREP");
+            ranges_enabled = !e || atoi(e) != 0;
+        }
+        if (ranges_enabled) {
+            vertex_job.used_streams = k.used_streams & 0xffffu;
+            vertex_job.max_index = (uint32_t)r->x[1] + (uint32_t)r->x[2];
+            vertex_job.base_instance = (uint32_t)r->x[3];
+            vertex_job.instances = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
+            memcpy(vertex_job.stride, k.stride, sizeof vertex_job.stride);
+            memcpy(vertex_job.divisor, k.divisor, sizeof vertex_job.divisor);
+            for (int i = 0; i < 16; i++)
+                vertex_job.size[i] = st.vbuf[i].size;
+            run_job(prepare_vertex_ranges, &vertex_job);
+            vertex_job_started = true;
+        }
+    }
     k.a2c = st.ms[0xC] != 0;
     k.topo_class = cls;
     k.poly_fill = st.poly[2] != 1;
@@ -4609,6 +4657,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
         run_job(build_pipeline, pp);
     }
     build_ready(&pp->state, "graphics pipeline");
+    if (vertex_job_started)
+        build_ready(&vertex_job.state, "vertex range preparation");
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
@@ -4949,10 +4999,15 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                 scan_src = NULL;
             }
             uint64_t stride = k.stride[s], need;
-            if (!stride) need = 256;
-            else if (k.divisor[s]) need = ((uint64_t)base_inst + inst + k.divisor[s] - 1) / k.divisor[s] * stride + 256;
-            else need = (uint64_t)max_index * stride + 256;
-            if (v.size && need > v.size) need = v.size;
+            if (vertex_job_started) {
+                build_ready(&vertex_job.state, "vertex range preparation");
+                need = vertex_job.need[s];
+            } else {
+                if (!stride) need = 256;
+                else if (k.divisor[s]) need = ((uint64_t)base_inst + inst + k.divisor[s] - 1) / k.divisor[s] * stride + 256;
+                else need = (uint64_t)max_index * stride + 256;
+                if (v.size && need > v.size) need = v.size;
+            }
             if (!v.addr) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
             else sp = guest_vertex_copy(v.addr, need ? need : 16);
         }
