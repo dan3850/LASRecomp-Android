@@ -16,7 +16,7 @@ import sys
 
 def select_blocks(rows, base, text_end, anchor_offsets, read_word, *,
                   limit=8, budget_bytes=65536, radius=65536,
-                  max_block_bytes=16384, nearby_radius=0):
+                  max_block_bytes=16384, nearby_radius=0, prefer_forward=False):
     if not (1 <= limit <= 32 and 16 <= budget_bytes <= 1048576 and
             4 <= max_block_bytes <= 262144 and 0 <= radius <= 1048576 and
             0 <= nearby_radius <= radius):
@@ -69,10 +69,12 @@ def select_blocks(rows, base, text_end, anchor_offsets, read_word, *,
         choices.append({
             "owner": owner, "end": end, "size": size,
             "offset": target - base, "forced": forced,
-            "indirect": indirect, "nearby": nearby, "distance": distance,
+            "indirect": indirect, "nearby": nearby,
+            "forward": owner > max(anchors), "distance": distance,
         })
     choices.sort(key=lambda b: (
-        not b["forced"], not b["nearby"], not b["indirect"],
+        not b["forced"], not b["nearby"],
+        not (prefer_forward and b["forward"]), not b["indirect"],
         b["distance"], b["size"],
         b["owner"],
     ))
@@ -116,6 +118,7 @@ def main():
     p.add_argument("--radius", type=int, default=65536)
     p.add_argument("--max-block-bytes", type=int, default=16384)
     p.add_argument("--nearby-radius", type=int, default=0)
+    p.add_argument("--prefer-forward", choices=("0", "1"), default="0")
     args = p.parse_args()
     anchors = parse_anchors(args.anchor)
     from gen import Module
@@ -150,7 +153,8 @@ def main():
             rows, base, module.hi, anchors[name], module.word,
             limit=per_module_limit, budget_bytes=remaining_bytes,
             radius=args.radius, max_block_bytes=args.max_block_bytes,
-            nearby_radius=args.nearby_radius
+            nearby_radius=args.nearby_radius,
+            prefer_forward=args.prefer_forward == "1"
         )
         for b in blocks:
             selection.append((name, b))
@@ -161,7 +165,7 @@ def main():
             f"[mario-batch] {name} block={b['owner']:#x}..{b['end']:#x} "
             f"bytes={b['size']} observed={int(b['forced'])} "
             f"indirect={int(b['indirect'])} nearby={int(b['nearby'])} "
-            f"distance={b['distance']}",
+            f"forward={int(b['forward'])} distance={b['distance']}",
             file=sys.stderr,
         )
     print(" ".join(f"{name}:0x{b['offset']:x}" for name, b in selection))
