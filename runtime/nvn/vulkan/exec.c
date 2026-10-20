@@ -39,6 +39,9 @@
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
+// Repeated draw pipelines: count full-key lookups skipped by a last-pipeline
+// fast path. No changes to the pipeline identity or cache lifetime.
+static uint64_t stat_pipe_last_hits, stat_pipe_last_misses;
 static uint64_t stat_vb_bind_slots, stat_vb_bind_calls;
 static uint64_t stat_gmem_stream_bytes, stat_gmem_stream_maps;
 static uint64_t stat_gmem_covered, stat_gmem_covered_bytes;
@@ -1369,6 +1372,14 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
+    if (stat_pipe_last_hits || stat_pipe_last_misses) {
+        size_t n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 " | pipe last %llu hits/%llu misses",
+                 (unsigned long long)stat_pipe_last_hits,
+                 (unsigned long long)stat_pipe_last_misses);
+        stat_pipe_last_hits = stat_pipe_last_misses = 0;
+    }
     if (stat_vb_bind_slots) {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n,
@@ -2225,6 +2236,9 @@ static void *pipeline_recipe_build(const ReplayRecipe *recipe, void *context);
 static void pipeline_recipe_destroy(void *object);
 #define PIPE_TAB 8192
 static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
+// The key is immutable after creation. Reset with pipe_tab whenever the
+// Vulkan device / guest program epoch changes.
+static Pipe *pipe_last;
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
 // stored constants (fragment-shader hashes) and must not change.
@@ -3739,6 +3753,7 @@ void vk_exec_reset(void) {
     gmem_write_pool_clear();
     memset(prog_tab, 0, sizeof prog_tab);
     memset(pipe_tab, 0, sizeof pipe_tab);
+    pipe_last = NULL;
     g_cs_n = 0;
     gcopy_gen++;
     if (gmem_buf) {
@@ -4389,17 +4404,43 @@ static void draw_(CmdRec *r, bool indexed) {
     k.a2c = st.ms[0xC] != 0;
     k.topo_class = cls;
     k.poly_fill = st.poly[2] != 1;
-    uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
-    if (!ph) ph = 1;
-    uint32_t pslot = (uint32_t)(ph ^ (ph >> 29)) & (PIPE_TAB - 1);
-    while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (PIPE_TAB - 1);
-    Pipe *pp = pipe_tab[pslot].pipe;
-    if (!pp) {
-        pp = calloc(1, sizeof *pp);
-        pp->k = k;
-        pipe_tab[pslot].key = ph;
-        pipe_tab[pslot].pipe = pp;
-        run_job(build_pipeline, pp);
+    // A high proportion of adjacent NVN draws use exactly the same graphics
+    // pipeline. Check the immutable previous key before hashing its ~700 bytes
+    // and probing the global table. This also handles one-frame and cross-pass
+    // repetition, without skipping ANY dynamic state / descriptors / draws.
+    // Set LARECOMP_VK_PIPE_LAST=0 to restore the original lookup path.
+    static int pipe_last_on = -1;
+    if (pipe_last_on < 0) {
+        const char *v = getenv("LARECOMP_VK_PIPE_LAST");
+#ifdef __ANDROID__
+        pipe_last_on = !v || atoi(v) != 0;
+#else
+        pipe_last_on = v && atoi(v) != 0;
+#endif
+        LOG("[vk-pipe] last-key pipeline lookup %s\n",
+            pipe_last_on ? "enabled" : "disabled");
+    }
+    Pipe *pp;
+    if (pipe_last_on && pipe_last && pipe_last->k.prog == k.prog &&
+        !memcmp(&pipe_last->k, &k, sizeof k)) {
+        pp = pipe_last;
+        stat_pipe_last_hits++;
+    } else {
+        stat_pipe_last_misses++;
+        uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
+        if (!ph) ph = 1;
+        uint32_t pslot = (uint32_t)(ph ^ (ph >> 29)) & (PIPE_TAB - 1);
+        while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph)
+            pslot = (pslot + 1) & (PIPE_TAB - 1);
+        pp = pipe_tab[pslot].pipe;
+        if (!pp) {
+            pp = calloc(1, sizeof *pp);
+            pp->k = k;
+            pipe_tab[pslot].key = ph;
+            pipe_tab[pslot].pipe = pp;
+            run_job(build_pipeline, pp);
+        }
+        if (pipe_last_on) pipe_last = pp;
     }
     build_ready(&pp->state, "graphics pipeline");
     ss_enabled();
