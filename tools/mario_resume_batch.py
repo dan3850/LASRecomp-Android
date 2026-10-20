@@ -3,7 +3,8 @@
 
 A repair of any interior PC recompiles its entire containing primary function.
 Prioritize the observed failure; optionally add nearby owners with indirect
-branch instructions. These are candidates, NOT proven runtime destinations.
+branch instructions. Optional nearby-owner coverage handles repeated missing
+targets from the same callsite; speculative candidates are NOT proven destinations.
 """
 import argparse
 import bisect
@@ -15,9 +16,10 @@ import sys
 
 def select_blocks(rows, base, text_end, anchor_offsets, read_word, *,
                   limit=8, budget_bytes=65536, radius=65536,
-                  max_block_bytes=16384):
+                  max_block_bytes=16384, nearby_radius=0):
     if not (1 <= limit <= 32 and 16 <= budget_bytes <= 1048576 and
-            4 <= max_block_bytes <= 262144 and 0 <= radius <= 1048576):
+            4 <= max_block_bytes <= 262144 and 0 <= radius <= 1048576 and
+            0 <= nearby_radius <= radius):
         raise ValueError("invalid repair planning limits")
     primary = sorted(pc for pc, fn in rows.items() if fn == f"f_{pc:x}")
     if not primary:
@@ -58,17 +60,20 @@ def select_blocks(rows, base, text_end, anchor_offsets, read_word, *,
             (read_word(pc) & 0xFFFFFC1F) in (0xD61F0000, 0xD63F0000)
             for pc in range(owner, end, 4)
         )
-        # Only expand unobserved blocks with an actual indirect branch.
-        # Proximity alone must not spend compilation time on arbitrary code.
-        if not forced and not indirect:
+        # Targets of an indirect call rarely contain a BR/BLR themselves.
+        # A tightly bounded local cohort is useful when consecutive misses
+        # share the same LR. Disabled by default to avoid speculative rebuilds.
+        nearby = bool(nearby_radius and distance <= nearby_radius)
+        if not forced and not indirect and not nearby:
             continue
         choices.append({
             "owner": owner, "end": end, "size": size,
             "offset": target - base, "forced": forced,
-            "indirect": indirect, "distance": distance,
+            "indirect": indirect, "nearby": nearby, "distance": distance,
         })
     choices.sort(key=lambda b: (
-        not b["forced"], not b["indirect"], b["distance"], b["size"],
+        not b["forced"], not b["nearby"], not b["indirect"],
+        b["distance"], b["size"],
         b["owner"],
     ))
     picked, used = [], 0
@@ -110,6 +115,7 @@ def main():
     p.add_argument("--budget-bytes", type=int, default=65536)
     p.add_argument("--radius", type=int, default=65536)
     p.add_argument("--max-block-bytes", type=int, default=16384)
+    p.add_argument("--nearby-radius", type=int, default=0)
     args = p.parse_args()
     anchors = parse_anchors(args.anchor)
     from gen import Module
@@ -143,7 +149,8 @@ def main():
         blocks = select_blocks(
             rows, base, module.hi, anchors[name], module.word,
             limit=per_module_limit, budget_bytes=remaining_bytes,
-            radius=args.radius, max_block_bytes=args.max_block_bytes
+            radius=args.radius, max_block_bytes=args.max_block_bytes,
+            nearby_radius=args.nearby_radius
         )
         for b in blocks:
             selection.append((name, b))
@@ -153,7 +160,8 @@ def main():
         print(
             f"[mario-batch] {name} block={b['owner']:#x}..{b['end']:#x} "
             f"bytes={b['size']} observed={int(b['forced'])} "
-            f"indirect={int(b['indirect'])} distance={b['distance']}",
+            f"indirect={int(b['indirect'])} nearby={int(b['nearby'])} "
+            f"distance={b['distance']}",
             file=sys.stderr,
         )
     print(" ".join(f"{name}:0x{b['offset']:x}" for name, b in selection))
