@@ -140,6 +140,7 @@ def main():
     p.add_argument("--max-block-bytes", type=int, default=16384)
     p.add_argument("--nearby-radius", type=int, default=0)
     p.add_argument("--prefer-forward", choices=("0", "1"), default="0")
+    p.add_argument("--allow-empty", action="store_true", help="succeed without output if all candidates were repaired")
     p.add_argument("--return-site", action="append", default=[],
                    help="reported guest LR as main:0xOFFSET or sdk:0xOFFSET")
     args = p.parse_args()
@@ -191,6 +192,9 @@ def main():
         if return_sites[name] and name not in active_modules:
             raise ValueError(f"return site for {name} requires an anchor in that module")
     if not selection:
+        if args.allow_empty:
+            print("[mario-batch] no pending blocks; reusing compiled objects", file=sys.stderr)
+            return
         raise ValueError("no pending repair blocks; no APK will be rebuilt")
     for name, b in selection:
         print(
