@@ -1219,6 +1219,17 @@ static void build_finished(_Atomic int *state, int value) {
     pthread_cond_broadcast(&build_state_cond);
     pthread_mutex_unlock(&build_state_lock);
 }
+// Optional speculative jobs may fail allocation without failing a draw.
+// Join with the same condition variable but let the caller use the original
+// synchronous geometry path when the result is unavailable.
+static bool optional_job_ready(_Atomic int *state) {
+    pthread_mutex_lock(&build_state_lock);
+    while (!atomic_load(state))
+        pthread_cond_wait(&build_state_cond, &build_state_lock);
+    bool ok = atomic_load(state) == 1;
+    pthread_mutex_unlock(&build_state_lock);
+    return ok;
+}
 static bool build_ready(_Atomic int *state, const char *what) {
     pthread_mutex_lock(&build_state_lock);
     while (!atomic_load(state)) pthread_cond_wait(&build_state_cond, &build_state_lock);
@@ -4249,7 +4260,10 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed);
 // Quads / fans / polygons as a 32-bit triangle index list.
 static uint32_t *expand_indices(uint32_t mode, uint32_t count, const void *indices, int itype, uint32_t first, uint32_t *out_count) {
     uint32_t tris = mode == 7 ? count / 4 * 2 : count >= 3 ? count - 2 : 0;
-    uint32_t *out = malloc(tris * 3 * 4 + 4);
+    if ((uint64_t)tris * 3 * sizeof(uint32_t) + 4 > SIZE_MAX)
+        return NULL;
+    uint32_t *out = malloc((size_t)tris * 3 * sizeof(uint32_t) + 4);
+    if (!out) return NULL;
     uint32_t n = 0;
 #define IDX(i) (indices ? (itype == 0 ? ((const uint8_t *)indices)[i] : itype == 1 ? ((const uint16_t *)indices)[i] : ((const uint32_t *)indices)[i]) : first + (i))
     if (mode == 7) {
@@ -4313,7 +4327,7 @@ static void retire_prepared_geometry(void) {
         PreparedGeometry *g = prepared_geometry[i];
         // An earlier command may skip a draw: all jobs must still finish
         // before the snapshot's storage can be released.
-        build_ready(&g->state, "non-indexed geometry preparation");
+        (void)optional_job_ready(&g->state);
         free(g->indices);
         free(g);
         prepared_geometry[i] = NULL;
@@ -4419,7 +4433,7 @@ static void prepare_indexed_geometry(void *arg) {
 }
 static void free_indexed_geometry(IndexedGeometryJob *g) {
     if (!g) return;
-    build_ready(&g->state, "indexed geometry preparation");
+    (void)optional_job_ready(&g->state);
     free(g->source);
     free(g->expanded);
     free(g->widened);
@@ -4945,8 +4959,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
             // command-list preflight. Keep the original local path for
             // unprepared draws and any unexpected parameter mismatch.
             PreparedGeometry *g = find_prepared_geometry(r);
-            if (g && g->mode == mode && g->count == count && g->first == first) {
-                build_ready(&g->state, "non-indexed geometry preparation");
+            if (g && g->mode == mode && g->count == count && g->first == first &&
+                optional_job_ready(&g->state)) {
                 icount = g->output_count;
                 ib = vk_transient_copy(g->indices, (uint64_t)icount * 4 + 4, 4);
             } else {
@@ -4978,8 +4992,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
         } else if (native) {  // 8-bit indices: widen to 16
             IndexedGeometryJob *g = *prepared;
             if (g && g->mode == mode && g->count == count && g->itype == 0 &&
-                g->restart_enabled == st.prim_restart) {
-                build_ready(&g->state, "8-bit index preparation");
+                g->restart_enabled == st.prim_restart &&
+                optional_job_ready(&g->state)) {
                 ib = vk_transient_copy(g->widened, (uint64_t)count * 2 + 4, 4);
                 max_index = g->max_index;
             } else {
@@ -4993,8 +5007,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
         } else {
             IndexedGeometryJob *g = *prepared;
             if (g && g->mode == mode && g->count == count &&
-                g->itype == itype) {
-                build_ready(&g->state, "indexed geometry preparation");
+                g->itype == itype && optional_job_ready(&g->state)) {
                 icount = g->output_count;
                 max_index = g->max_index;
                 ib = vk_transient_copy(g->expanded, (uint64_t)icount * 4 + 4, 4);
@@ -5057,7 +5070,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                     g->mode == mode && g->count == icount &&
                     g->restart_enabled == st.prim_restart &&
                     g->restart_index == st.restart_index) {
-                    build_ready(&g->state, "native index-bound preparation");
+                    (void)optional_job_ready(&g->state);
                     if (g->max_index > max_index) max_index = g->max_index;
                 } else if (scan_isz == 2) {
                     const uint16_t *q = scan_src;
@@ -5076,7 +5089,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
             // Join before reading any worker-owned fields, even when index
             // data was copied rather than accessed through guest_direct.
             if (g_range && g_range->itype != 0 && g_range->mode <= 5)
-                build_ready(&g_range->state, "indexed vertex ranges");
+                (void)optional_job_ready(&g_range->state);
             if (g_range && g_range->itype != 0 && g_range->mode <= 5 &&
                 g_range->vertex_ranges_valid &&
                 (g_range->stream_mask & (1u << s)) &&
