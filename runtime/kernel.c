@@ -115,6 +115,24 @@ static Region regions[1024];
 static int nregions;
 static uint64_t heap_size;
 static uint64_t tls_next = TLS_BASE;
+#ifdef LASRECOMP_MARIO_TEST
+bool mario_debug_read(uint64_t address, void *output, size_t size) {
+    if (address < GUEST_LO || address >= GUEST_HI || size > GUEST_HI - address) return false;
+    bool ok = false;
+    pthread_mutex_lock(&g_klock);
+    for (int i = 0; i < nregions; i++) {
+        Region *r = &regions[i];
+        if ((r->perm & 1) && address >= r->addr && address - r->addr < r->size &&
+                size <= r->size - (address - r->addr)) {
+            memcpy(output, (void *)(uintptr_t)address, size);
+            ok = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_klock);
+    return ok;
+}
+#endif
 uint64_t kernel_heap_size(void) { return heap_size; }  // bytes from HEAP_BASE set by SetHeapSize
 // Writable guest data regions (heap, mapped/physical memory, module .data): for debug/runtime memory scans.
 int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {

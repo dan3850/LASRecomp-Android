@@ -11,6 +11,9 @@
 #include "gamelib.h"
 #include "hle.h"
 #include "kernel.h"
+#ifdef LASRECOMP_MARIO_TEST
+#include "mario_resource_diag.h"
+#endif
 
 typedef struct { const uint64_t *addrs; const GuestFn *fns; uint64_t count, lo, hi; } FnTable;
 static FnTable tables[2];
@@ -278,6 +281,9 @@ static GuestFn dispatch_slow(Cpu *c) {
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
 void rt_dispatch(Cpu *c) {
+#ifdef LASRECOMP_MARIO_TEST
+    mario_resource_trace(c);
+#endif
 #if defined(__ANDROID__) && !defined(LASRECOMP_MARIO_TEST)
     // This must run BEFORE the fast-cache lookup; dispatch_slow() is
     // intentionally bypassed on warm virtual method calls.
