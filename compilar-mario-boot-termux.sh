@@ -21,6 +21,12 @@ if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
     for MARIO_ANCHOR in "${MARIO_BATCH_ANCHORS[@]}"; do
         MARIO_BATCH_ARGS+=(--anchor "$MARIO_ANCHOR")
     done
+    if [[ -n "${MARIO_BATCH_RETURN_SITE:-}" ]]; then
+        read -r -a MARIO_RETURN_SITES <<< "$MARIO_BATCH_RETURN_SITE"
+        for MARIO_RETURN_SITE in "${MARIO_RETURN_SITES[@]}"; do
+            MARIO_BATCH_ARGS+=(--return-site "$MARIO_RETURN_SITE")
+        done
+    fi
     echo "===== TESTES DA SELECAO DE REENTRADAS ====="
     python3 tests/test_mario_resume_batch.py
     echo "===== MARIO: PLANEJANDO REENTRADAS EM LOTE ====="
