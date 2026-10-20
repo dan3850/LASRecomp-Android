@@ -31,6 +31,7 @@ if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
         --radius "${MARIO_BATCH_RADIUS:-65536}" \
         --max-block-bytes "${MARIO_BATCH_BLOCK_BYTES:-16384}" \
         --nearby-radius "${MARIO_BATCH_NEARBY_RADIUS:-0}" \
+        --prefer-forward "${MARIO_BATCH_PREFER_FORWARD:-0}" \
         "${MARIO_BATCH_ARGS[@]}")"
     [[ -n "$MARIO_BATCH_POINTS" ]] || {
         echo "ERRO: planejamento nao selecionou nenhum bloco." >&2; exit 1;
