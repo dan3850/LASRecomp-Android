@@ -79,7 +79,7 @@ if [[ "${MARIO_AUTO_BATCH:-1}" == 1 ]]; then
     python3 tests/test_mario_resume_batch.py
     MARIO_AUTO_POINTS="$(python3 -u tools/mario_resume_batch.py \
         --game "$MARIO_GAME" --output "$MARIO_CODE" \
-        --anchor main:0x8099d0 --anchor main:0x8209d0 --anchor main:0x95009c \
+        --anchor main:0x8099d0 --anchor main:0x8209d0 --anchor main:0x8cfa78 --anchor main:0x95009c \
         --limit "${MARIO_AUTO_BATCH_LIMIT:-32}" \
         --budget-bytes "${MARIO_AUTO_BATCH_BYTES:-524288}" \
         --radius "${MARIO_AUTO_BATCH_RADIUS:-65536}" \
@@ -98,7 +98,7 @@ fi
 # The two latest failures have indirect targets in x10:
 #   main+0x66c48c (LR main+0x66d150)
 #   main+0x669c74 (LR main+0x6698e0)
-for MARIO_REQUIRED_ENTRY in main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384 main:0x66a0fc main:0x8099d0 main:0x8209d0 main:0x95009c; do
+for MARIO_REQUIRED_ENTRY in main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384 main:0x66a0fc main:0x8099d0 main:0x8209d0 main:0x8cfa78 main:0x95009c; do
     if [[ " ${MARIO_RESUME_AT:-} " != *" $MARIO_REQUIRED_ENTRY "* ]]; then
         MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_REQUIRED_ENTRY"
     fi
