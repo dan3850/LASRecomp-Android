@@ -1,6 +1,9 @@
 package com.retroaura.lasrecomp;
 
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
+import android.os.Build;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -30,8 +33,59 @@ public final class MarioBootActivity extends Activity {
     private Uri selected;
     private boolean checking;
 
+    // A native abort or OOM kill may happen before the user can capture threads.
+    // Android preserves the process-exit reason for the NEXT launch of this app.
+    private void savePreviousProcessExits() {
+        if (Build.VERSION.SDK_INT < 30) return;
+        try {
+            ActivityManager manager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (manager == null) return;
+            java.util.List<ApplicationExitInfo> history =
+                    manager.getHistoricalProcessExitReasons(getPackageName(), 0, 4);
+            try (FileOutputStream output = new FileOutputStream(
+                    new File(getFilesDir(), "mario-exit.log"), false)) {
+                if (history.isEmpty()) {
+                    output.write("Nenhum encerramento anterior registrado pelo Android.\n"
+                            .getBytes(StandardCharsets.UTF_8));
+                }
+                for (int i = 0; i < history.size(); i++) {
+                    ApplicationExitInfo info = history.get(i);
+                    String heading = "exit[" + i + "] timestamp=" + info.getTimestamp()
+                            + " reason=" + info.getReason() + " status=" + info.getStatus()
+                            + " process=" + info.getProcessName()
+                            + " importance=" + info.getImportance()
+                            + " description=" + info.getDescription() + "\n";
+                    output.write(heading.getBytes(StandardCharsets.UTF_8));
+                    if (i != 0) continue;
+                    // Bound the Android-provided native tombstone/ANR trace size.
+                    try (InputStream trace = info.getTraceInputStream()) {
+                        if (trace == null) continue;
+                        output.write("--- Android exit trace (max 48 KiB) ---\n"
+                                .getBytes(StandardCharsets.UTF_8));
+                        byte[] chunk = new byte[4096];
+                        int total = 0, n;
+                        while (total < 49152 &&
+                                (n = trace.read(chunk, 0, Math.min(chunk.length, 49152 - total))) > 0) {
+                            output.write(chunk, 0, n);
+                            total += n;
+                        }
+                        output.write("\n--- end Android exit trace ---\n"
+                                .getBytes(StandardCharsets.UTF_8));
+                    } catch (Exception traceError) {
+                        output.write(("trace unavailable: " + traceError + "\n")
+                                .getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // An unavailable Android history API must not block the game.
+        }
+    }
+
+
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        savePreviousProcessExits();
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         int padding = (int)(20 * getResources().getDisplayMetrics().density);
@@ -168,10 +222,10 @@ public final class MarioBootActivity extends Activity {
 
     private String readLogs() {
         StringBuilder text = new StringBuilder();
-        for (String name : new String[]{"mario-threads.log", "mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
+        for (String name : new String[]{"mario-exit.log", "neo_touch_crash.txt", "mario-threads.log", "mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
             text.append("\n=== ").append(name).append(" ===\n");
             try (RandomAccessFile input = new RandomAccessFile(new File(getFilesDir(), name), "r")) {
-                long start = (name.equals("mario-threads.log") || name.equals("mario-grafico.log") || name.equals("mario-esperas.log")) ? 0 : Math.max(0, input.length() - 160000);
+                long start = (name.equals("mario-exit.log") || name.equals("neo_touch_crash.txt") || name.equals("mario-threads.log") || name.equals("mario-grafico.log") || name.equals("mario-esperas.log")) ? 0 : Math.max(0, input.length() - 160000);
                 input.seek(start);
                 byte[] bytes = new byte[(int)(input.length() - start)];
                 input.readFully(bytes);
