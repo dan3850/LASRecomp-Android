@@ -70,6 +70,29 @@ if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
     MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_BATCH_POINTS"
     echo "Reentradas selecionadas: $MARIO_BATCH_POINTS"
 fi
+# Automatically analyze nearby primary functions around both confirmed late
+# dispatch failures, selecting up to 12 independent owners in one pass.
+# The planner only reads locally extracted NSOs and the existing dispatch map;
+# already repaired owners are skipped. Nothing changes in Vulkan/audio/input.
+if [[ "${MARIO_AUTO_BATCH:-1}" == 1 ]]; then
+    echo "===== MARIO: REPARO PROATIVO EM LOTE (ATE 12 BLOCOS) ====="
+    python3 tests/test_mario_resume_batch.py
+    MARIO_AUTO_POINTS="$(python3 -u tools/mario_resume_batch.py \
+        --game "$MARIO_GAME" --output "$MARIO_CODE" \
+        --anchor main:0x66a0fc --anchor main:0x8099d0 \
+        --limit "${MARIO_AUTO_BATCH_LIMIT:-12}" \
+        --budget-bytes "${MARIO_AUTO_BATCH_BYTES:-131072}" \
+        --radius "${MARIO_AUTO_BATCH_RADIUS:-65536}" \
+        --max-block-bytes "${MARIO_AUTO_BATCH_BLOCK_BYTES:-16384}" \
+        --nearby-radius "${MARIO_AUTO_BATCH_NEARBY:-4096}" \
+        --prefer-forward 1 --allow-empty)"
+    if [[ -n "$MARIO_AUTO_POINTS" ]]; then
+        MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_AUTO_POINTS"
+        echo "Novos blocos selecionados: $MARIO_AUTO_POINTS"
+    else
+        echo "Todos os blocos candidatos ja foram reparados; reutilizando cache."
+    fi
+fi
 # Verified runtime dispatch gaps. Keep previously confirmed boot repair and
 # repair both new missing main-module functions without rebuilding everything.
 # The two latest failures have indirect targets in x10:
