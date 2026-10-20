@@ -118,9 +118,11 @@ def main():
     exefs = game / "exefs" if (game / "exefs").is_dir() else game
     report = json.loads((out / "build-report.json").read_text())
     selection = []
-    for name in ("main", "sdk"):
-        if not anchors[name]:
-            continue
+    active_modules = [name for name in ("main", "sdk") if anchors[name]]
+    if args.limit < len(active_modules):
+        raise ValueError("block limit must accommodate all anchored modules")
+    per_module_limit = args.limit // len(active_modules)
+    for name in active_modules:
         table = out / "generated" / name / (name + "_table.c")
         rows = parse_table(table.read_text(), name)
         base = int(report["bases"][name], 0)
@@ -130,10 +132,14 @@ def main():
         )
         # The existing repair tool validates exact NSO hashes and build
         # metadata before any file is modified.
+        remaining_bytes = args.budget_bytes - sum(
+            block["size"] for _, block in selection
+        )
+        if remaining_bytes < 16:
+            raise ValueError("byte budget exhausted before all anchored modules")
         blocks = select_blocks(
             rows, base, module.hi, anchors[name], module.word,
-            limit=args.limit - len(selection),
-            budget_bytes=args.budget_bytes - sum(b["size"] for _, b in selection),
+            limit=per_module_limit, budget_bytes=remaining_bytes,
             radius=args.radius, max_block_bytes=args.max_block_bytes
         )
         for b in blocks:
