@@ -4338,10 +4338,30 @@ typedef struct {
     uint32_t mode, count, itype, output_count, max_index;
     uint8_t *source;
     uint32_t *expanded;
+    uint16_t *widened;
+    bool restart_enabled;
     _Atomic int state;
 } IndexedGeometryJob;
 static void prepare_indexed_geometry(void *arg) {
     IndexedGeometryJob *g = arg;
+    if (g->itype == 0 && g->mode <= 5) {
+        // Native 8-bit index streams are widened to Vulkan's 16-bit format.
+        // The worker owns the source snapshot and writes host-only output.
+        g->widened = malloc((size_t)g->count * sizeof *g->widened);
+        if (!g->widened) {
+            build_finished(&g->state, 2);
+            return;
+        }
+        for (uint32_t i = 0; i < g->count; ++i) {
+            const uint8_t v = g->source[i];
+            g->widened[i] = (v == 0xff && g->restart_enabled) ? 0xffff : v;
+            if (v > g->max_index && g->widened[i] != 0xffff)
+                g->max_index = v;
+        }
+        g->output_count = g->count;
+        build_finished(&g->state, 1);
+        return;
+    }
     g->expanded = expand_indices(g->mode, g->count, g->source,
                                  (int)g->itype, 0, &g->output_count);
     if (g->expanded) {
@@ -4356,6 +4376,7 @@ static void free_indexed_geometry(IndexedGeometryJob *g) {
     build_ready(&g->state, "indexed geometry preparation");
     free(g->source);
     free(g->expanded);
+    free(g->widened);
     free(g);
 }
 static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared);
@@ -4424,7 +4445,9 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
         uint32_t mode = (uint32_t)r->x[0], n = (uint32_t)r->x[2];
         uint32_t type = (uint32_t)r->x[1];
         uint32_t width = type == 0 ? 1 : type == 1 ? 2 : 4;
-        if (prep_enabled && (mode == 6 || mode == 7 || mode == 9) &&
+        bool prepare_expansion = mode == 6 || mode == 7 || mode == 9;
+        bool prepare_widening = type == 0 && mode <= 5;
+        if (prep_enabled && (prepare_expansion || prepare_widening) &&
             n >= 6 && n <= 4096 && type <= 2 && r->x[3] &&
             (uint64_t)n * width <= 16384) {
             IndexedGeometryJob *g = calloc(1, sizeof *g);
@@ -4434,6 +4457,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                     memcpy(g->source, (const void *)(uintptr_t)r->x[3],
                            (size_t)n * width);
                     g->mode = mode; g->count = n; g->itype = type;
+                    g->restart_enabled = st.prim_restart;
                     *prepared = g;
                     run_job(prepare_indexed_geometry, g);
                 } else free(g);
@@ -4813,10 +4837,18 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                 else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
             }
         } else if (native) {  // 8-bit indices: widen to 16
-            ib = vk_transient((uint64_t)count * 2 + 4, 4);
-            uint16_t *w = ib.ptr;
-            const uint8_t *s = src;
-            for (uint32_t i = 0; i < count; i++) { w[i] = s[i] == 0xFF && st.prim_restart ? 0xFFFF : s[i]; if (s[i] > max_index && w[i] != 0xFFFF) max_index = s[i]; }
+            IndexedGeometryJob *g = *prepared;
+            if (g && g->mode == mode && g->count == count && g->itype == 0 &&
+                g->restart_enabled == st.prim_restart) {
+                build_ready(&g->state, "8-bit index preparation");
+                ib = vk_transient_copy(g->widened, (uint64_t)count * 2 + 4, 4);
+                max_index = g->max_index;
+            } else {
+                ib = vk_transient((uint64_t)count * 2 + 4, 4);
+                uint16_t *w = ib.ptr;
+                const uint8_t *s = src;
+                for (uint32_t i = 0; i < count; i++) { w[i] = s[i] == 0xFF && st.prim_restart ? 0xFFFF : s[i]; if (s[i] > max_index && w[i] != 0xFFFF) max_index = s[i]; }
+            }
             itype_vk = VK_INDEX_TYPE_UINT16;
             icount = count;
         } else {
