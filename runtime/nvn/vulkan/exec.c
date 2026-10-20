@@ -2325,6 +2325,21 @@ static void build_pipeline(void *arg) {
         .code = {p->spirv[0], p->spirv[1]}, .words = {(uint32_t)p->nspirv[0], (uint32_t)p->nspirv[1]}};
     PreparedPipeline *prepared = replay_get(&r, pp);
     if (prepared) pp->pipe = prepared->pipe;
+#ifdef LASRECOMP_MARIO_TEST
+    if (!pp->pipe) {
+        // A failed mandatory pipeline aborts the game. Preserve enough state
+        // in lasrecomp.log to distinguish replay rejection, translation and
+        // driver rejection rather than guessing from the final FATAL alone.
+        LOG("[mario-pipeline-fail] recipe kind=%u bytes=%u vs_words=%u fs_words=%u "
+            "vs=%p fs=%p target_colors=%u depth=%u stencil=%u samples=%u "
+            "program=%p prepared=%p\\n",
+            (unsigned)r.kind, (unsigned)r.state_size, (unsigned)r.words[0],
+            (unsigned)r.words[1], (void *)r.code[0], (void *)r.code[1],
+            (unsigned)pp->k.ncolor, (unsigned)pp->k.depth,
+            (unsigned)pp->k.stencil, (unsigned)pp->k.samples,
+            (void *)p, (void *)prepared);
+    }
+#endif
     build_finished(&pp->state, pp->pipe ? 1 : 2);
 }
 
