@@ -17,12 +17,20 @@ from nso import Nso
 def inspect_module(name, nso, capstone, arm64):
     md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
     md.detail = True
+    # NSO text may contain embedded data/invalid words. Continue past them.
+    md.skipdata = True
     lo, size = nso.text
     samples = defaultdict(list)
     counts = Counter()
     svc_imm = Counter()
+    decoded = 0
+    skipped = 0
     sysreg_counts = Counter()
     for ins in md.disasm(bytes(nso.image[lo:lo + size]), lo):
+        if ins.mnemonic == ".byte":
+            skipped += ins.size
+            continue
+        decoded += 1
         is_svc = ins.mnemonic == "svc"
         sysreg = any(tag in ins.op_str.lower()
                      for tag in ("tpidr_el0", "tpidrro_el0", "cntvct_el0", "cntpct_el0", "cntfrq_el0"))
@@ -52,6 +60,14 @@ def inspect_module(name, nso, capstone, arm64):
                 samples[cat].append(f"0x{ins.address:x} {ins.mnemonic} {ins.op_str}")
     print(f"=== {name} ===")
     print(f"build_id={nso.build_id} text_bytes={size}")
+    print(f"decoded_instructions={decoded} skipped_invalid_bytes={skipped}")
+    raw_svc = sum(1 for off in range(lo, lo + size - size % 4, 4)
+                  if (nso.u32(off) & 0xFFE0001F) == 0xD4000001)
+    if decoded == 0 or counts["SVC"] != raw_svc:
+        raise ValueError(
+            f"{name}: incomplete ARM64 decode: decoded={decoded} "
+            f"SVC_disasm={counts['SVC']} SVC_raw={raw_svc}"
+        )
     for cat in ("SVC", "SYSTEM_REGISTER", "X18_OPERAND"):
         print(f"{cat}={counts[cat]}")
         for example in samples[cat]:
