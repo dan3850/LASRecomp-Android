@@ -4285,6 +4285,48 @@ static void draw_(CmdRec *r, bool indexed) {
     Prog *pr = get_program(st.program, &vkey, &fkey);
     if (!pr) { stat_skipped++; return; }
     build_ready(&pr->state, "graphics program");
+#ifdef LASRECOMP_MARIO_TEST
+    // The only observed guest draw is a fullscreen quad. Identify the
+    // *sampled* NVN resources, not merely the target/presented texture.
+    // No GPU readback or shader replacement. Five bounded snapshots max.
+    static unsigned mario_src_evidence;
+    if (mario_src_evidence < 5) {
+        ++mario_src_evidence;
+        FILE *evidence = fopen("mario-grafico.log", "a");
+        if (evidence) {
+            fprintf(evidence,
+                    "[mario-source] sample=%u vs-textures=%d fs-textures=%d "
+                    "pool=%p descriptors=%d vs-gmem=%d fs-gmem=%d\n",
+                    mario_src_evidence, pr->vi->ntex, pr->fi->ntex,
+                    (void *)st.tpool, st.tpool ? st.tpool->count : -1,
+                    pr->vi->uses_gmem, pr->fi->uses_gmem);
+            for (int stage = 0; stage < 2; ++stage) {
+                ShaderInfo *info = stage ? pr->fi : pr->vi;
+                for (int i = 0; i < info->ntex && i < 8; ++i) {
+                    NvnTexture *source = shader_texture_object(stage, &info->tex[i]);
+                    TexBackend *backend = source ? (TexBackend *)source->backend : NULL;
+                    int slot = ((int)info->tex[i].handle_offset - 0x20) / 8;
+                    uint64_t handle = slot >= 0 && slot < 32 ? st.tex[stage][slot] : 0;
+                    fprintf(evidence,
+                            "[mario-source] stage=%d slot=%d handle=%#llx "
+                            "texture=%p id=%llu size=%ux%u fmt=%#x "
+                            "storage=%#llx uploaded=%d gpu-owned=%d "
+                            "color-target=%d host-uploaded=%d\n",
+                            stage, slot, (unsigned long long)handle,
+                            (void *)source, (unsigned long long)(source ? source->debug_id : 0),
+                            source ? source->width : 0, source ? source->height : 0,
+                            source ? source->format : 0,
+                            (unsigned long long)(source ? source->addr : 0),
+                            backend ? (int)backend->uploaded : -1,
+                            backend ? (int)backend->gpu_owned : -1,
+                            backend ? (int)backend->color_target_seen : -1,
+                            backend ? (int)backend->host_uploaded : -1);
+                }
+            }
+            fclose(evidence);
+        }
+    }
+#endif
     g_mirror_w = 0;
     {   // mirror mode (runtime/hle/mirror.c; as renderer.m): the scene's composite into the window image is mirrored
         extern bool mirror_draw(bool composite);
