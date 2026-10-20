@@ -33,3 +33,12 @@ enum {
 #if defined(LASRECOMP_MARIO_TEST) && defined(__aarch64__) && defined(LASRECOMP_MARIO_NATIVE_SVC_BRIDGE)
 int mario_native_svc_from_frame(MarioNativeSvcFrame *frame, uint32_t svc_id, uint64_t guest_pc);
 #endif
+
+// Deliberately narrow host/guest ABI boundary implemented by
+// mario_native_thread_entry.S. Only call verified AAPCS64 leaf functions
+// that never touch TLS, issue SVC, or call Android code while guest x18
+// is installed. Not a general Switch function-entry trampoline.
+#if defined(__aarch64__)
+uint64_t mario_native_call_leaf(uint64_t (*guest)(void *), void *argument,
+                                uint64_t guest_x18);
+#endif
