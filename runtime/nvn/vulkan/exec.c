@@ -5507,13 +5507,25 @@ static void exec_list(uint64_t handle, int depth) {
             st.rt.depth = (NvnTexture *)(uintptr_t)rt->depth;
             st.rt.dview = rt->dview;
             st.rt.has_dview = rt->has_dview;
-            static int always = -1;
+            static int always = -1, effective_on = -1;
             if (always < 0) always = getenv("LARECOMP_VK_PASS_RESTART") != NULL;
+            if (effective_on < 0) {
+                const char *env = getenv("LARECOMP_VK_RT_EFFECTIVE");
+#ifdef __ANDROID__
+                effective_on = !env || atoi(env) != 0;
+#else
+                effective_on = env && atoi(env) != 0;
+#endif
+                LOG("[vk-pass] effective attachment comparison %s\\n",
+                    effective_on ? "enabled" : "disabled");
+            }
             ++stat_rt_sets;
-            const bool equivalent = rt_same_effective(&prev, &st.rt);
+            const bool old_equal = memcmp(&prev, &st.rt, sizeof prev) == 0;
+            const bool equivalent = effective_on
+                ? rt_same_effective(&prev, &st.rt) : old_equal;
             if (always || !equivalent) {
                 st.rt_dirty = true;
-            } else if (memcmp(&prev, &st.rt, sizeof prev) != 0) {
+            } else if (effective_on && !old_equal) {
                 ++stat_rt_equal_ignored;
                 if (in_pass && !st.rt_dirty) ++stat_rt_restarts_avoided;
             }
