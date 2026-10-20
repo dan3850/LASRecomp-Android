@@ -8,7 +8,7 @@ import re
 import struct
 import sys
 from pathlib import Path
-from nso import Nso
+from nso import Nso, R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE
 
 ADDRESS = re.compile(r"^(main|sdk):0x([0-9a-fA-F]+)$")
 
@@ -45,6 +45,58 @@ def instruction_kind(word):
     if word & 0xFC000000 == 0x14000000:
         return "B direct jump"
     return "other instruction"
+
+
+def local_code_relocation_targets(nso):
+    """Local executable pointer targets from standard AArch64 ELF relocations.
+
+    This is a sound subset, not a complete C++ vtable/indirect-call analysis.
+    Absolute imports resolved in another NSO and pointers built at runtime
+    cannot be inferred here.
+    """
+    low, size = nso.text
+    high = low + size
+    for site, kind, sym, addend in nso.relocs:
+        if kind == R_AARCH64_RELATIVE:
+            offset = addend
+        elif kind in (R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT):
+            if sym >= len(nso.syms) or not nso.syms[sym][2]:
+                continue
+            offset = nso.syms[sym][3] + addend
+        else:
+            continue
+        if low <= offset < high and not offset & 3:
+            yield offset, site, kind
+
+
+def relocation_census(name, nso, base, entries, starts, watched_offsets):
+    found = {}
+    for offset, site, kind in local_code_relocation_targets(nso):
+        found.setdefault(offset, []).append((site, kind))
+    known = set(entries)
+    unknown = sorted(offset for offset in found if base + offset not in known)
+    unknown_owners = {
+        owner(starts, base + offset) for offset in unknown
+    }
+    unknown_owners.discard(None)
+    print(f"  STATIC CODE POINTERS {name}: {len(found)} distinct local relocation targets; "
+          f"{len(unknown)} without an exact dispatcher entry; "
+          f"{len(unknown_owners)} containing blocks")
+    for offset in watched_offsets:
+        matches = found.get(offset)
+        if matches:
+            sources = ", ".join(
+                f"reloc@{site:#x}/type{kind}" for site, kind in matches[:5])
+            print(f"  POINTER SOURCE {name}+{offset:#x}: "
+                  f"{len(matches)} relocation(s): {sources}")
+        else:
+            print(f"  POINTER SOURCE {name}+{offset:#x}: "
+                  "not present in recognized local relocations (runtime "
+                  "construction, cross-module pointer, or other encoding possible)")
+    for offset in unknown[:12]:
+        print(f"  MISSING STATIC POINTER {name}+{offset:#x}: "
+              f"owner={owner(starts, base + offset)}")
+    print("  This census does not prove all indirect destinations are covered.")
 
 
 def sha256_file(path):
@@ -108,6 +160,8 @@ def main():
     parser.add_argument("--target", required=True)
     parser.add_argument("--return-site")
     parser.add_argument("--check", action="append", default=[])
+    parser.add_argument("--scan-relocations", action="store_true",
+                        help="count executable pointers missed by the exact dispatcher (read only)")
     args = parser.parse_args()
     if (args.output / "resume-transaction").exists():
         parser.error("incomplete resume transaction: preserve all build files")
@@ -142,6 +196,9 @@ def main():
             if field != "return-site":
                 show(name, offset, return_site if field == "target" else None,
                      base, nso, entries, starts)
+        if args.scan_relocations:
+            relocation_census(name, nso, base, entries, starts,
+                              [offset for field, offset in values if field != "return-site"])
     print("READ-ONLY: no source, cache, generated library, or APK changed.")
 
 
