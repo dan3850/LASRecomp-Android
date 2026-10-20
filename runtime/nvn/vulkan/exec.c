@@ -40,6 +40,10 @@
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_upload_bytes, stat_gmem_reused_bytes;
 static uint64_t stat_vb_bind_slots, stat_vb_bind_calls;
+// Per-source render-pass closures, reported without enabling GPU profiling.
+#define VK_PASS_SOURCE_MAX 8192
+static uint32_t stat_pass_closure[VK_PASS_SOURCE_MAX];
+static uint64_t stat_rt_sets, stat_rt_equal_ignored, stat_rt_restarts_avoided;
 static uint64_t stat_gmem_stream_bytes, stat_gmem_stream_maps;
 static uint64_t stat_gmem_covered, stat_gmem_covered_bytes;
 static uint64_t stat_gmem_device_dispatches, stat_gmem_device_up;
@@ -1310,6 +1314,30 @@ typedef struct {
     uint8_t has_dview;
 } RtState;
 
+// A render pass depends only on the attachments actually used by NVN.
+// Unbound slots, and texture-view overrides disabled by has_view, are
+// irrelevant. Compare active views conservatively (all fields), while
+// preserving color attachment COUNT, depth attachment and target identities.
+static bool rt_same_effective(const RtState *a, const RtState *b) {
+    if (a->ncolor != b->ncolor || a->depth != b->depth) return false;
+    if (a->ncolor < 0 || a->ncolor > 8) return false;
+    for (int i = 0; i < a->ncolor; ++i) {
+        if (a->color[i] != b->color[i]) return false;
+        if (!a->color[i]) continue;
+        bool av = a->has_cview[i] != 0, bv = b->has_cview[i] != 0;
+        if (av != bv) return false;
+        if (av && memcmp(&a->cview[i], &b->cview[i],
+                         sizeof a->cview[i]) != 0) return false;
+    }
+    if (a->depth) {
+        bool av = a->has_dview != 0, bv = b->has_dview != 0;
+        if (av != bv) return false;
+        if (av && memcmp(&a->dview, &b->dview,
+                         sizeof a->dview) != 0) return false;
+    }
+    return true;
+}
+
 typedef struct { uint64_t addr, size; } Range;
 
 static struct {
@@ -1369,6 +1397,45 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0);
+    // Top render-pass closures, ranked by the call site that actually ended
+    // an active pass. Line 0 denotes callers outside this source file.
+    {
+        uint64_t total = 0;
+        unsigned top_lines[5] = {0};
+        uint32_t top_count[5] = {0};
+        for (unsigned line = 0; line < VK_PASS_SOURCE_MAX; ++line) {
+            const uint32_t count = stat_pass_closure[line];
+            total += count;
+            if (!count || count <= top_count[4]) continue;
+            for (unsigned i = 0; i < 5; ++i) {
+                if (count <= top_count[i]) continue;
+                for (unsigned j = 4; j > i; --j) {
+                    top_count[j] = top_count[j - 1];
+                    top_lines[j] = top_lines[j - 1];
+                }
+                top_count[i] = count;
+                top_lines[i] = line;
+                break;
+            }
+        }
+        if (total || stat_rt_sets) {
+            char top[120] = "";
+            size_t used = 0;
+            for (unsigned i = 0; i < 5 && top_count[i]; ++i) {
+                int n = snprintf(top + used, sizeof top - used, "%s%u:%u",
+                                 i ? "," : "", top_lines[i], top_count[i]);
+                if (n < 0 || (size_t)n >= sizeof top - used) break;
+                used += (size_t)n;
+            }
+            LOG("[vk-pass] closed=%llu top=%s rt_set=%llu ignored_view_changes=%llu restarts_avoided=%llu\n",
+                (unsigned long long)total, top,
+                (unsigned long long)stat_rt_sets,
+                (unsigned long long)stat_rt_equal_ignored,
+                (unsigned long long)stat_rt_restarts_avoided);
+        }
+        memset(stat_pass_closure, 0, sizeof stat_pass_closure);
+        stat_rt_sets = stat_rt_equal_ignored = stat_rt_restarts_avoided = 0;
+    }
     if (stat_vb_bind_slots) {
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n,
@@ -1628,6 +1695,7 @@ void vk_end_pass(void) { vk_end_pass_at(0); }
 static void vk_end_pass_at(int line) {
     if (!in_pass) return;
     if (prof && line < 4096) prof_end_line[line]++;
+    if (line >= 0 && line < VK_PASS_SOURCE_MAX) stat_pass_closure[line]++;
     vkCmdEndRendering(vk_cmd());
     in_pass = false;
     if (g_debug_frame && st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->backend) {
@@ -5441,7 +5509,14 @@ static void exec_list(uint64_t handle, int depth) {
             st.rt.has_dview = rt->has_dview;
             static int always = -1;
             if (always < 0) always = getenv("LARECOMP_VK_PASS_RESTART") != NULL;
-            if (always || memcmp(&prev, &st.rt, sizeof prev)) st.rt_dirty = true;
+            ++stat_rt_sets;
+            const bool equivalent = rt_same_effective(&prev, &st.rt);
+            if (always || !equivalent) {
+                st.rt_dirty = true;
+            } else if (memcmp(&prev, &st.rt, sizeof prev) != 0) {
+                ++stat_rt_equal_ignored;
+                if (in_pass && !st.rt_dirty) ++stat_rt_restarts_avoided;
+            }
             break;
         }
         case CMD_SET_VIEWPORTS:
