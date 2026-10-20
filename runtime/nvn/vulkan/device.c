@@ -830,6 +830,15 @@ void vk_frame_end(const char *shot_path) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
+#ifdef LASRECOMP_MARIO_TEST
+    {
+        static uint64_t present_calls;
+        ++present_calls;
+        if (present_calls <= 3 || present_calls % 300 == 0 || (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR))
+            LOG("[mario-frame] queue-present=%llu result=%d image=%u\n",
+                (unsigned long long)present_calls, (int)r, img);
+    }
+#endif
     // Android may legitimately report SUBOPTIMAL every frame when the compositor
     // rotates an identity-preTransform swapchain; recreating on every present
     // forces vkDeviceWaitIdle and causes severe FPS drops.
@@ -945,6 +954,15 @@ void backend_present(NvnTexture *t) {
 #ifdef __ANDROID__
     stable60_mod_pace();
 #endif
+#ifdef LASRECOMP_MARIO_TEST
+    {
+        static uint64_t guest_presents;
+        ++guest_presents;
+        if (guest_presents <= 3 || guest_presents % 300 == 0)
+            LOG("[mario-frame] backend-present=%llu texture=%p\n",
+                (unsigned long long)guest_presents, (void *)t);
+    }
+#endif
     g_last_presented = t;
     extern void vk_alias_before_present(NvnTexture *);
     vk_alias_before_present(t);
@@ -954,6 +972,16 @@ void backend_present(NvnTexture *t) {
     static const float black[4] = {0, 0, 0, 1};
     uint64_t t0 = SDL_GetTicksNS();
     bool have = vk_frame_begin(black);
+#ifdef LASRECOMP_MARIO_TEST
+    {
+        static uint64_t begin_calls;
+        ++begin_calls;
+        if (begin_calls <= 3 || begin_calls % 300 == 0 || (!have && begin_calls <= 10))
+            LOG("[mario-frame] frame-begin=%llu acquired=%d image-valid=%d\n",
+                (unsigned long long)begin_calls, (int)have,
+                (int)(b && b->image != VK_NULL_HANDLE));
+    }
+#endif
     uint64_t nd = SDL_GetTicksNS() - t0;
     if (nd > 30000000) {
         static int warned;
