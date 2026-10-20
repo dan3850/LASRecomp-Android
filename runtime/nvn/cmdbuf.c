@@ -86,7 +86,11 @@ NVN(nvnCommandBufferSetCommandMemoryCallbackEnabled) { (void)c; }
 static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
     uint32_t size = (uint32_t)((sizeof(CmdRec) + extra + 7) & ~7u);
     for (int tries = 0; !cb->mem || cb->used + size + JUMP_RESERVE > cb->size; tries++) {
-        if (!cb->callback || tries == 2) FATAL("nvn: out of command memory (need %u)\n", size);
+        if (!cb->callback || tries == 2)
+            FATAL("nvn: out of command memory (need %u, op=%u, tries=%d, mem=%llx, used=%llu, capacity=%llu, callback=%llx, recording=%d)\n",
+                  size, op, tries, (unsigned long long)cb->mem,
+                  (unsigned long long)cb->used, (unsigned long long)cb->size,
+                  (unsigned long long)cb->callback, (int)cb->recording);
         uint64_t saved[8];
         memcpy(saved, c->x, sizeof saved);
         c->x[0] = cb->guest;
