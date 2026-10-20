@@ -286,6 +286,10 @@ void rt_unwind_point(void) {
     if (__builtin_expect(g_rt_unwind, 0) && t_cur) longjmp(t_cur->unwind, 1);
 }
 
+#if defined(LASRECOMP_MARIO_TEST) && defined(__aarch64__) && defined(LASRECOMP_MARIO_NATIVE_SVC_BRIDGE)
+static void mario_native_svc_thread_smoke(KThread *t);
+#endif
+
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
@@ -301,7 +305,14 @@ static void *thread_main(void *arg) {
     if (t->is_main) plat_thread_perf_core(PLAT_PERF_GAME);
     crash_handler_install();
     rt_set_fpcr(0);
-    if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
+    if (!setjmp(t->unwind)) {
+#if defined(LASRECOMP_MARIO_TEST) && defined(__aarch64__) && defined(LASRECOMP_MARIO_NATIVE_SVC_BRIDGE)
+        // Opt-in only: never affect normal boot or other threads.
+        if (t->is_main && getenv("LARECOMP_MARIO_NATIVE_SVC_SELFTEST"))
+            mario_native_svc_thread_smoke(t);
+#endif
+        guest_call(&t->cpu, t->entry);
+    }
     pthread_mutex_lock(&g_klock);
     t->finished = true;
     kernel_signal(&t->obj);
@@ -683,6 +694,41 @@ int mario_native_svc_from_frame(MarioNativeSvcFrame *frame, uint32_t svc_id, uin
     frame->fpsr = c->fpsr;
     frame->guest_sp = c->sp;
     return MARIO_NATIVE_SVC_OK;
+}
+#endif
+
+#if defined(LASRECOMP_MARIO_TEST) && defined(__aarch64__) && defined(LASRECOMP_MARIO_NATIVE_SVC_BRIDGE)
+// Runs only on thread_main's live Horizon thread, inside its setjmp lifetime.
+// This is a runtime dispatcher integration smoke test, NOT a native SDK SVC
+// instruction or an ARM64 trampoline entry. Use service 0x10 because it is
+// a synchronous read of the current processor number, with no kernel handles
+// or guest memory updates. A known module .text address is diagnostic only.
+static void mario_native_svc_thread_smoke(KThread *t) {
+    if (g_nmodules < 2 || g_modules[1].text_size < 4) {
+        LOG("[mario-native-svc] SKIP: SDK text unavailable\\n");
+        return;
+    }
+    Cpu saved = t->cpu;
+    MarioNativeSvcFrame frame = {0};
+    memcpy(frame.x, saved.x, sizeof frame.x);
+    memcpy(frame.v, saved.v, sizeof frame.v);
+    frame.nzcv = saved.nzcv;
+    frame.fpcr = saved.fpcr;
+    frame.fpsr = saved.fpsr;
+    frame.guest_sp = saved.sp;
+    const uint64_t diagnostic_pc = g_modules[1].base + g_modules[1].text_off;
+    int result = mario_native_svc_from_frame(&frame, 0x10, diagnostic_pc);
+    const uint64_t returned_core = frame.x[0];
+    // Always restore the exact original game Cpu before boot continuation.
+    t->cpu = saved;
+    if (result == MARIO_NATIVE_SVC_OK && returned_core == (uint64_t)t->core) {
+        LOG("[mario-native-svc] PASS: live Horizon thread -> ARM64 frame -> real rt_svc(0x10) -> frame; core=%llu\\n",
+            (unsigned long long)returned_core);
+    } else {
+        LOG("[mario-native-svc] FAIL: status=%d actual=%llu expected=%d\\n",
+            result, (unsigned long long)returned_core, t->core);
+    }
+    LOG("[mario-native-svc] NOTE: synthetic frame and diagnostic PC; no SDK SVC executed, no x18/TLS transition yet\\n");
 }
 #endif
 
