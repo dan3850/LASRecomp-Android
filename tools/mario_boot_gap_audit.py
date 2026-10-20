@@ -99,6 +99,96 @@ def relocation_census(name, nso, base, entries, starts, watched_offsets):
     print("  This census does not prove all indirect destinations are covered.")
 
 
+def direct_bl_target(nso, lr_offset):
+    """Direct BL at LR-4, if present, using a signed AArch64 imm26."""
+    low, size = nso.text
+    site = lr_offset - 4
+    if site % 4 or site < low or site + 4 > low + size:
+        return None
+    instruction = nso.u32(site)
+    if instruction & 0xfc000000 != 0x94000000:
+        return None
+    displacement = instruction & 0x03ffffff
+    if displacement & 0x02000000:
+        displacement -= 0x04000000
+    return site + displacement * 4
+
+
+def trace_direct_call(name, nso, base, entries, starts, lr_offset, target_offset):
+    """Show every instruction near a direct callee and the missing destination.
+
+    A saved LR proves only where the caller will return, not the exact BR
+    that later entered the missing destination. Avoid guessing that source.
+    """
+    callee = direct_bl_target(nso, lr_offset)
+    if callee is None:
+        print("  DIRECT-CALL TRACE: LR-4 is not a direct BL in the NSO")
+        return
+    print(f"  DIRECT-CALL TRACE: LR-4 => {name}+{callee:#x}; "
+          f"failed PC={name}+{target_offset:#x}")
+    known = set(entries)
+    if base + callee not in known:
+        print("  WARNING: direct BL callee lacks an exact table entry")
+    if abs(callee - target_offset) > 0x400:
+        print("  Source and target are farther than 0x400 bytes; "
+              "no local-path inference")
+        return
+    try:
+        from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
+        from capstone.arm64 import ARM64_OP_IMM
+    except ImportError:
+        print("  Capstone not installed; no disassembly available")
+        return
+    decoder = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+    decoder.detail = True
+    low, size = nso.text
+    begin = max(low, min(callee, target_offset) - 16) & ~3
+    end = min(low + size, max(callee, target_offset) + 48)
+    prev_owner = None
+    missed_by_direct = []
+    count = 0
+    for addr in range(begin, end, 4):
+        if count >= 192:
+            print("  Disassembly truncated at 192 instructions")
+            break
+        decoded = list(decoder.disasm(nso.image[addr:addr + 4], base + addr))
+        if not decoded:
+            print(f"  {name}+{addr:#x}: invalid AArch64 word")
+            continue
+        ins = decoded[0]
+        this_owner = owner(starts, base + addr)
+        if this_owner != prev_owner:
+            print(f"  GENERATED OWNER changes at {name}+{addr:#x}: "
+                  f"{this_owner:#x}" if this_owner is not None
+                  else "  GENERATED OWNER: unknown")
+            prev_owner = this_owner
+        label = []
+        if addr == callee:
+            label.append("direct BL entry")
+        if addr == target_offset:
+            label.append("missing PC")
+        if base + addr in known:
+            label.append("registered")
+        is_direct = ins.mnemonic in ("b", "bl", "cbz", "cbnz", "tbz", "tbnz") or ins.mnemonic.startswith("b.")
+        if is_direct and ins.operands and ins.operands[-1].type == ARM64_OP_IMM:
+            jump = ins.operands[-1].imm
+            if jump == base + target_offset:
+                missed_by_direct.append(addr)
+                label.append("DIRECT TARGETS MISSING PC")
+        if ins.mnemonic in ("br", "blr"):
+            label.append("indirect branch/call")
+        detail = ("  [" + "; ".join(label) + "]") if label else ""
+        print(f"  {name}+{addr:#x}: {ins.mnemonic} {ins.op_str}{detail}")
+        count += 1
+    if missed_by_direct:
+        print("  DIRECT JUMPS to missing PC from: " +
+              ", ".join(f"{name}+{r:#x}" for r in missed_by_direct))
+        print("  This is a direct-branch boundary discovery problem.")
+    else:
+        print("  No direct branch to the missing PC in the shown callee window. "
+              "An indirect jump is possible, not proven.")
+
+
 def sha256_file(path):
     h = hashlib.sha256()
     with path.open("rb") as stream:
@@ -160,6 +250,8 @@ def main():
     parser.add_argument("--target", required=True)
     parser.add_argument("--return-site")
     parser.add_argument("--check", action="append", default=[])
+    parser.add_argument("--trace-callee", action="store_true",
+                        help="disassemble direct BL callee near failed PC (read-only)")
     parser.add_argument("--scan-relocations", action="store_true",
                         help="count executable pointers missed by the exact dispatcher (read only)")
     args = parser.parse_args()
@@ -196,6 +288,11 @@ def main():
             if field != "return-site":
                 show(name, offset, return_site if field == "target" else None,
                      base, nso, entries, starts)
+        if args.trace_callee and return_site is not None:
+            target = next((v for field, v in values if field == "target"), None)
+            if target is not None:
+                trace_direct_call(name, nso, base, entries, starts,
+                                  return_site, target)
         if args.scan_relocations:
             relocation_census(name, nso, base, entries, starts,
                               [offset for field, offset in values if field != "return-site"])
