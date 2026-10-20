@@ -5781,6 +5781,10 @@ static void shader_list_preflight(uint64_t handle) {
     // Only distinct shader variants count against the lookahead budget.
     PreparedDrawProgram planned[32] = {0};
     unsigned nplanned = 0;
+    // Collect immutable geometry recipes now, but queue them after the
+    // shader lookahead. Both types of work share compilation workers.
+    const CmdRec *geometry_commands[16] = {0};
+    unsigned ngeometry = 0;
     uint64_t p = handle;
     for (unsigned step = 0; step < 512; step++) {
         if (!p) break;
@@ -5816,7 +5820,12 @@ static void shader_list_preflight(uint64_t handle) {
         }
         case CMD_DRAW_ARRAYS:
         case CMD_DRAW_ELEMENTS:
-            if (r->op == CMD_DRAW_ARRAYS) schedule_geometry(r);
+            if (r->op == CMD_DRAW_ARRAYS && ngeometry < 16) {
+                uint32_t mode = (uint32_t)r->x[0], count = (uint32_t)r->x[2];
+                if ((mode == 6 || mode == 7 || mode == 9) &&
+                    count >= 6 && count <= 4096)
+                    geometry_commands[ngeometry++] = r;
+            }
             if (program && (program->stage_mask & 3) == 3) {
                 ShaderKey vk = {0}, fk = {0};
                 vk.glsl = fk.glsl = 1;
@@ -5872,6 +5881,10 @@ submit_planned:
         if (planned[i].ready)
             prepared_draws[prepared_draw_count++] = planned[i];
     }
+    // Preserve NVN draw order, but avoid filling the shared worker queue
+    // with geometry before shader variants have been submitted.
+    for (unsigned i = 0; i < ngeometry; ++i)
+        schedule_geometry(geometry_commands[i]);
 }
 
 // ================================================================== executor (renderer.m exec_list)
