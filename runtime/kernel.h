@@ -1,6 +1,9 @@
 // Kernel object types shared by kernel.c and the IPC/service layer.
 #pragma once
 #include <setjmp.h>
+#ifdef LASRECOMP_MARIO_TEST
+#include <stdatomic.h>
+#endif
 
 #include "rt.h"
 
@@ -38,6 +41,19 @@ struct KThread {
     jmp_buf unwind;
     bool started, finished;
     KThread *anext;        // every thread of this boot (g_klock)
+#ifdef LASRECOMP_MARIO_TEST
+    // Diagnostic state only; never changes Cpu/the private game-library ABI.
+    pthread_t capture_host;
+    uint64_t capture_tid;
+    bool capture_ready;  // g_klock
+    uint64_t capture_svc_pc, capture_svc_args[4]; // written by this guest thread
+    uint32_t capture_svc;
+    bool capture_in_svc;
+    _Atomic uint64_t capture_request, capture_ack;
+    _Atomic uint64_t capture_pc, capture_lr, capture_sp, capture_native_pc, capture_native_lr;
+    _Atomic uint64_t capture_svc_sample_pc, capture_args[4];
+    _Atomic unsigned capture_svc_sample, capture_in_svc_sample;
+#endif
 };
 
 typedef struct KSharedMem {

@@ -24,6 +24,16 @@ step(){ printf '\n== %s ==\n' "$*"; }
 if [[ -n "${LASRECOMP_MARIO_PROFILE:-}" ]]; then
  [[ -s "$LASRECOMP_MARIO_PROFILE" ]] || fail "Perfil Mario ausente"
  PROFILE_FLAGS=(-DLASRECOMP_MARIO_TEST=1 -I"$(dirname "$LASRECOMP_MARIO_PROFILE")" -include "$LASRECOMP_MARIO_PROFILE")
+ # Only kernel.c includes this generated header; a new HEAD must not force
+ # regeneration of the private game library or recompilation of all objects.
+ MARIO_CAPTURE_BUILD="$OUT/mario-capture-build.h"
+ printf '#define LASRECOMP_MARIO_SOURCE_COMMIT "%s"\n' "$(git rev-parse HEAD)" > "$MARIO_CAPTURE_BUILD.tmp"
+ if [[ ! -s "$MARIO_CAPTURE_BUILD" ]] || ! cmp -s "$MARIO_CAPTURE_BUILD.tmp" "$MARIO_CAPTURE_BUILD"; then
+  mv -f "$MARIO_CAPTURE_BUILD.tmp" "$MARIO_CAPTURE_BUILD"
+ else
+  rm -f "$MARIO_CAPTURE_BUILD.tmp"
+ fi
+ PROFILE_FLAGS+=(-I"$OUT")
  GAME_ENTRY=mario_test_tables
  GAME_NAME=libmario_test.so
 fi
@@ -322,6 +332,10 @@ for symbol in g_fnprof fnprof_hit rt_mod_nop; do
  grep -Eq "[[:space:]]$symbol$" <<< "$RUNTIME_EXPORTS" ||
   fail "Motor nao exporta $symbol; APK nao sera empacotado."
 done
+if [[ -n "${LASRECOMP_MARIO_PROFILE:-}" ]]; then
+ grep -Eq '[[:space:]]lasrecomp_mario_thread_capture$' <<< "$RUNTIME_EXPORTS" ||
+  fail "Motor Mario sem captura de threads; APK nao sera empacotado."
+fi
 mv -f "$RUNTIME.tmp" "$RUNTIME"
 step "Compilando SDL_main e bibliotecas do app"
 clang -shared -fPIC -O2 -Wl,-z,max-page-size=16384 \

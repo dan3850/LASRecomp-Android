@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdatomic.h>
+#include "mario_capture_bridge.h"
 #ifdef __ANDROID__
 #include <jni.h>
 #include <SDL3/SDL_system.h>
@@ -20,6 +21,11 @@
 static void boot_mark(const char *files, const char *stage, int value);
 typedef int (*GraphicsCaptureRequest)(void);
 static _Atomic(GraphicsCaptureRequest) graphics_capture_request;
+JNIEXPORT jboolean JNICALL Java_com_retroaura_lasrecomp_GameSDLActivity_nativeCaptureMarioThreads(JNIEnv *env,jclass cls) {
+    (void)env; (void)cls;
+    int result=mario_capture_bridge_run();
+    return result?JNI_TRUE:JNI_FALSE;
+}
 // Game runtime supplies this optional Android-only input callback after
 // dlopen(); JNI never calls directly into an unloaded runtime library.
 typedef void (*NeoStickSetter)(int stick, float x, float y);
@@ -296,7 +302,9 @@ int SDL_main(int argc, char **argv) {
     boot_mark(files, "entering engine", 0);
     atomic_store(&neo_stick_setter, (NeoStickSetter)dlsym(engine, "lasrecomp_android_set_touch_stick"));
     atomic_store(&graphics_capture_request, (GraphicsCaptureRequest)dlsym(engine, "lasrecomp_graphics_capture_request"));
+    mario_capture_bridge_set((MarioThreadCapture)dlsym(engine,"lasrecomp_mario_thread_capture"));
     int result = start(files);
+    mario_capture_bridge_set(NULL); // waits for an in-flight capture before dlclose
     atomic_store(&neo_stick_setter, NULL);
     atomic_store(&graphics_capture_request, NULL);
     boot_mark(files, "engine returned", result);

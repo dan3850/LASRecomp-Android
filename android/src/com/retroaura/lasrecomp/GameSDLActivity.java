@@ -24,6 +24,7 @@ import java.nio.charset.StandardCharsets;
  */
 public final class GameSDLActivity extends SDLActivity {
     private static native boolean nativeRequestGraphicsCapture();
+    private static native boolean nativeCaptureMarioThreads();
     // Routed by libmain.so to the existing nn::hid input engine. SDL keyboard
     // codes cannot represent partial stick deflection, so these stay analog.
     static native void nativeSetNeoStick(int stick, float x, float y);
@@ -154,6 +155,32 @@ public final class GameSDLActivity extends SDLActivity {
                 neoControls = null;
                 neoInput = null;
                 installLegacyTouchControls();
+            }
+            if (getIntent().getBooleanExtra("mario_thread_capture", false)) {
+                android.widget.Button capture = new android.widget.Button(this);
+                capture.setText("Capturar estado");
+                android.widget.RelativeLayout.LayoutParams placement = new android.widget.RelativeLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                placement.addRule(android.widget.RelativeLayout.ALIGN_PARENT_TOP);
+                placement.addRule(android.widget.RelativeLayout.CENTER_HORIZONTAL);
+                mLayout.addView(capture, placement);
+                capture.bringToFront();
+                capture.setOnClickListener(v -> {
+                    capture.setEnabled(false);
+                    new Thread(() -> {
+                        boolean saved;
+                        try { saved = nativeCaptureMarioThreads(); }
+                        catch (LinkageError error) { saved = false; markActivity("thread capture: " + error); }
+                        final boolean success = saved;
+                        runOnUiThread(() -> {
+                            capture.setEnabled(true);
+                            android.widget.Toast.makeText(this, success
+                                    ? "Estado salvo. Volte e use Salvar log."
+                                    : "Captura indisponível. Aguarde o motor e tente novamente.",
+                                    android.widget.Toast.LENGTH_LONG).show();
+                        });
+                    }, "mario-thread-capture").start();
+                });
             }
         }
     }

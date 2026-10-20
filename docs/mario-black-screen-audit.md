@@ -241,6 +241,52 @@ mutex. Avançar visualmente além do estado anterior exige executar esse APK.
 
 ## Hipóteses restantes e experimento mínimo
 
+### Captura acionada durante a tela preta
+
+O APK do Mario oferece **Capturar estado** sobre a tela do jogo. Toque depois
+que a tela permanecer preta, espere a confirmação de gravação e volte ao
+launcher para **Salvar log**. O arquivo exportado começa por `mario-threads.log`,
+separado do áudio e sem depender dos últimos 160 KB de `lasrecomp.log`.
+
+O coletor obtém duas amostras com aproximadamente 100 ms entre elas. No Android
+ARM64, `native_pc` e `native_lr` vêm do contexto nativo interrompido por um
+sinal; os offsets relativos às bibliotecas permitem localizar código com ASLR.
+`guest_dispatch_pc` é o alvo salvo no `Cpu`, que pode estar desatualizado em um
+loop: **não é anunciado como PC exato da instrução guest**. O relatório inclui
+LR/SP guest, último SVC e argumentos, indicação de SVC ainda ativo, estado de
+espera, palavra do mutex e proprietário quando a região é legível, e objetos
+de `WaitSynchronization`. O cabeçalho identifica HEAD e biblioteca recompilada.
+Metadados de espera são lidos separadamente sob o lock do kernel, portanto não
+representam uma parada simultânea de todas as threads.
+
+O handler não executa I/O, alocação, simbolização, locks nem resolução de TLS
+do motor. Copia o contexto da própria thread para slots atômicos lock-free; o
+coletor faz a gravação/simbolização depois. Um handler preexistente de `SIGURG`
+impede a captura, em vez de ser substituído. Respostas ausentes aparecem como
+`sampled=0`; não são preenchidas com registros antigos. O coletor tem limites
+de tempo para respostas/lock e limite explícito de 256 threads. Não sinaliza
+objetos Horizon nem muda resultados, deadlines, escalonamento ou flags de
+sincronização. Há perturbação breve inerente à amostragem por sinal; o intervalo
+entre amostras pertence somente ao coletor. A exclusão com teardown mantém os
+objetos de thread válidos, e a ponte JNI aguarda chamadas em andamento antes de
+liberar o callback do motor.
+
+Os testes usam pthreads e sinais reais: loop sem dispatcher, espera de condvar
+com outro proprietário, evento não sinalizado, resposta ausente, handler
+preexistente, captura concorrente, lock ocupado, leitura limitada a regiões e
+vida útil do callback JNI. O script Termux executa essas regressões antes do
+build e verifica a exportação do símbolo nativo. A ABI `Cpu` e a biblioteca
+privada do jogo não são alteradas. Esta entrega torna o experimento executável;
+não é apresentada como correção da tela preta.
+
+Validação no host: 192 testes disponíveis aprovados, incluindo os dez testes
+da captura e da ponte. O caminho de contexto AArch64 também compilou para um
+objeto Linux/glibc, sem executar esse objeto. Isso não substitui linkagem com
+Bionic, compilação Java/SDK nem execução do APK. Os quatro módulos Android/
+Vulkan indisponíveis continuam sendo os listados acima. A confirmação no
+aparelho é a presença das duas amostras e da identidade no arquivo exportado;
+o conteúdo dessas amostras será usado para investigar a causa, ainda pendente.
+
 | Hipótese | Evidência e limite | Observação mínima que a diferencia |
 | --- | --- | --- |
 | Bloqueio posterior em sincronização | Os registros iniciais devolvem sucesso, mas sua quantidade é limitada e não representa todas as esperas posteriores. O defeito de timeout corrigido existe, mas não está ligado a um timeout observado no estado preto. | Testar o APK corrigido com a mesma biblioteca e pasta; se continuar preto, obter uma única amostra dos PCs/LRs/WaitKind das threads guest e do proprietário da palavra esperada. Isso separa espera pendente de loop de CPU. |

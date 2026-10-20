@@ -5,6 +5,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(LASRECOMP_MARIO_TEST) && defined(__linux__)
+#include <sys/syscall.h>
+#endif
 
 #include "hle.h"
 #include "kernel.h"
@@ -29,6 +32,10 @@
 #define WAITERS_BIT 0x40000000u
 
 pthread_mutex_t g_klock = PTHREAD_MUTEX_INITIALIZER;
+#ifdef LASRECOMP_MARIO_TEST
+static pthread_mutex_t mario_capture_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mario_region_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 static __thread KThread *t_cur;
 
 // ------------------------------------------------------------------ handle table
@@ -122,6 +129,7 @@ bool mario_debug_read(uint64_t address, void *output, size_t size) {
     if (address < GUEST_LO || address >= GUEST_HI || size > GUEST_HI - address) return false;
     bool ok = false;
     pthread_mutex_lock(&g_klock);
+    pthread_mutex_lock(&mario_region_lock);
     for (int i = 0; i < nregions; i++) {
         Region *r = &regions[i];
         if ((r->perm & 1) && address >= r->addr && address - r->addr < r->size &&
@@ -131,6 +139,7 @@ bool mario_debug_read(uint64_t address, void *output, size_t size) {
             break;
         }
     }
+    pthread_mutex_unlock(&mario_region_lock);
     pthread_mutex_unlock(&g_klock);
     return ok;
 }
@@ -147,21 +156,36 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
 }
 
 static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
+#ifdef LASRECOMP_MARIO_TEST
+    pthread_mutex_lock(&mario_region_lock);
+#endif
     if (nregions == 1024) FATAL("too many regions\n");
     plat_commit(addr, size);  // back it before the OS writes there (Windows: file reads into the heap)
     int i = nregions++;
     while (i > 0 && regions[i - 1].addr > addr) { regions[i] = regions[i - 1]; i--; }
     regions[i] = (Region){addr, size, type, perm};
+#ifdef LASRECOMP_MARIO_TEST
+    pthread_mutex_unlock(&mario_region_lock);
+#endif
 }
 
 static void region_remove(uint64_t addr) {
+#ifdef LASRECOMP_MARIO_TEST
+    pthread_mutex_lock(&mario_region_lock);
+#endif
     for (int i = 0; i < nregions; i++) {
         if (regions[i].addr == addr) {
             memmove(&regions[i], &regions[i + 1], (nregions - i - 1) * sizeof(Region));
             nregions--;
+#ifdef LASRECOMP_MARIO_TEST
+            pthread_mutex_unlock(&mario_region_lock);
+#endif
             return;
         }
     }
+#ifdef LASRECOMP_MARIO_TEST
+    pthread_mutex_unlock(&mario_region_lock);
+#endif
 }
 
 static void query_memory(uint64_t addr, uint64_t out) {
@@ -210,6 +234,15 @@ void rt_unwind_point(void) {
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
+#ifdef LASRECOMP_MARIO_TEST
+    pthread_mutex_lock(&g_klock);
+    t->capture_host = pthread_self();
+#ifdef __linux__
+    t->capture_tid = (uint64_t)syscall(SYS_gettid);
+#endif
+    t->capture_ready = true;
+    pthread_mutex_unlock(&g_klock);
+#endif
     if (t->is_main) plat_thread_perf_core(PLAT_PERF_GAME);
     crash_handler_install();
     rt_set_fpcr(0);
@@ -551,7 +584,19 @@ static int prof_svc = -1;
 static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc);
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     rt_unwind_point();
+#ifdef LASRECOMP_MARIO_TEST
+    KThread *captured = t_cur;
+    if (captured) {
+        captured->capture_svc = imm;
+        captured->capture_svc_pc = pc;
+        for (int i=0;i<4;i++) captured->capture_svc_args[i]=c->x[i];
+        captured->capture_in_svc = true;
+    }
+#endif
     svc_entry(c, imm, pc);
+#ifdef LASRECOMP_MARIO_TEST
+    if (captured) captured->capture_in_svc = false;
+#endif
     rt_unwind_point();
 }
 
@@ -876,7 +921,13 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
 
 // Reboot, step 1: stop every guest thread (see rt_unwind_point) and join it. `idle` keeps the window responsive.
 void kernel_stop_threads(void (*idle)(void)) {
+#ifdef LASRECOMP_MARIO_TEST
+    pthread_mutex_lock(&mario_capture_lock);
+#endif
     g_rt_unwind = 1;
+#ifdef LASRECOMP_MARIO_TEST
+    pthread_mutex_unlock(&mario_capture_lock);
+#endif
     uint64_t t0 = plat_now_ns(), logged = t0;
     for (;;) {
         int live = 0;
@@ -908,6 +959,9 @@ void kernel_stop_threads(void (*idle)(void)) {
 // Reboot, step 2 (threads stopped): a fresh kernel. Kernel objects are leaked rather than freed: host statics
 // can still point at some (vi.c's vsync event, signalled by its host timer thread).
 void kernel_reset(void) {
+#ifdef LASRECOMP_MARIO_TEST
+    pthread_mutex_lock(&mario_capture_lock);
+#endif
     pthread_mutex_lock(&g_klock);
     for (KThread *t = g_threads, *next; t; t = next) {
         next = t->anext;
@@ -924,7 +978,14 @@ void kernel_reset(void) {
     next_thread_id = 0x50;
     g_rt_unwind = 0;
     pthread_mutex_unlock(&g_klock);
+#ifdef LASRECOMP_MARIO_TEST
+    pthread_mutex_unlock(&mario_capture_lock);
+#endif
 }
+
+#if defined(LASRECOMP_MARIO_TEST) && defined(__linux__)
+#include "mario_thread_capture.h"
+#endif
 
 void kernel_init(void) {
     // Reserve the heap, alias, stack, and TLS regions.

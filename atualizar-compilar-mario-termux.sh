@@ -134,6 +134,8 @@ mario_build_main() {
     python3 tests/test_kernel_condvar.py
     echo "===== REGRESSAO: BOOTSTRAP, LOADER E DISPATCH ====="
     python3 -m unittest discover -s tests -p test_mario_boot_profile.py -v
+    echo "===== REGRESSAO: CAPTURA DE THREADS ====="
+    python3 tests/test_mario_thread_capture.py
 
     if [[ ! -s "$mario_code/libmario_test.so" || ! -s "$mario_code/build-report.json" ]]; then
         echo "Biblioteca ou relatorio ausente: gerando a partir dos seus arquivos locais."

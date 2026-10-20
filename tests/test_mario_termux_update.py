@@ -31,6 +31,7 @@ class MarioTermuxUpdate(unittest.TestCase):
             'runtime/kernel.c': 'synthetic kernel\n',
             'settings.txt': 'original settings\n',
             'tests/test_kernel_condvar.py': 'print("simulated kernel check")\n',
+            'tests/test_mario_thread_capture.py': 'print("simulated thread-capture check")\n',
             'tests/kernel_condvar_test.c': 'synthetic test\n',
             'tests/test_mario_boot_profile.py':
                 'import unittest\nclass Fixture(unittest.TestCase):\n'
