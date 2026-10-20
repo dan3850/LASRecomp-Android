@@ -46,7 +46,9 @@ class MarioTermuxUpdate(unittest.TestCase):
                 'printf "simulated APK" > build/mario-android-boot/Mario-Recomp-Boot-Test.apk\n'
                 'git branch --show-current > build/built-branch\n'
                 'cp settings.txt build/built-settings\n'
-                'printf "%s" "${MARIO_RESUME_AT-}" > build/received-resume-target\n',
+                'printf "%s" "${MARIO_RESUME_AT-}" > build/received-resume-target\n'
+                'printf "%s" "${MARIO_BATCH_ANCHOR-}" > build/received-batch-anchor\n'
+                'printf "%s" "${MARIO_BATCH_RETURN_SITE-}" > build/received-batch-return-site\n',
         }
         for name, content in fixtures.items():
             path = self.seed / name
@@ -153,8 +155,30 @@ class MarioTermuxUpdate(unittest.TestCase):
 
     def test_ordinary_build_without_opt_in_has_no_resume_target(self):
         self.env.pop('MARIO_RESUME_AT', None)
+        self.env.pop('MARIO_BATCH_ANCHOR', None)
+        self.env.pop('MARIO_BATCH_RETURN_SITE', None)
         self.verify_built(self.build())
         self.assertEqual((self.project / 'build/received-resume-target').read_text(), '')
+        self.assertEqual((self.project / 'build/received-batch-anchor').read_text(), '')
+        self.assertEqual((self.project / 'build/received-batch-return-site').read_text(), '')
+
+    def test_explicit_bounded_batch_reentry_is_forwarded(self):
+        self.env['MARIO_BATCH_ANCHOR'] = 'main:0x687b48'
+        self.env['MARIO_BATCH_RETURN_SITE'] = 'main:0x686954'
+        self.verify_built(self.build())
+        self.assertEqual((self.project / 'build/received-batch-anchor').read_text(),
+                         'main:0x687b48')
+        self.assertEqual((self.project / 'build/received-batch-return-site').read_text(),
+                         'main:0x686954')
+
+    def test_batch_return_site_without_anchor_fails_before_build(self):
+        self.env.pop('MARIO_BATCH_ANCHOR', None)
+        self.env['MARIO_BATCH_RETURN_SITE'] = 'main:0x686954'
+        result = self.build()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('exige MARIO_BATCH_ANCHOR', result.stdout + result.stderr)
+        self.assertFalse(self.apk.exists())
+        self.verify_caches_and_source()
 
     def test_checks_out_existing_remote_branch_when_not_local(self):
         self.verify_built(self.build())
