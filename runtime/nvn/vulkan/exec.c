@@ -5823,8 +5823,11 @@ static void shader_list_preflight(uint64_t handle) {
             break;
         case CMD_BIND_VERTEX_ATTRIB:
             nattrib = (int)(r->x[0] > 16 ? 16 : r->x[0]);
-            if (nattrib && !r->extra) goto submit_planned;
-            if (nattrib) memcpy(attrib, r->extra, (size_t)nattrib * 4);
+            // CmdRec has a flexible-array payload. A non-null extra pointer
+            // alone does NOT mean the payload contains all attributes.
+            if ((size_t)r->size - sizeof *r < (size_t)nattrib * sizeof attrib[0])
+                goto submit_planned;
+            if (nattrib) memcpy(attrib, r->extra, (size_t)nattrib * sizeof attrib[0]);
             break;
         case CMD_SET_RENDER_TARGETS: {
             const struct {
@@ -5834,8 +5837,12 @@ static void shader_list_preflight(uint64_t handle) {
                 uint64_t depth;
                 NvnTextureView dview;
                 uint8_t has_dview;
-            } *rt = r->extra;
-            if (!rt) goto submit_planned;
+            } *rt = (const void *)r->extra;
+            // A complete render-target state is required for the shader key.
+            // The ordinary executor owns validation/execution of the record;
+            // speculative preflight only reads records with a full payload.
+            if ((size_t)r->size - sizeof *r < sizeof *rt)
+                goto submit_planned;
             ncolor = (int)(r->x[0] > 8 ? 8 : r->x[0]);
             memset(color_kind, 0, sizeof color_kind);
             for (int i = 0; i < ncolor; i++) {
