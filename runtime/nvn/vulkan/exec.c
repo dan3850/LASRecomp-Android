@@ -4702,28 +4702,6 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
             memcpy(k.blend[i], st.blend[i], 8);
         }
     }
-    // Capture stream sizes and layout after building the actual pipeline
-    // key. The worker never reads st, guest memory or Vulkan/VMA resources.
-    // Draws that use an index buffer continue through their original path.
-    if (!indexed && (uint32_t)r->x[2] <= 65536) {
-        static int ranges_enabled = -1;
-        if (ranges_enabled < 0) {
-            const char *e = getenv("LARECOMP_VK_VERTEX_RANGE_PREP");
-            ranges_enabled = !e || atoi(e) != 0;
-        }
-        if (ranges_enabled) {
-            vertex_job->used_streams = k.used_streams & 0xffffu;
-            vertex_job->max_index = (uint64_t)(uint32_t)r->x[1] + (uint32_t)r->x[2];
-            vertex_job->base_instance = (uint32_t)r->x[3];
-            vertex_job->instances = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
-            memcpy(vertex_job->stride, k.stride, sizeof vertex_job->stride);
-            memcpy(vertex_job->divisor, k.divisor, sizeof vertex_job->divisor);
-            for (int i = 0; i < 16; i++)
-                vertex_job->size[i] = st.vbuf[i].size;
-            run_job(prepare_vertex_ranges, vertex_job);
-            (*vertex_job_started) = true;
-        }
-    }
     k.a2c = st.ms[0xC] != 0;
     k.topo_class = cls;
     k.poly_fill = st.poly[2] != 1;
@@ -4738,6 +4716,30 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
         pipe_tab[pslot].key = ph;
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
+        // Per-draw stream range arithmetic is tiny. Scheduling a worker on
+        // every cache HIT adds queue traffic and a join to hot draws. Only
+        // offload it when this draw also needs a NEW Vulkan pipeline build,
+        // allowing the two CPU jobs to overlap. Cached pipelines stay on the
+        // original direct calculation path without a worker or snapshot.
+        if (!indexed && (uint32_t)r->x[2] <= 65536) {
+            static int ranges_enabled = -1;
+            if (ranges_enabled < 0) {
+                const char *e = getenv("LARECOMP_VK_VERTEX_RANGE_PREP");
+                ranges_enabled = !e || atoi(e) != 0;
+            }
+            if (ranges_enabled) {
+                vertex_job->used_streams = k.used_streams & 0xffffu;
+                vertex_job->max_index = (uint64_t)(uint32_t)r->x[1] + (uint32_t)r->x[2];
+                vertex_job->base_instance = (uint32_t)r->x[3];
+                vertex_job->instances = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
+                memcpy(vertex_job->stride, k.stride, sizeof vertex_job->stride);
+                memcpy(vertex_job->divisor, k.divisor, sizeof vertex_job->divisor);
+                for (int i = 0; i < 16; i++)
+                    vertex_job->size[i] = st.vbuf[i].size;
+                run_job(prepare_vertex_ranges, vertex_job);
+                (*vertex_job_started) = true;
+            }
+        }
     }
     build_ready(&pp->state, "graphics pipeline");
     // Keep the CPU-only vertex range job running while we record dynamic
