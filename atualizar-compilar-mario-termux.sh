@@ -136,6 +136,8 @@ mario_build_main() {
     python3 -m unittest discover -s tests -p test_mario_boot_profile.py -v
     echo "===== REGRESSAO: CAPTURA DE THREADS ====="
     python3 tests/test_mario_thread_capture.py
+    echo "===== REGRESSAO: POSSE DE TEXTURA NVN E SCUDO ====="
+    python3 tests/test_mario_texture_ownership.py
     echo "===== REGRESSAO: NPad HID COMPARTILHADO ====="
     if [[ -f tests/mario_hid_npad_test.c ]]; then
         local mario_test_bin
