@@ -44,6 +44,9 @@ static uint64_t stat_gmem_stream_bytes, stat_gmem_stream_maps;
 static uint64_t stat_gmem_covered, stat_gmem_covered_bytes;
 static uint64_t stat_gmem_device_dispatches, stat_gmem_device_up;
 static uint64_t stat_gmem_device_back, stat_gmem_device_fallback;
+// Count writable compute jobs that run directly from CPU-mapped memory
+// instead of paying the device-local upload and readback transfers.
+static uint64_t stat_gmem_host_cs, stat_gmem_host_bytes, stat_gmem_host_small_cs;
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
 static int prof = -1;
@@ -1414,6 +1417,13 @@ const char *renderer_stats(void) {
             (unsigned long long)stat_gmem_device_fallback);
         stat_gmem_device_dispatches = stat_gmem_device_up = 0;
         stat_gmem_device_back = stat_gmem_device_fallback = 0;
+    }
+    if (stat_gmem_host_cs || stat_gmem_host_small_cs) {
+        LOG("[vk-gmem-test] host writable cs %llu (trial small %llu) mapped %.2f MB\n",
+            (unsigned long long)stat_gmem_host_cs,
+            (unsigned long long)stat_gmem_host_small_cs,
+            (double)stat_gmem_host_bytes / 1048576.0);
+        stat_gmem_host_cs = stat_gmem_host_small_cs = stat_gmem_host_bytes = 0;
     }
     {
         size_t n = strlen(stats_text);
@@ -2942,16 +2952,46 @@ static void gmem_write_destroy(GmemWrite *w) {
     free(w);
 }
 
+// An integrated GPU may benefit from a CPU-visible storage buffer for very
+// small writable compute maps: it avoids BOTH the host-to-device upload and
+// the device-to-host readback. Larger maps retain the existing device-local
+// compute path, whose shader bandwidth is normally better.
+// A/B: LARECOMP_VK_GMEM_HOST_SMALL_MAX=0 restores the previous Android policy.
+// Limit is in BYTES; never apply this trial to more than the existing 8 MiB
+// device-local limit. Only writable compute stages use this choice.
+static uint64_t gmem_host_small_max(void) {
+    static uint64_t limit = UINT64_MAX;
+    if (limit != UINT64_MAX) return limit;
+#ifdef __ANDROID__
+    uint64_t chosen = 64ull << 10;
+#else
+    uint64_t chosen = 0;
+#endif
+    const char *env = getenv("LARECOMP_VK_GMEM_HOST_SMALL_MAX");
+    if (env && *env) {
+        char *end = NULL;
+        unsigned long long requested = strtoull(env, &end, 10);
+        if (env != end && end && !*end && requested <= (8ull << 20))
+            chosen = (uint64_t)requested;
+    }
+    limit = chosen;
+    LOG("[vk-gmem-test] host-visible small compute max=%llu bytes (A/B: 0 disables)\n",
+        (unsigned long long)limit);
+    return limit;
+}
+
 // No import of the entire guest heap is required; use only bound GMEM ranges.
-// Off switch provides an unchanged, host-visible reference for A/B tests.
+// Existing LARECOMP_VK_GMEM_DEVICE_WRITES=0 still forces the old host path
+// for ALL sizes. The new small-map trial never overrides that setting.
 static bool gmem_device_writes_enabled(uint64_t bytes) {
     if (!bytes || bytes > (8ull << 20)) return false;
     const char *v = getenv("LARECOMP_VK_GMEM_DEVICE_WRITES");
 #ifdef __ANDROID__
-    return !v || atoi(v) != 0;
+    bool allowed = !v || atoi(v) != 0;
 #else
-    return v && atoi(v) != 0;
+    bool allowed = v && atoi(v) != 0;
 #endif
+    return allowed && bytes > gmem_host_small_max();
 }
 
 // Only completed, invalidated and copied-back allocations enter this pool.
@@ -2967,6 +3007,15 @@ static void gmem_write_recycle(GmemWrite *w) { // gmem_lock held
 
 static GmemWrite *gmem_write_acquire(uint64_t size, bool compute) {
     bool native = compute && gmem_device_writes_enabled(size);
+    if (compute && !native) {
+        stat_gmem_host_cs++;
+        stat_gmem_host_bytes += size;
+        // Count the trial separately from the pre-existing host-only
+        // fallback on allocation failure or disabled device writes.
+        const char *v = getenv("LARECOMP_VK_GMEM_DEVICE_WRITES");
+        if ((!v || atoi(v) != 0) && size <= gmem_host_small_max())
+            stat_gmem_host_small_cs++;
+    }
     pthread_mutex_lock(&gmem_lock);
     GmemWrite **best = NULL;
     for (GmemWrite **p = &gmem_free; *p; p = &(*p)->next)
