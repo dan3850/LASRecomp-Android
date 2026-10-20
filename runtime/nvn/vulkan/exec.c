@@ -4340,10 +4340,29 @@ typedef struct {
     uint32_t *expanded;
     uint16_t *widened;
     bool restart_enabled;
+    uint32_t restart_index;
     _Atomic int state;
 } IndexedGeometryJob;
 static void prepare_indexed_geometry(void *arg) {
     IndexedGeometryJob *g = arg;
+    if (g->itype != 0 && g->mode <= 5) {
+        // Compute the index bound on a stable snapshot. The render thread
+        // needs this only if a direct index buffer requires vertex copies.
+        const uint32_t restart = g->restart_enabled ? g->restart_index : 0xffffffffu;
+        if (g->itype == 1) {
+            const uint16_t *src = (const uint16_t *)g->source;
+            for (uint32_t i = 0; i < g->count; ++i)
+                if (src[i] != (uint16_t)restart && src[i] > g->max_index)
+                    g->max_index = src[i];
+        } else {
+            const uint32_t *src = (const uint32_t *)g->source;
+            for (uint32_t i = 0; i < g->count; ++i)
+                if (src[i] != restart && src[i] > g->max_index)
+                    g->max_index = src[i];
+        }
+        build_finished(&g->state, 1);
+        return;
+    }
     if (g->itype == 0 && g->mode <= 5) {
         // Native 8-bit index streams are widened to Vulkan's 16-bit format.
         // The worker owns the source snapshot and writes host-only output.
@@ -4447,7 +4466,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
         uint32_t width = type == 0 ? 1 : type == 1 ? 2 : 4;
         bool prepare_expansion = mode == 6 || mode == 7 || mode == 9;
         bool prepare_widening = type == 0 && mode <= 5;
-        if (prep_enabled && (prepare_expansion || prepare_widening) &&
+        bool prepare_index_bound = type != 0 && mode <= 5;
+        if (prep_enabled && (prepare_expansion || prepare_widening || prepare_index_bound) &&
             n >= 6 && n <= 4096 && type <= 2 && r->x[3] &&
             (uint64_t)n * width <= 16384) {
             IndexedGeometryJob *g = calloc(1, sizeof *g);
@@ -4458,6 +4478,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                            (size_t)n * width);
                     g->mode = mode; g->count = n; g->itype = type;
                     g->restart_enabled = st.prim_restart;
+                    g->restart_index = st.restart_index;
                     *prepared = g;
                     run_job(prepare_indexed_geometry, g);
                 } else free(g);
@@ -4909,8 +4930,20 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                 continue;
             }
             if (scan_src) {  // copying after all: the index scan bounds the copy
-                if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i]; }
-                else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i]; }
+                IndexedGeometryJob *g = *prepared;
+                if (g && g->itype == (scan_isz == 2 ? 1u : 2u) &&
+                    g->mode == mode && g->count == icount &&
+                    g->restart_enabled == st.prim_restart &&
+                    g->restart_index == st.restart_index) {
+                    build_ready(&g->state, "native index-bound preparation");
+                    if (g->max_index > max_index) max_index = g->max_index;
+                } else if (scan_isz == 2) {
+                    const uint16_t *q = scan_src;
+                    for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i];
+                } else {
+                    const uint32_t *q = scan_src;
+                    for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i];
+                }
                 max_index += 1;
                 if (base_vertex > 0) max_index += (uint32_t)base_vertex;
                 scan_src = NULL;
