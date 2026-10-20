@@ -2332,7 +2332,123 @@ static void build_pipeline(void *arg) {
         // driver rejection rather than guessing from the final FATAL alone.
         LOG("[mario-pipeline-fail] recipe kind=%u bytes=%u vs_words=%u fs_words=%u "
             "vs=%p fs=%p target_colors=%u depth=%u stencil=%u samples=%u "
-            "program=%p prepared=%p\\n",
+            "program=%p prepared=%p\n",
+            (unsigned)r.kind, (unsigned)r.state_size, (unsigned)r.words[0],
+            (unsigned)r.words[1], (void *)r.code[0], (void *)r.code[1],
+            (unsigned)pp->k.ncolor, (unsigned)pp->k.depth,
+            (unsigned)pp->k.stencil, (unsigned)pp->k.samples,
+            (void *)p, (void *)prepared);
+    }
+#endif
+    build_finished(&pp->state, pp->pipe ? 1 : 2);
+}
+
+static void *pipeline_recipe_build(const ReplayRecipe *recipe, void *context);
+static void pipeline_recipe_destroy(void *object);
+#define PIPE_TAB 8192
+static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
+
+// 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
+// stored constants (fragment-shader hashes) and must not change.
+static uint64_t hash_words(uint64_t h, const void *p, size_t n) {
+    const uint8_t *b = p;
+    for (; n >= 8; n -= 8, b += 8) { uint64_t w; memcpy(&w, b, 8); h = (h ^ w) * 0x9E3779B97F4A7C15ull; h ^= h >> 29; }
+    for (; n; n--, b++) { h = (h ^ *b) * 0x100000001B3ull; }
+    return h ^ (h >> 32);
+}
+
+static uint64_t hmix(uint64_t h, const void *p, size_t n) {
+    const uint8_t *b = p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001B3ull; }
+    return h;
+}
+
+static VkPrimitiveTopology topo_class_base(uint8_t c) {
+    return c == 0 ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : c == 1 ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+
+static VkResult build_pipeline_raw(Pipe *pp) {
+    PipeKey *k = &pp->k;
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = k->prog->vs, .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = k->prog->fs, .pName = "main"}};
+    VkVertexInputAttributeDescription va[32];
+    VkVertexInputBindingDescription vb[17];
+    VkVertexInputBindingDivisorDescriptionEXT vd[17];
+    uint32_t na = 0, nb = 0, nd = 0;
+    for (int i = 0; i < 32; i++)
+        if (k->attr_mask & (1u << i)) va[na++] = (VkVertexInputAttributeDescription){(uint32_t)i, k->attr_bind[i], k->attr_fmt[i], k->attr_off[i]};
+    for (uint32_t s = 0; s < 17; s++) {
+        if (!(k->used_streams & (1u << s))) continue;
+        bool inst = k->divisor[s] != 0;
+        vb[nb++] = (VkVertexInputBindingDescription){s, k->stride[s], inst ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
+        if (inst && k->divisor[s] > 1 && g_vk.divisor) vd[nd++] = (VkVertexInputBindingDivisorDescriptionEXT){s, k->divisor[s]};
+    }
+    VkPipelineVertexInputDivisorStateCreateInfoEXT dvi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT,
+                                                          .vertexBindingDivisorCount = nd, .pVertexBindingDivisors = vd};
+    VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, .pNext = nd ? &dvi : NULL,
+                                               .vertexBindingDescriptionCount = nb, .pVertexBindingDescriptions = vb,
+                                               .vertexAttributeDescriptionCount = na, .pVertexAttributeDescriptions = va};
+    VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = topo_class_base(k->topo_class)};
+    VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                 .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1};
+    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                               .rasterizationSamples = (VkSampleCountFlagBits)k->samples, .alphaToCoverageEnable = k->a2c};
+    VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkPipelineColorBlendAttachmentState cba[8] = {0};
+    for (uint32_t i = 0; i < k->ncolor; i++) {
+        cba[i].colorWriteMask = k->write_mask[i];
+        if ((k->blend_on >> i) & 1) {
+            const uint8_t *b = k->blend[i];
+            cba[i].blendEnable = VK_TRUE;
+            cba[i].srcColorBlendFactor = blend_factor(b[1]);
+            cba[i].dstColorBlendFactor = blend_factor(b[2]);
+            cba[i].srcAlphaBlendFactor = blend_factor(b[3]);
+            cba[i].dstAlphaBlendFactor = blend_factor(b[4]);
+            cba[i].colorBlendOp = blend_op(b[5]);
+            cba[i].alphaBlendOp = blend_op(b[6]);
+        }
+    }
+    VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = k->ncolor, .pAttachments = cba};
+    VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                           .dynamicStateCount = NDYN, .pDynamicStates = DYN};
+    VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = k->ncolor,
+                                        .pColorAttachmentFormats = k->color, .depthAttachmentFormat = k->depth,
+                                        .stencilAttachmentFormat = k->stencil};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri, .stageCount = 2,
+                                       .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
+                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
+                                       .pColorBlendState = &cb, .pDynamicState = &dy, .layout = k->prog->layout};
+    VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pp->pipe);
+    if (r != VK_SUCCESS) {
+        static _Atomic int n;
+        if (atomic_fetch_add(&n, 1) < 10) LOG("[vk] pipeline creation failed: %d\n", r);
+        vk_diag_event(VD_PIPELINE_ERROR, "graphics VkResult=%d color_targets=%u depth=%d stencil=%d", r, k->ncolor, k->depth, k->stencil);
+    }
+    atomic_fetch_add(&stat_compiles, 1);
+    return r;
+}
+
+#define PIPE_STATE_SIZE (sizeof(PipeKey) - offsetof(PipeKey, color))
+_Static_assert(PIPE_STATE_SIZE <= REPLAY_STATE_MAX && PIPE_STATE_SIZE % 4 == 0, "persistent pipeline state ABI");
+static void build_pipeline(void *arg) {
+    Pipe *pp = arg;
+    Prog *p = pp->k.prog;
+    ReplayRecipe r = {.kind = REPLAY_GRAPHICS, .state_size = PIPE_STATE_SIZE, .state = pp->k.color,
+        .code = {p->spirv[0], p->spirv[1]}, .words = {(uint32_t)p->nspirv[0], (uint32_t)p->nspirv[1]}};
+    PreparedPipeline *prepared = replay_get(&r, pp);
+    if (prepared) pp->pipe = prepared->pipe;
+#ifdef LASRECOMP_MARIO_TEST
+    if (!pp->pipe) {
+        // A failed mandatory pipeline aborts the game. Preserve enough state
+        // in lasrecomp.log to distinguish replay rejection, translation and
+        // driver rejection rather than guessing from the final FATAL alone.
+        LOG("[mario-pipeline-fail] recipe kind=%u bytes=%u vs_words=%u fs_words=%u "
+            "vs=%p fs=%p target_colors=%u depth=%u stencil=%u samples=%u "
+            "program=%p prepared=%p\n",
             (unsigned)r.kind, (unsigned)r.state_size, (unsigned)r.words[0],
             (unsigned)r.words[1], (void *)r.code[0], (void *)r.code[1],
             (unsigned)pp->k.ncolor, (unsigned)pp->k.depth,
@@ -4088,7 +4204,7 @@ static void *pipeline_recipe_build(const ReplayRecipe *r, void *context) {
             memcpy(k.color, r->state, PIPE_STATE_SIZE);
             LOG("[mario-pipeline-reject] validation kind=graphics ncolor=%u color0=%u "
                 "write0=%u attr_mask=%#x streams=%#x topo=%u samples=%u "
-                "a2c=%u poly_fill=%u depth=%u stencil=%u divisor_ext=%d\\n",
+                "a2c=%u poly_fill=%u depth=%u stencil=%u divisor_ext=%d\n",
                 (unsigned)k.ncolor, (unsigned)k.color[0],
                 (unsigned)k.write_mask[0], (unsigned)k.attr_mask,
                 (unsigned)k.used_streams, (unsigned)k.topo_class,
