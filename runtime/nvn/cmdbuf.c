@@ -97,7 +97,17 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
         c->x[1] = 0;  // NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY
         c->x[2] = size + JUMP_RESERVE;
         c->x[3] = cb->callback_data;
+        uint64_t before_mem = cb->mem, before_used = cb->used, before_size = cb->size;
         guest_call(c, cb->callback);
+#ifdef LASRECOMP_MARIO_TEST
+        fprintf(stderr, "[mario-nvn-memory] callback attempt=%d op=%u need=%u before=%llx/%llu/%llu after=%llx/%llu/%llu changed=%d\\n",
+                tries + 1, op, size,
+                (unsigned long long)before_mem, (unsigned long long)before_used,
+                (unsigned long long)before_size,
+                (unsigned long long)cb->mem, (unsigned long long)cb->used,
+                (unsigned long long)cb->size,
+                cb->mem != before_mem || cb->used != before_used || cb->size != before_size);
+#endif
         memcpy(c->x, saved, sizeof saved);
     }
     CmdRec *r = raw_rec(cb->mem + cb->used, op, size);
