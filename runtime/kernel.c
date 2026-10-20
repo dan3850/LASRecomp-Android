@@ -703,32 +703,148 @@ int mario_native_svc_from_frame(MarioNativeSvcFrame *frame, uint32_t svc_id, uin
 // instruction or an ARM64 trampoline entry. Use service 0x10 because it is
 // a synchronous read of the current processor number, with no kernel handles
 // or guest memory updates. A known module .text address is diagnostic only.
+// The AArch64 capture trampoline is deliberately part of kernel.c so an
+// opt-in Termux build does not need to update its native source manifest.
+// It is a synthetic native call site with a REAL SDK SVC PC. It does not
+// execute the original SVC instruction (which would enter the Android kernel).
+// Importantly x18 always remains Android-owned during the C callback.
+extern uint64_t mario_native_svc_capture_test(
+    uint64_t, uint64_t, uint32_t, uint64_t,
+    int (*)(MarioNativeSvcFrame *, uint32_t, uint64_t), int *);
+
+__asm__(
+".text\\n"
+".p2align 2\\n"
+".global mario_native_svc_capture_test\\n"
+".type mario_native_svc_capture_test, %function\\n"
+"mario_native_svc_capture_test:\\n"
+"sub sp, sp, #832\\n"
+"stp x0, x1, [sp, #0]\\n"
+"stp x2, x3, [sp, #16]\\n"
+"stp x4, x5, [sp, #32]\\n"
+"stp x6, x7, [sp, #48]\\n"
+"stp x8, x9, [sp, #64]\\n"
+"stp x10, x11, [sp, #80]\\n"
+"stp x12, x13, [sp, #96]\\n"
+"stp x14, x15, [sp, #112]\\n"
+"stp x16, x17, [sp, #128]\\n"
+"stp x18, x19, [sp, #144]\\n"
+"stp x20, x21, [sp, #160]\\n"
+"stp x22, x23, [sp, #176]\\n"
+"stp x24, x25, [sp, #192]\\n"
+"stp x26, x27, [sp, #208]\\n"
+"stp x28, x29, [sp, #224]\\n"
+"str x30, [sp, #240]\\n"
+"mrs x9, nzcv\\n"
+"str x9, [sp, #248]\\n"
+"stp q0, q1, [sp, #256]\\n"
+"stp q2, q3, [sp, #288]\\n"
+"stp q4, q5, [sp, #320]\\n"
+"stp q6, q7, [sp, #352]\\n"
+"stp q8, q9, [sp, #384]\\n"
+"stp q10, q11, [sp, #416]\\n"
+"stp q12, q13, [sp, #448]\\n"
+"stp q14, q15, [sp, #480]\\n"
+"stp q16, q17, [sp, #512]\\n"
+"stp q18, q19, [sp, #544]\\n"
+"stp q20, q21, [sp, #576]\\n"
+"stp q22, q23, [sp, #608]\\n"
+"stp q24, q25, [sp, #640]\\n"
+"stp q26, q27, [sp, #672]\\n"
+"stp q28, q29, [sp, #704]\\n"
+"stp q30, q31, [sp, #736]\\n"
+"mrs x9, fpcr\\n"
+"str x9, [sp, #768]\\n"
+"mrs x9, fpsr\\n"
+"str x9, [sp, #776]\\n"
+"add x9, sp, #832\\n"
+"str x9, [sp, #784]\\n"
+"str x4, [sp, #800]\\n"
+"str x5, [sp, #808]\\n"
+"mov x0, sp\\n"
+"ldr w1, [sp, #16]\\n"
+"ldr x2, [sp, #24]\\n"
+"ldr x16, [sp, #800]\\n"
+"blr x16\\n"
+"ldr x16, [sp, #808]\\n"
+"str w0, [x16]\\n"
+"ldr x0, [sp, #0]\\n"
+"ldr x9, [sp, #768]\\n"
+"msr fpcr, x9\\n"
+"ldr x9, [sp, #776]\\n"
+"msr fpsr, x9\\n"
+"ldr x9, [sp, #248]\\n"
+"msr nzcv, x9\\n"
+"ldp q0, q1, [sp, #256]\\n"
+"ldp q2, q3, [sp, #288]\\n"
+"ldp q4, q5, [sp, #320]\\n"
+"ldp q6, q7, [sp, #352]\\n"
+"ldp q8, q9, [sp, #384]\\n"
+"ldp q10, q11, [sp, #416]\\n"
+"ldp q12, q13, [sp, #448]\\n"
+"ldp q14, q15, [sp, #480]\\n"
+"ldp q16, q17, [sp, #512]\\n"
+"ldp q18, q19, [sp, #544]\\n"
+"ldp q20, q21, [sp, #576]\\n"
+"ldp q22, q23, [sp, #608]\\n"
+"ldp q24, q25, [sp, #640]\\n"
+"ldp q26, q27, [sp, #672]\\n"
+"ldp q28, q29, [sp, #704]\\n"
+"ldp q30, q31, [sp, #736]\\n"
+"ldp x2, x3, [sp, #16]\\n"
+"ldp x4, x5, [sp, #32]\\n"
+"ldp x6, x7, [sp, #48]\\n"
+"ldp x8, x9, [sp, #64]\\n"
+"ldp x10, x11, [sp, #80]\\n"
+"ldp x12, x13, [sp, #96]\\n"
+"ldp x14, x15, [sp, #112]\\n"
+"ldp x16, x17, [sp, #128]\\n"
+"ldp x18, x19, [sp, #144]\\n"
+"ldp x20, x21, [sp, #160]\\n"
+"ldp x22, x23, [sp, #176]\\n"
+"ldp x24, x25, [sp, #192]\\n"
+"ldp x26, x27, [sp, #208]\\n"
+"ldp x28, x29, [sp, #224]\\n"
+"ldr x30, [sp, #240]\\n"
+"add sp, sp, #832\\n"
+"ret\\n"
+".size mario_native_svc_capture_test, .-mario_native_svc_capture_test\\n"
+);
+
+// Runs only on the existing Horizon thread, inside its setjmp boundary.
+// Original SDK SVC #0x10 is located by its exact instruction encoding;
+// it is NEVER executed as an Android syscall.
 static void mario_native_svc_thread_smoke(KThread *t) {
     if (g_nmodules < 2 || g_modules[1].text_size < 4) {
-        LOG("[mario-native-svc] SKIP: SDK text unavailable\n");
+        LOG("[mario-native-svc] SKIP: SDK text unavailable\\n");
+        return;
+    }
+    const Module *sdk = &g_modules[1];
+    const uint64_t sdk_pc = sdk->base + sdk->text_off;
+    uint64_t service_pc = 0;
+    for (uint64_t delta = 0; delta + 4 <= sdk->text_size; delta += 4) {
+        if (*(const uint32_t *)(uintptr_t)(sdk_pc + delta) == 0xD4000201u) {
+            service_pc = sdk_pc + delta;
+            break;
+        }
+    }
+    if (!service_pc) {
+        LOG("[mario-native-svc] FAIL: real SDK SVC #0x10 not found\\n");
         return;
     }
     Cpu saved = t->cpu;
-    MarioNativeSvcFrame frame = {0};
-    memcpy(frame.x, saved.x, sizeof frame.x);
-    memcpy(frame.v, saved.v, sizeof frame.v);
-    frame.nzcv = saved.nzcv;
-    frame.fpcr = saved.fpcr;
-    frame.fpsr = saved.fpsr;
-    frame.guest_sp = saved.sp;
-    const uint64_t diagnostic_pc = g_modules[1].base + g_modules[1].text_off;
-    int result = mario_native_svc_from_frame(&frame, 0x10, diagnostic_pc);
-    const uint64_t returned_core = frame.x[0];
-    // Always restore the exact original game Cpu before boot continuation.
+    int status = MARIO_NATIVE_SVC_BAD_FRAME;
+    const uint64_t result = mario_native_svc_capture_test(
+        saved.x[0], saved.x[1], 0x10, service_pc,
+        mario_native_svc_from_frame, &status);
     t->cpu = saved;
-    if (result == MARIO_NATIVE_SVC_OK && returned_core == (uint64_t)t->core) {
-        LOG("[mario-native-svc] PASS: live Horizon thread -> ARM64 frame -> real rt_svc(0x10) -> frame; core=%llu\n",
-            (unsigned long long)returned_core);
-    } else {
-        LOG("[mario-native-svc] FAIL: status=%d actual=%llu expected=%d\n",
-            result, (unsigned long long)returned_core, t->core);
-    }
-    LOG("[mario-native-svc] NOTE: synthetic frame and diagnostic PC; no SDK SVC executed, no x18/TLS transition yet\n");
+    if (status == MARIO_NATIVE_SVC_OK && result == (uint64_t)t->core)
+        LOG("[mario-native-svc] PASS: ARM64 registers -> real Horizon rt_svc(0x10) -> registers; sdk_pc=%llx core=%llu\\n",
+            (unsigned long long)service_pc, (unsigned long long)result);
+    else
+        LOG("[mario-native-svc] FAIL: adapter status=%d core=%llu expected=%d sdk_pc=%llx\\n",
+            status, (unsigned long long)result, t->core, (unsigned long long)service_pc);
+    LOG("[mario-native-svc] SCOPE: original SDK instruction located but not executed; no guest TLS or x18 switch\\n");
 }
 #endif
 
