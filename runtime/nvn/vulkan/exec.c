@@ -973,33 +973,14 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
 // Per-draw constants that usually repeat the previous draw's (scale table, tint, driver constants): reuse that copy
 // while it's identical, within one submission. slot: one per kind of data.
 enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_GMAP_V, DEDUPE_GMAP_F, DEDUPE_GMAP_C, DEDUPE_SLOTS };
-// Four immutable snapshots per constant kind: alternating A/B/A/B draws can
-// reuse their earlier upload instead of re-copying A when B was the last draw.
-// Entries only reference spans from the current pending Vulkan submission.
-// Evicting metadata never overwrites a span still referenced by GPU commands.
-#define DEDUPE_WAYS 4
 static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
-    static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; }
-        recent[DEDUPE_SLOTS][DEDUPE_WAYS];
-    static uint8_t victim[DEDUPE_SLOTS];
+    static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; } last[DEDUPE_SLOTS];
     uint64_t seq = vk_pending_seq();
-    if (size > sizeof recent[0][0].data) return vk_transient_copy(data, size, align);
-    for (unsigned way = 0; way < DEDUPE_WAYS; way++) {
-        if (recent[slot][way].seq == seq && recent[slot][way].size == size &&
-            !memcmp(recent[slot][way].data, data, size))
-            return recent[slot][way].span;
-    }
-    unsigned way = DEDUPE_WAYS;
-    for (unsigned i = 0; i < DEDUPE_WAYS; i++) {
-        if (recent[slot][i].seq != seq) { way = i; break; }
-    }
-    if (way == DEDUPE_WAYS) way = victim[slot]++ % DEDUPE_WAYS;
-    VkSpan span = vk_transient_copy(data, size, align);
-    recent[slot][way].seq = seq;
-    recent[slot][way].size = size;
-    memcpy(recent[slot][way].data, data, size);
-    recent[slot][way].span = span;
-    return span;
+    if (size > sizeof last[0].data) return vk_transient_copy(data, size, align);
+    if (last[slot].seq == seq && last[slot].size == size && !memcmp(last[slot].data, data, size)) return last[slot].span;
+    VkSpan s = vk_transient_copy(data, size, align);
+    last[slot].seq = seq; last[slot].size = size; memcpy(last[slot].data, data, size); last[slot].span = s;
+    return s;
 }
 
 // Guest memory uploads are immutable snapshots within a submission. Android's
@@ -1218,17 +1199,6 @@ static void build_finished(_Atomic int *state, int value) {
     atomic_store(state, value);
     pthread_cond_broadcast(&build_state_cond);
     pthread_mutex_unlock(&build_state_lock);
-}
-// Optional speculative jobs may fail allocation without failing a draw.
-// Join with the same condition variable but let the caller use the original
-// synchronous geometry path when the result is unavailable.
-static bool optional_job_ready(_Atomic int *state) {
-    pthread_mutex_lock(&build_state_lock);
-    while (!atomic_load(state))
-        pthread_cond_wait(&build_state_cond, &build_state_lock);
-    bool ok = atomic_load(state) == 1;
-    pthread_mutex_unlock(&build_state_lock);
-    return ok;
 }
 static bool build_ready(_Atomic int *state, const char *what) {
     pthread_mutex_lock(&build_state_lock);
@@ -2769,21 +2739,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     int idx = k - 3;  // cbuf_base
     Range r = (idx >= 0 && idx < 18) ? st.ubuf[stage][idx] : (Range){0, 0};
     uint64_t size = si->cbuf_size[k] ? si->cbuf_size[k] : 256;
-    if (!r.addr) {
-        // One immutable zero-filled UBO per Vulkan submission, shared by all
-        // missing constant bindings.  The old path allocated and uploaded
-        // 'size' bytes afresh for every draw even though their contents never
-        // differed.  Do not share across submissions: transient ring slots
-        // can be recycled after GPU completion.
-        static uint64_t zero_seq = UINT64_MAX;
-        static VkSpan zero_ubo;
-        uint64_t seq = vk_pending_seq();
-        if (zero_seq != seq) {
-            zero_ubo = vk_transient_copy(zeros, sizeof zeros, 256);
-            zero_seq = seq;
-        }
-        return ubo_span(zero_ubo, size);
-    }
+    if (!r.addr) return ubo_span(vk_transient_copy(zeros, size, 256), size);
     if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
@@ -4231,41 +4187,13 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     stat_dispatches++;
 }
 
-// Shader variants prepared by the bounded NVN preflight. The executor reads
-// these only during the same backend_execute call. A lookup must compare the
-// complete shader keys: guest state may differ from the speculative snapshot.
-typedef struct {
-    NvnProgram *program;
-    ShaderKey vertex, fragment;
-    Prog *ready;
-} PreparedDrawProgram;
-static PreparedDrawProgram prepared_draws[32];
-static unsigned prepared_draw_count;
-static Prog *prepared_draw_lookup(NvnProgram *program,
-                                  const ShaderKey *vertex,
-                                  const ShaderKey *fragment) {
-    for (unsigned i = 0; i < prepared_draw_count; i++) {
-        const PreparedDrawProgram *entry = &prepared_draws[i];
-        if (entry->program == program &&
-            !memcmp(&entry->vertex, vertex, sizeof *vertex) &&
-            !memcmp(&entry->fragment, fragment, sizeof *fragment))
-            return entry->ready;
-    }
-    return NULL;
-}
-
 // ================================================================== draws
 static void debug_draw(Prog *pr, CmdRec *r, bool indexed);
 
 // Quads / fans / polygons as a 32-bit triangle index list.
 static uint32_t *expand_indices(uint32_t mode, uint32_t count, const void *indices, int itype, uint32_t first, uint32_t *out_count) {
     uint32_t tris = mode == 7 ? count / 4 * 2 : count >= 3 ? count - 2 : 0;
-    if ((uint64_t)tris * 3 * sizeof(uint32_t) + 4 > SIZE_MAX)
-        return NULL;
-    // vk_transient_copy uploads the index payload plus four pad bytes.
-    // Zero the tail to avoid reading uninitialized bytes on the CPU upload.
-    uint32_t *out = calloc(1, (size_t)tris * 3 * sizeof(uint32_t) + 4);
-    if (!out) return NULL;
+    uint32_t *out = malloc(tris * 3 * 4 + 4);
     uint32_t n = 0;
 #define IDX(i) (indices ? (itype == 0 ? ((const uint8_t *)indices)[i] : itype == 1 ? ((const uint16_t *)indices)[i] : ((const uint32_t *)indices)[i]) : first + (i))
     if (mode == 7) {
@@ -4281,62 +4209,6 @@ static uint32_t *expand_indices(uint32_t mode, uint32_t count, const void *indic
     return out;
 }
 
-// Immutable geometry preparation for non-indexed NVN quads/fans/polygons.
-// Only the draw record parameters are captured. No guest-memory reads and no
-// Vulkan calls are allowed on this worker.
-typedef struct {
-    const CmdRec *command;
-    uint32_t mode, count, first, output_count;
-    uint32_t *indices;
-    _Atomic int state;
-} PreparedGeometry;
-static PreparedGeometry *prepared_geometry[16];
-static unsigned prepared_geometry_count;
-static void prepare_geometry_worker(void *arg) {
-    PreparedGeometry *g = arg;
-    g->indices = expand_indices(g->mode, g->count, NULL, 0,
-                                g->first, &g->output_count);
-    build_finished(&g->state, g->indices ? 1 : 2);
-}
-static void schedule_geometry(const CmdRec *r) {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *e = getenv("LARECOMP_VK_GEOMETRY_PREP");
-        enabled = !e || atoi(e) != 0;
-    }
-    if (!enabled || prepared_geometry_count == 16 ||
-        r->op != CMD_DRAW_ARRAYS) return;
-    uint32_t mode = (uint32_t)r->x[0], count = (uint32_t)r->x[2];
-    if ((mode != 6 && mode != 7 && mode != 9) ||
-        count < 6 || count > 4096) return;
-    PreparedGeometry *g = calloc(1, sizeof *g);
-    if (!g) return;
-    g->command = r;
-    g->mode = mode;
-    g->count = count;
-    g->first = (uint32_t)r->x[1];
-    prepared_geometry[prepared_geometry_count++] = g;
-    run_job(prepare_geometry_worker, g);
-}
-static PreparedGeometry *find_prepared_geometry(const CmdRec *r) {
-    for (unsigned i = 0; i < prepared_geometry_count; ++i)
-        if (prepared_geometry[i]->command == r)
-            return prepared_geometry[i];
-    return NULL;
-}
-static void retire_prepared_geometry(void) {
-    for (unsigned i = 0; i < prepared_geometry_count; ++i) {
-        PreparedGeometry *g = prepared_geometry[i];
-        // An earlier command may skip a draw: all jobs must still finish
-        // before the snapshot's storage can be released.
-        (void)optional_job_ready(&g->state);
-        free(g->indices);
-        free(g);
-        prepared_geometry[i] = NULL;
-    }
-    prepared_geometry_count = 0;
-}
-
 static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
     switch (mode) {
     case 0: *t = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; *cls = 0; return true;
@@ -4348,151 +4220,14 @@ static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
     }
 }
 
-// Indexed geometry is copied only after the ordered GMEM read. Workers
-// receive immutable host-owned bytes, never a pointer into guest memory.
-typedef struct {
-    uint32_t mode, count, itype, output_count, max_index;
-    uint8_t *source;
-    uint32_t *expanded;
-    uint16_t *widened;
-    bool restart_enabled;
-    uint32_t restart_index;
-    // Captured stream metadata. The worker computes vertex ranges only from
-    // owned index bytes and these immutable values; never accesses NVN state.
-    uint32_t stream_mask, stride[16], divisor[16];
-    uint64_t stream_size[16], vertex_need[16];
-    int32_t base_vertex;
-    uint32_t base_instance, instances;
-    bool vertex_ranges_valid;
-    _Atomic int state;
-} IndexedGeometryJob;
-static uint64_t vertex_bytes_saturating(uint64_t elements, uint64_t stride);
-static void prepare_indexed_geometry(void *arg) {
-    IndexedGeometryJob *g = arg;
-    if (g->itype != 0 && g->mode <= 5) {
-        // Compute the index bound on a stable snapshot. The render thread
-        // needs this only if a direct index buffer requires vertex copies.
-        const uint32_t restart = g->restart_enabled ? g->restart_index : 0xffffffffu;
-        if (g->itype == 1) {
-            const uint16_t *src = (const uint16_t *)g->source;
-            for (uint32_t i = 0; i < g->count; ++i)
-                if (src[i] != (uint16_t)restart && src[i] > g->max_index)
-                    g->max_index = src[i];
-        } else {
-            const uint32_t *src = (const uint32_t *)g->source;
-            for (uint32_t i = 0; i < g->count; ++i)
-                if (src[i] != restart && src[i] > g->max_index)
-                    g->max_index = src[i];
-        }
-        uint64_t limit = (uint64_t)g->max_index + 1 +
-            (g->base_vertex > 0 ? (uint32_t)g->base_vertex : 0);
-        for (int s = 0; s < 16; ++s) {
-            if (!(g->stream_mask & (1u << s))) continue;
-            uint64_t step = g->stride[s], need;
-            if (!step) need = 256;
-            else if (g->divisor[s])
-                need = vertex_bytes_saturating(
-                    ((uint64_t)g->base_instance + g->instances +
-                     g->divisor[s] - 1) / g->divisor[s], step);
-            else need = vertex_bytes_saturating(limit, step);
-            if (g->stream_size[s] && need > g->stream_size[s])
-                need = g->stream_size[s];
-            g->vertex_need[s] = need ? need : 16;
-        }
-        g->vertex_ranges_valid = true;
-        build_finished(&g->state, 1);
-        return;
-    }
-    if (g->itype == 0 && g->mode <= 5) {
-        // Native 8-bit index streams are widened to Vulkan's 16-bit format.
-        // The worker owns the source snapshot and writes host-only output.
-        // vk_transient_copy below requests four extra bytes of padding.
-        // Allocate and initialize them so the CPU upload cannot read past
-        // the end of this worker-owned buffer.
-        g->widened = calloc(1, (size_t)g->count * sizeof *g->widened + 4);
-        if (!g->widened) {
-            build_finished(&g->state, 2);
-            return;
-        }
-        for (uint32_t i = 0; i < g->count; ++i) {
-            const uint8_t v = g->source[i];
-            g->widened[i] = (v == 0xff && g->restart_enabled) ? 0xffff : v;
-            if (v > g->max_index && g->widened[i] != 0xffff)
-                g->max_index = v;
-        }
-        g->output_count = g->count;
-        build_finished(&g->state, 1);
-        return;
-    }
-    g->expanded = expand_indices(g->mode, g->count, g->source,
-                                 (int)g->itype, 0, &g->output_count);
-    if (g->expanded) {
-        for (uint32_t i = 0; i < g->output_count; i++)
-            if (g->expanded[i] > g->max_index)
-                g->max_index = g->expanded[i];
-    }
-    build_finished(&g->state, g->expanded ? 1 : 2);
-}
-static void free_indexed_geometry(IndexedGeometryJob *g) {
-    if (!g) return;
-    (void)optional_job_ready(&g->state);
-    free(g->source);
-    free(g->expanded);
-    free(g->widened);
-    free(g);
-}
-// Saturate before multiplying. A malformed or very large index/stride must
-// never wrap into a small vertex upload size. The caller still clamps to the
-// NVN buffer's declared size, as in the original path.
-static uint64_t vertex_bytes_saturating(uint64_t elements, uint64_t stride) {
-    if (stride && elements > (UINT64_MAX - 256u) / stride)
-        return UINT64_MAX;
-    return elements * stride + 256u;
-}
-// CPU-only, immutable vertex-range preparation. This is deliberately
-// restricted to non-indexed draws: indexed range bounds depend on actual
-// indices and must not be predicted before GMEM synchronization.
-typedef struct {
-    uint32_t used_streams, base_instance, instances;
-    uint64_t max_index;  // first + count can exceed 32-bit for large first
-    uint32_t stride[16], divisor[16];
-    uint64_t size[16], need[16];
-    _Atomic int state;
-} VertexRangeJob;
-static void prepare_vertex_ranges(void *arg) {
-    VertexRangeJob *v = arg;
-    for (unsigned s = 0; s < 16; ++s) {
-        if (!(v->used_streams & (1u << s))) continue;
-        uint64_t stride = v->stride[s], need;
-        if (!stride) need = 256;
-        else if (v->divisor[s])
-            need = vertex_bytes_saturating(
-                ((uint64_t)v->base_instance + v->instances +
-                 v->divisor[s] - 1) / v->divisor[s], stride);
-        else need = vertex_bytes_saturating(v->max_index, stride);
-        if (v->size[s] && need > v->size[s]) need = v->size[s];
-        v->need[s] = need ? need : 16;
-    }
-    build_finished(&v->state, 1);
-}
-static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
-                  VertexRangeJob *vertex_job, bool *vertex_job_started);
+static void draw_(CmdRec *r, bool indexed);
 static void draw(CmdRec *r, bool indexed) {
     PROF_T0();
-    IndexedGeometryJob *prepared = NULL;
-    // Own the worker snapshot in the outer draw frame. Even an unanticipated
-    // early return from draw_ must not invalidate memory held by a worker.
-    VertexRangeJob vertex_job = {0};
-    bool vertex_job_started = false;
-    draw_(r, indexed, &prepared, &vertex_job, &vertex_job_started);
-    if (vertex_job_started)
-        build_ready(&vertex_job.state, "vertex range preparation");
-    free_indexed_geometry(prepared);
+    draw_(r, indexed);
     PROF_ADD(prof_draw);
 }
 static uint64_t prof_tp_;
-static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
-                  VertexRangeJob *vertex_job, bool *vertex_job_started) {
+static void draw_(CmdRec *r, bool indexed) {
     if (prof) prof_tp_ = SDL_GetTicksNS();
     if (!st.program) { stat_skipped++; return; }
     ShaderKey vkey = {0}, fkey = {0};
@@ -4501,10 +4236,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
-    // Consume the exact variant produced by the preflight when the actual
-    // draw state still matches. Otherwise use the original lazy lookup.
-    Prog *pr = prepared_draw_lookup(st.program, &vkey, &fkey);
-    if (!pr) pr = get_program(st.program, &vkey, &fkey);
+    Prog *pr = get_program(st.program, &vkey, &fkey);
     if (!pr) { stat_skipped++; return; }
     build_ready(&pr->state, "graphics program");
     g_mirror_w = 0;
@@ -4537,63 +4269,6 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
         if (read_vbuf_mask & (UINT32_C(1) << i))
             gmem_read_range(st.vbuf[i].addr, st.vbuf[i].size);
     if (indexed) gmem_read_range(r->x[3], (uint64_t)r->x[2] * (r->x[1] == 0 ? 1 : r->x[1] == 1 ? 2 : 4));
-    // Snapshot the indexed polygon/fan/quad source after its real GMEM
-    // synchronization; overlap pure CPU expansion with pipeline setup.
-    if (indexed) {
-        static int prep_enabled = -1;
-        if (prep_enabled < 0) {
-            const char *e = getenv("LARECOMP_VK_INDEX_PREP");
-            prep_enabled = !e || atoi(e) != 0;
-        }
-        uint32_t mode = (uint32_t)r->x[0], n = (uint32_t)r->x[2];
-        uint32_t type = (uint32_t)r->x[1];
-        uint32_t width = type == 0 ? 1 : type == 1 ? 2 : 4;
-        bool prepare_expansion = mode == 6 || mode == 7 || mode == 9;
-        bool prepare_widening = type == 0 && mode <= 5;
-        bool prepare_index_bound = type != 0 && mode <= 5;
-        if (prep_enabled && (prepare_expansion || prepare_widening || prepare_index_bound) &&
-            n >= 6 && n <= 4096 && type <= 2 && r->x[3] &&
-            (uint64_t)n * width <= 16384) {
-            IndexedGeometryJob *g = calloc(1, sizeof *g);
-            if (g) {
-                g->source = malloc((size_t)n * width);
-                if (g->source) {
-                    memcpy(g->source, (const void *)(uintptr_t)r->x[3],
-                           (size_t)n * width);
-                    g->mode = mode; g->count = n; g->itype = type;
-                    g->restart_enabled = st.prim_restart;
-                    g->restart_index = st.restart_index;
-                    if (prepare_index_bound) {
-                        g->base_vertex = (int32_t)r->x[4];
-                        g->base_instance = (uint32_t)r->x[5];
-                        g->instances = (uint32_t)r->x[6] ?
-                                       (uint32_t)r->x[6] : 1;
-                        // Build the set of active vertex streams from the
-                        // exact compiled vertex shader and current attributes.
-                        for (int i = 0; i < 32; ++i) {
-                            if (!(pr->vi->attr_mask & (1u << i))) continue;
-                            uint32_t a = i < st.nattrib ? st.attrib[i] : 0x2e;
-                            unsigned fmt = a & 0xffu, stream = (a >> 8) & 31u;
-                            if (i >= st.nattrib || !fmt || stream >= 16) continue;
-                            g->stream_mask |= 1u << stream;
-                        }
-                        for (int i = 0; i < 16; ++i) {
-                            if (!(g->stream_mask & (1u << i))) continue;
-                            uint32_t stride = i < st.nstream ? st.stream[i][0] : 0;
-                            uint32_t divisor = i < st.nstream && stride ?
-                                               st.stream[i][1] : 0;
-                            if (divisor > 1 && !g_vk.divisor) divisor = 1;
-                            g->stride[i] = stride;
-                            g->divisor[i] = divisor;
-                            g->stream_size[i] = st.vbuf[i].size;
-                        }
-                    }
-                    *prepared = g;
-                    run_job(prepare_indexed_geometry, g);
-                } else free(g);
-            }
-        }
-    }
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
         uint64_t fs = st.program->stages[1].code_addr;
@@ -4716,34 +4391,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
         pipe_tab[pslot].key = ph;
         pipe_tab[pslot].pipe = pp;
         run_job(build_pipeline, pp);
-        // Per-draw stream range arithmetic is tiny. Scheduling a worker on
-        // every cache HIT adds queue traffic and a join to hot draws. Only
-        // offload it when this draw also needs a NEW Vulkan pipeline build,
-        // allowing the two CPU jobs to overlap. Cached pipelines stay on the
-        // original direct calculation path without a worker or snapshot.
-        if (!indexed && (uint32_t)r->x[2] <= 65536) {
-            static int ranges_enabled = -1;
-            if (ranges_enabled < 0) {
-                const char *e = getenv("LARECOMP_VK_VERTEX_RANGE_PREP");
-                ranges_enabled = !e || atoi(e) != 0;
-            }
-            if (ranges_enabled) {
-                vertex_job->used_streams = k.used_streams & 0xffffu;
-                vertex_job->max_index = (uint64_t)(uint32_t)r->x[1] + (uint32_t)r->x[2];
-                vertex_job->base_instance = (uint32_t)r->x[3];
-                vertex_job->instances = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
-                memcpy(vertex_job->stride, k.stride, sizeof vertex_job->stride);
-                memcpy(vertex_job->divisor, k.divisor, sizeof vertex_job->divisor);
-                for (int i = 0; i < 16; i++)
-                    vertex_job->size[i] = st.vbuf[i].size;
-                run_job(prepare_vertex_ranges, vertex_job);
-                (*vertex_job_started) = true;
-            }
-        }
     }
     build_ready(&pp->state, "graphics pipeline");
-    // Keep the CPU-only vertex range job running while we record dynamic
-    // pipeline state and assemble descriptor bindings below.
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
@@ -4824,11 +4473,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
             for (int i = 0; i < pr->fi->ntex; i++) {
                 NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
                 const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
-                if (b && b->tp > 0 && texpatch_is_item_cursor(b->tp - 1)) {
-                // draw() owns the snapshot and joins on every return path.
-                stat_skipped++;
-                return;
-            }
+                if (b && b->tp > 0 && texpatch_is_item_cursor(b->tp - 1)) { stat_skipped++; return; }
             }
     }
     float tint[8] = {0};
@@ -4950,8 +4595,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
 
     uint64_t prof_t2_ = prof ? SDL_GetTicksNS() : 0;
     // ---- indices (copied; the largest index bounds the vertex data copied below)
-    uint32_t first = 0, count = (uint32_t)r->x[2], inst, base_inst;
-    uint64_t max_index = 0;  // never wrap index + count / positive base_vertex
+    uint32_t first = 0, count = (uint32_t)r->x[2], inst, base_inst, max_index = 0;
     int32_t base_vertex = 0;
     VkSpan ib = {0};
     VkIndexType itype_vk = VK_INDEX_TYPE_UINT32;
@@ -4961,22 +4605,11 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
     uint32_t scan_isz = 0, scan_restart = 0;
     if (!indexed) {
         first = (uint32_t)r->x[1]; base_inst = (uint32_t)r->x[3]; inst = (uint32_t)r->x[4] ? (uint32_t)r->x[4] : 1;
-        max_index = (uint64_t)first + count;
+        max_index = first + count;
         if (!native) {
-            // Consume the immutable indices built by a CPU worker during
-            // command-list preflight. Keep the original local path for
-            // unprepared draws and any unexpected parameter mismatch.
-            PreparedGeometry *g = find_prepared_geometry(r);
-            if (g && g->mode == mode && g->count == count && g->first == first &&
-                optional_job_ready(&g->state)) {
-                icount = g->output_count;
-                ib = vk_transient_copy(g->indices, (uint64_t)icount * 4 + 4, 4);
-            } else {
-                uint32_t *e = expand_indices(mode, count, NULL, 0, first, &icount);
-                if (!e) FATAL("required non-indexed geometry allocation failed\n");
-                ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
-                free(e);
-            }
+            uint32_t *e = expand_indices(mode, count, NULL, 0, first, &icount);
+            ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
+            free(e);
         }
     } else {
         uint32_t itype = (uint32_t)r->x[1];
@@ -4995,55 +4628,21 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
             } else {
                 ib = (uint64_t)count * isz >= VTX_SNAPSHOT_MIN ? guest_vertex_copy(iaddr, (uint64_t)count * isz)
                     : vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
-                // Use the immutable, post-GMEM index snapshot when its
-                // worker already calculated the bounds. Do not scan the
-                // same 16/32-bit index array twice on the CPU.
-                IndexedGeometryJob *g_bound = *prepared;
-                if (g_bound && g_bound->itype == itype &&
-                    g_bound->mode == mode && g_bound->count == count &&
-                    g_bound->restart_enabled == st.prim_restart &&
-                    g_bound->restart_index == st.restart_index &&
-                    optional_job_ready(&g_bound->state)) {
-                    max_index = g_bound->max_index;
-                } else if (isz == 2) {
-                    const uint16_t *q = src;
-                    for (uint32_t i = 0; i < count; i++)
-                        if (q[i] > max_index && q[i] != (uint16_t)restart) max_index = q[i];
-                } else {
-                    const uint32_t *q = src;
-                    for (uint32_t i = 0; i < count; i++)
-                        if (q[i] > max_index && q[i] != restart) max_index = q[i];
-                }
+                if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != (uint16_t)restart) max_index = s[i]; }
+                else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
             }
         } else if (native) {  // 8-bit indices: widen to 16
-            IndexedGeometryJob *g = *prepared;
-            if (g && g->mode == mode && g->count == count && g->itype == 0 &&
-                g->restart_enabled == st.prim_restart &&
-                optional_job_ready(&g->state)) {
-                ib = vk_transient_copy(g->widened, (uint64_t)count * 2 + 4, 4);
-                max_index = g->max_index;
-            } else {
-                ib = vk_transient((uint64_t)count * 2 + 4, 4);
-                uint16_t *w = ib.ptr;
-                const uint8_t *s = src;
-                for (uint32_t i = 0; i < count; i++) { w[i] = s[i] == 0xFF && st.prim_restart ? 0xFFFF : s[i]; if (s[i] > max_index && w[i] != 0xFFFF) max_index = s[i]; }
-            }
+            ib = vk_transient((uint64_t)count * 2 + 4, 4);
+            uint16_t *w = ib.ptr;
+            const uint8_t *s = src;
+            for (uint32_t i = 0; i < count; i++) { w[i] = s[i] == 0xFF && st.prim_restart ? 0xFFFF : s[i]; if (s[i] > max_index && w[i] != 0xFFFF) max_index = s[i]; }
             itype_vk = VK_INDEX_TYPE_UINT16;
             icount = count;
         } else {
-            IndexedGeometryJob *g = *prepared;
-            if (g && g->mode == mode && g->count == count &&
-                g->itype == itype && optional_job_ready(&g->state)) {
-                icount = g->output_count;
-                max_index = g->max_index;
-                ib = vk_transient_copy(g->expanded, (uint64_t)icount * 4 + 4, 4);
-            } else {
-                uint32_t *e = expand_indices(mode, count, src, (int)itype, 0, &icount);
-                if (!e) FATAL("required indexed geometry allocation failed\n");
-                for (uint32_t i = 0; i < icount; i++) if (e[i] > max_index) max_index = e[i];
-                ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
-                free(e);
-            }
+            uint32_t *e = expand_indices(mode, count, src, (int)itype, 0, &icount);
+            for (uint32_t i = 0; i < icount; i++) if (e[i] > max_index) max_index = e[i];
+            ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
+            free(e);
         }
         if (!scan_src) {
             max_index += 1;
@@ -5055,31 +4654,13 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
         vkCmdBindIndexBuffer(cb, ib.buf, ib.off, itype_vk);
     }
 
-    // Join immediately before consuming the computed ranges; this overlaps
-    // geometry CPU work with the entire dynamic-state/descriptor recording.
-    if ((*vertex_job_started))
-        build_ready(&vertex_job->state, "vertex range preparation");
     // ---- vertex streams: the range this draw can read, copied once per submission
-    // Batch contiguous changed bindings into one Vulkan call instead of
-    // recording a separate vkCmdBindVertexBuffers for each stream.
-    VkBuffer pending_vb[17] = {0};
-    VkDeviceSize pending_vo[17] = {0};
-    uint32_t pending_mask = 0;
     for (int s = 0; s < 17; s++) {
         if (!(k.used_streams & (1u << s))) continue;
         VkSpan sp;
         if (s == ZERO_BINDING) {
-            // Immutable fallback vertex: one upload per Vulkan submission.
-            // A new submission must not inherit a span from an older ring slot.
             static const float zero[4] = {0, 0, 0, 1};
-            static uint64_t zero_seq = UINT64_MAX;
-            static VkSpan zero_span;
-            uint64_t pending_seq = vk_pending_seq();
-            if (zero_seq != pending_seq) {
-                zero_span = vk_transient_copy(zero, 16, 16);
-                zero_seq = pending_seq;
-            }
-            sp = zero_span;
+            sp = vk_transient_copy(zero, 16, 16);
         } else {
             Range v = st.vbuf[s];
             VkBuffer dbuf;
@@ -5087,85 +4668,28 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared,
             if (v.addr && v.size && guest_direct(v.addr, v.size, &dbuf, &doff)) {
                 if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == dbuf && ss.vo[s] == doff) continue;
                 ss.vb[s] = dbuf; ss.vo[s] = doff; ss.vb_known |= 1u << s;
-                pending_vb[s] = dbuf; pending_vo[s] = doff;
-                pending_mask |= 1u << s;
+                vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
                 continue;
             }
             if (scan_src) {  // copying after all: the index scan bounds the copy
-                IndexedGeometryJob *g = *prepared;
-                if (g && g->itype == (scan_isz == 2 ? 1u : 2u) &&
-                    g->mode == mode && g->count == icount &&
-                    g->restart_enabled == st.prim_restart &&
-                    g->restart_index == st.restart_index) {
-                    if (optional_job_ready(&g->state)) {
-                        if (g->max_index > max_index) max_index = g->max_index;
-                    } else if (scan_isz == 2) {
-                        const uint16_t *q = scan_src;
-                        for (uint32_t i = 0; i < icount; i++)
-                            if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i];
-                    } else {
-                        const uint32_t *q = scan_src;
-                        for (uint32_t i = 0; i < icount; i++)
-                            if (q[i] > max_index && q[i] != scan_restart) max_index = q[i];
-                    }
-                } else if (scan_isz == 2) {
-                    const uint16_t *q = scan_src;
-                    for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i];
-                } else {
-                    const uint32_t *q = scan_src;
-                    for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i];
-                }
+                if (scan_isz == 2) { const uint16_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i]; }
+                else { const uint32_t *q = scan_src; for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != scan_restart) max_index = q[i]; }
                 max_index += 1;
                 if (base_vertex > 0) max_index += (uint32_t)base_vertex;
                 scan_src = NULL;
             }
             uint64_t stride = k.stride[s], need;
-            IndexedGeometryJob *g_range = *prepared;
-            // The producer publishes vertex_need before signaling state.
-            // Join before reading any worker-owned fields, even when index
-            // data was copied rather than accessed through guest_direct.
-            const bool indexed_ranges_ready =
-                g_range && g_range->itype != 0 && g_range->mode <= 5 &&
-                optional_job_ready(&g_range->state);
-            if (indexed_ranges_ready && g_range->vertex_ranges_valid &&
-                (g_range->stream_mask & (1u << s)) &&
-                g_range->stride[s] == k.stride[s] &&
-                g_range->divisor[s] == k.divisor[s] &&
-                g_range->stream_size[s] == v.size &&
-                g_range->base_vertex == base_vertex &&
-                g_range->base_instance == base_inst &&
-                g_range->instances == inst) {
-                need = g_range->vertex_need[s];
-            } else if ((*vertex_job_started)) {
-                build_ready(&vertex_job->state, "vertex range preparation");
-                need = vertex_job->need[s];
-            } else {
-                if (!stride) need = 256;
-                else if (k.divisor[s]) need = vertex_bytes_saturating(
-                    ((uint64_t)base_inst + inst + k.divisor[s] - 1) / k.divisor[s], stride);
-                else need = vertex_bytes_saturating(max_index, stride);
-                if (v.size && need > v.size) need = v.size;
-            }
+            if (!stride) need = 256;
+            else if (k.divisor[s]) need = ((uint64_t)base_inst + inst + k.divisor[s] - 1) / k.divisor[s] * stride + 256;
+            else need = (uint64_t)max_index * stride + 256;
+            if (v.size && need > v.size) need = v.size;
             if (!v.addr) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
             else sp = guest_vertex_copy(v.addr, need ? need : 16);
         }
         VkDeviceSize off = sp.off;
         if (ss_on && (ss.vb_known >> s & 1) && ss.vb[s] == sp.buf && ss.vo[s] == off) continue;
         ss.vb[s] = sp.buf; ss.vo[s] = off; ss.vb_known |= 1u << s;
-        pending_vb[s] = sp.buf; pending_vo[s] = off;
-        pending_mask |= 1u << s;
-    }
-    for (uint32_t first_binding = 0; first_binding < 17;) {
-        if (!(pending_mask & (1u << first_binding))) {
-            first_binding++;
-            continue;
-        }
-        uint32_t end_binding = first_binding + 1;
-        while (end_binding < 17 && (pending_mask & (1u << end_binding)))
-            end_binding++;
-        vkCmdBindVertexBuffers(cb, first_binding, end_binding - first_binding,
-                               &pending_vb[first_binding], &pending_vo[first_binding]);
-        first_binding = end_binding;
+        vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &off);
     }
 
     if (prof) prof_vtx += SDL_GetTicksNS() - prof_t2_;
@@ -5794,155 +5318,6 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
     vmaDestroyImage(g_vk.vma, img, mem);
 }
 
-// ================================================================== shader preflight
-// Preflight just the initial, state-only prefix of a command list. This
-// captures the exact shader variant at upcoming DRAW records before recording
-// Vulkan commands. The translation/compilation workers then overlap that work
-// with ordered NVN command execution. Unlike speculative bind-time prefetch,
-// variants use the attributes and attachments present at the actual draw.
-// Calls/jumps, memory-writing commands and unknown operations terminate the
-// lookahead: do not guess whether guest shader code might have changed.
-// The preflight never touches global render state, GMEM or Vulkan objects.
-// Bounded to avoid spending a frame scanning the entire list.
-// LARECOMP_VK_LIST_PREFLIGHT=0 restores the old first-draw scheduling.
-static void shader_list_preflight(uint64_t handle) {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *e = getenv("LARECOMP_VK_LIST_PREFLIGHT");
-#ifdef __ANDROID__
-        enabled = !e || atoi(e) != 0;
-#else
-        enabled = e && atoi(e) != 0;
-#endif
-    }
-    if (!enabled) return;
-    NvnProgram *program = st.program;
-    int nattrib = st.nattrib, ncolor = st.rt.ncolor;
-    uint32_t attrib[16];
-    uint8_t color_kind[8] = {0};
-    if (nattrib < 0 || nattrib > 16 || ncolor < 0 || ncolor > 8) return;
-    memcpy(attrib, st.attrib, sizeof attrib);
-    for (int i = 0; i < ncolor; i++)
-        if (st.rt.color[i])
-            color_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
-    // A bounded work list avoids repeated hash-table probes and work queue
-    // traffic for the hundreds of identical draws in an overworld frame.
-    // Only distinct shader variants count against the lookahead budget.
-    PreparedDrawProgram planned[32] = {0};
-    unsigned nplanned = 0;
-    // Collect immutable geometry recipes now, but queue them after the
-    // shader lookahead. Both types of work share compilation workers.
-    const CmdRec *geometry_commands[16] = {0};
-    unsigned ngeometry = 0;
-    uint64_t p = handle;
-    for (unsigned step = 0; step < 512; step++) {
-        if (!p) break;
-        const CmdRec *r = (const CmdRec *)(uintptr_t)p;
-        if (r->size < sizeof *r) break;
-        switch (r->op) {
-        case CMD_END: goto submit_planned;
-        case CMD_BIND_PROGRAM:
-            program = (NvnProgram *)(uintptr_t)r->x[0];
-            break;
-        case CMD_BIND_VERTEX_ATTRIB:
-            nattrib = (int)(r->x[0] > 16 ? 16 : r->x[0]);
-            // CmdRec has a flexible-array payload. A non-null extra pointer
-            // alone does NOT mean the payload contains all attributes.
-            if ((size_t)r->size - sizeof *r < (size_t)nattrib * sizeof attrib[0])
-                goto submit_planned;
-            if (nattrib) memcpy(attrib, r->extra, (size_t)nattrib * sizeof attrib[0]);
-            break;
-        case CMD_SET_RENDER_TARGETS: {
-            const struct {
-                uint64_t tex[8];
-                NvnTextureView views[8];
-                uint8_t has_view[8];
-                uint64_t depth;
-                NvnTextureView dview;
-                uint8_t has_dview;
-            } *rt = (const void *)r->extra;
-            // A complete render-target state is required for the shader key.
-            // The ordinary executor owns validation/execution of the record;
-            // speculative preflight only reads records with a full payload.
-            if ((size_t)r->size - sizeof *r < sizeof *rt)
-                goto submit_planned;
-            ncolor = (int)(r->x[0] > 8 ? 8 : r->x[0]);
-            memset(color_kind, 0, sizeof color_kind);
-            for (int i = 0; i < ncolor; i++) {
-                NvnTexture *t = (NvnTexture *)(uintptr_t)rt->tex[i];
-                if (t) color_kind[i] = (uint8_t)rt_kind(t->format);
-            }
-            break;
-        }
-        case CMD_DRAW_ARRAYS:
-        case CMD_DRAW_ELEMENTS:
-            if (r->op == CMD_DRAW_ARRAYS && ngeometry < 16) {
-                uint32_t mode = (uint32_t)r->x[0], count = (uint32_t)r->x[2];
-                if ((mode == 6 || mode == 7 || mode == 9) &&
-                    count >= 6 && count <= 4096)
-                    geometry_commands[ngeometry++] = r;
-            }
-            if (program && (program->stage_mask & 3) == 3) {
-                ShaderKey vk = {0}, fk = {0};
-                vk.glsl = fk.glsl = 1;
-                vk.flip_y = fk.flip_y = nvn_window_origin() == 0;
-                vk.depth_minus_one = nvn_depth_mode() == 0;
-                for (int i = 0; i < nattrib; i++)
-                    vk.attr_kind[i] = (uint8_t)attr_kind(attrib[i] & 0xff);
-                for (int i = 0; i < ncolor; i++)
-                    fk.rt_kind[i] = color_kind[i];
-                bool already_planned = false;
-                for (unsigned i = 0; i < nplanned; i++) {
-                    if (planned[i].program == program &&
-                        !memcmp(&planned[i].vertex, &vk, sizeof vk) &&
-                        !memcmp(&planned[i].fragment, &fk, sizeof fk)) {
-                        already_planned = true;
-                        break;
-                    }
-                }
-                if (!already_planned) {
-                    if (nplanned == 32) goto submit_planned;
-                    planned[nplanned].program = program;
-                    planned[nplanned].vertex = vk;
-                    planned[nplanned].fragment = fk;
-                    nplanned++;
-                }
-            }
-            break;
-        // State-only operations: no guest memory modifications.
-        case CMD_BIND_BLEND: case CMD_BIND_CHANNEL_MASK: case CMD_BIND_COLOR:
-        case CMD_BIND_DEPTH_STENCIL: case CMD_BIND_MULTISAMPLE:
-        case CMD_BIND_POLYGON: case CMD_BIND_VERTEX_STREAM:
-        case CMD_BIND_VERTEX_BUFFERS: case CMD_BIND_UNIFORM_BUFFERS:
-        case CMD_BIND_STORAGE_BUFFERS: case CMD_BIND_TEXTURES:
-        case CMD_BIND_IMAGES: case CMD_SET_TEXTURE_POOL:
-        case CMD_SET_SAMPLER_POOL: case CMD_SET_VIEWPORTS:
-        case CMD_SET_SCISSORS: case CMD_SET_DEPTH_RANGES:
-        case CMD_SET_BLEND_COLOR: case CMD_SET_STENCIL:
-        case CMD_SET_POLYGON_OFFSET: case CMD_SET_PRIMITIVE_RESTART:
-        case CMD_SET_COPY_STRIDES:
-            break;
-        default:
-            goto submit_planned;
-        }
-        p += r->size;
-    }
-submit_planned:
-    // Publish after the complete bounded scan, before ordered execution.
-    // Workers only translate/compile resources. They never read this table.
-    prepared_draw_count = 0;
-    for (unsigned i = 0; i < nplanned; i++) {
-        planned[i].ready = get_program(planned[i].program,
-                                       &planned[i].vertex, &planned[i].fragment);
-        if (planned[i].ready)
-            prepared_draws[prepared_draw_count++] = planned[i];
-    }
-    // Preserve NVN draw order, but avoid filling the shared worker queue
-    // with geometry before shader variants have been submitted.
-    for (unsigned i = 0; i < ngeometry; ++i)
-        schedule_geometry(geometry_commands[i]);
-}
-
 // ================================================================== executor (renderer.m exec_list)
 static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
@@ -6202,11 +5577,7 @@ static void exec_list(uint64_t handle, int depth) {
 
 void backend_execute(uint64_t handle) {
     PROF_T0();
-    prepared_draw_count = 0;
-    shader_list_preflight(handle);
     exec_list(handle, 0);
-    retire_prepared_geometry();
-    prepared_draw_count = 0;
     PROF_ADD(prof_exec);
     if (prof) cum_exec += SDL_GetTicksNS() - prof_t0_;
     static int sync_submit = -1;
