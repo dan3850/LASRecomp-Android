@@ -243,6 +243,20 @@ fi
 echo "Vulkan headers: $VULKAN_INCLUDE"
 step "Compilando Vulkan/ImGui"
 mkdir -p "$OBJ/inc"
+# BEGIN BUILD_SHA_REFRESH
+# The diagnostic module embeds -DLASRECOMP_BUILD_SHA, a value that changes
+# with Git HEAD even when diagnostics.c itself is unchanged. Force ONLY that
+# object to rebuild for a new HEAD; preserve every other native/dependency
+# cache. The matching compiler-fingerprint helper excludes this block.
+BUILD_SHA_12="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
+BUILD_SHA_STAMP="$OUT/diagnostics-build-sha.txt"
+if [[ ! -s "$BUILD_SHA_STAMP" || "$(cat "$BUILD_SHA_STAMP")" != "$BUILD_SHA_12" ]]; then
+ echo "Atualizando identificador do APK: $BUILD_SHA_12 (somente diagnostics.c.o)"
+ rm -f -- "$OBJ/renderer/runtime/nvn/vulkan/diagnostics.c.o" \
+           "$OBJ/renderer/runtime/nvn/vulkan/diagnostics.c.o.d"
+ printf '%s\n' "$BUILD_SHA_12" > "$BUILD_SHA_STAMP"
+fi
+# END BUILD_SHA_REFRESH
 python3 tools/vulkan-cache-build-id.py --output "$OBJ/inc/vulkan_cache_build_id.h"
 python3 tools/embed_smaa_hlsl.py third_party/smaa/SMAA.hlsl "$OBJ/inc/smaa_hlsl.inc" ||
  fail "Falha ao gerar strings C do shader SMAA"
