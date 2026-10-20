@@ -4332,14 +4332,43 @@ static bool topology(uint32_t mode, VkPrimitiveTopology *t, uint8_t *cls) {
     }
 }
 
-static void draw_(CmdRec *r, bool indexed);
+// Indexed geometry is copied only after the ordered GMEM read. Workers
+// receive immutable host-owned bytes, never a pointer into guest memory.
+typedef struct {
+    uint32_t mode, count, itype, output_count, max_index;
+    uint8_t *source;
+    uint32_t *expanded;
+    _Atomic int state;
+} IndexedGeometryJob;
+static void prepare_indexed_geometry(void *arg) {
+    IndexedGeometryJob *g = arg;
+    g->expanded = expand_indices(g->mode, g->count, g->source,
+                                 (int)g->itype, 0, &g->output_count);
+    if (g->expanded) {
+        for (uint32_t i = 0; i < g->output_count; i++)
+            if (g->expanded[i] > g->max_index)
+                g->max_index = g->expanded[i];
+    }
+    build_finished(&g->state, g->expanded ? 1 : 2);
+}
+static void free_indexed_geometry(IndexedGeometryJob *g) {
+    if (!g) return;
+    build_ready(&g->state, "indexed geometry preparation");
+    free(g->source);
+    free(g->expanded);
+    free(g);
+}
+static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared);
 static void draw(CmdRec *r, bool indexed) {
     PROF_T0();
-    draw_(r, indexed);
+    IndexedGeometryJob *prepared = NULL;
+    draw_(r, indexed, &prepared);
+    // Also retire jobs when a diagnostic/filter path skips the draw.
+    free_indexed_geometry(prepared);
     PROF_ADD(prof_draw);
 }
 static uint64_t prof_tp_;
-static void draw_(CmdRec *r, bool indexed) {
+static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
     if (prof) prof_tp_ = SDL_GetTicksNS();
     if (!st.program) { stat_skipped++; return; }
     ShaderKey vkey = {0}, fkey = {0};
@@ -4384,6 +4413,33 @@ static void draw_(CmdRec *r, bool indexed) {
         if (read_vbuf_mask & (UINT32_C(1) << i))
             gmem_read_range(st.vbuf[i].addr, st.vbuf[i].size);
     if (indexed) gmem_read_range(r->x[3], (uint64_t)r->x[2] * (r->x[1] == 0 ? 1 : r->x[1] == 1 ? 2 : 4));
+    // Snapshot the indexed polygon/fan/quad source after its real GMEM
+    // synchronization; overlap pure CPU expansion with pipeline setup.
+    if (indexed) {
+        static int prep_enabled = -1;
+        if (prep_enabled < 0) {
+            const char *e = getenv("LARECOMP_VK_INDEX_PREP");
+            prep_enabled = !e || atoi(e) != 0;
+        }
+        uint32_t mode = (uint32_t)r->x[0], n = (uint32_t)r->x[2];
+        uint32_t type = (uint32_t)r->x[1];
+        uint32_t width = type == 0 ? 1 : type == 1 ? 2 : 4;
+        if (prep_enabled && (mode == 6 || mode == 7 || mode == 9) &&
+            n >= 6 && n <= 4096 && type <= 2 && r->x[3] &&
+            (uint64_t)n * width <= 16384) {
+            IndexedGeometryJob *g = calloc(1, sizeof *g);
+            if (g) {
+                g->source = malloc((size_t)n * width);
+                if (g->source) {
+                    memcpy(g->source, (const void *)(uintptr_t)r->x[3],
+                           (size_t)n * width);
+                    g->mode = mode; g->count = n; g->itype = type;
+                    *prepared = g;
+                    run_job(prepare_indexed_geometry, g);
+                } else free(g);
+            }
+        }
+    }
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
         uint64_t fs = st.program->stages[1].code_addr;
@@ -4764,10 +4820,19 @@ static void draw_(CmdRec *r, bool indexed) {
             itype_vk = VK_INDEX_TYPE_UINT16;
             icount = count;
         } else {
-            uint32_t *e = expand_indices(mode, count, src, (int)itype, 0, &icount);
-            for (uint32_t i = 0; i < icount; i++) if (e[i] > max_index) max_index = e[i];
-            ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
-            free(e);
+            IndexedGeometryJob *g = *prepared;
+            if (g && g->mode == mode && g->count == count &&
+                g->itype == itype) {
+                build_ready(&g->state, "indexed geometry preparation");
+                icount = g->output_count;
+                max_index = g->max_index;
+                ib = vk_transient_copy(g->expanded, (uint64_t)icount * 4 + 4, 4);
+            } else {
+                uint32_t *e = expand_indices(mode, count, src, (int)itype, 0, &icount);
+                for (uint32_t i = 0; i < icount; i++) if (e[i] > max_index) max_index = e[i];
+                ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
+                free(e);
+            }
         }
         if (!scan_src) {
             max_index += 1;
