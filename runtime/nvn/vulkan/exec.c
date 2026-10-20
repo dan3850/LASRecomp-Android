@@ -59,6 +59,17 @@ uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)
 #define PROF_ADD(v) do { if (prof) v += SDL_GetTicksNS() - prof_t0_; } while (0)
 static _Atomic int stat_compiles;
 static uint64_t op_counts[CMD_COUNT];
+#ifdef LASRECOMP_MARIO_TEST
+// Count original guest NVN opcodes actually consumed by the Vulkan executor.
+// Separate from op_counts, which the normal profiler may read/reset.
+static uint64_t mario_executed_ops[CMD_COUNT];
+uint64_t mario_nvn_execute_count(unsigned op) {
+    return op < CMD_COUNT
+        ? __atomic_load_n(&mario_executed_ops[op], __ATOMIC_RELAXED)
+        : 0;
+}
+#endif
+
 bool g_debug_frame;
 static char stats_text[2048];
 // The Vulkan descriptor pools are reset only after their submission finishes.
@@ -5327,7 +5338,12 @@ static void exec_list(uint64_t handle, int depth) {
     for (int guard = 0; guard < 10000000; guard++) {
         CmdRec *r = (CmdRec *)(uintptr_t)p;
         void *x = r->extra;
-        if (r->op < CMD_COUNT) op_counts[r->op]++;
+        if (r->op < CMD_COUNT) {
+            op_counts[r->op]++;
+#ifdef LASRECOMP_MARIO_TEST
+            __atomic_fetch_add(&mario_executed_ops[r->op], 1, __ATOMIC_RELAXED);
+#endif
+        }
         switch (r->op) {
         case CMD_END: return;
         case CMD_JUMP: p = r->x[0]; continue;
