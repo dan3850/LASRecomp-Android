@@ -5061,6 +5061,11 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
             }
             uint64_t stride = k.stride[s], need;
             IndexedGeometryJob *g_range = *prepared;
+            // The producer publishes vertex_need before signaling state.
+            // Join before reading any worker-owned fields, even when index
+            // data was copied rather than accessed through guest_direct.
+            if (g_range && g_range->itype != 0 && g_range->mode <= 5)
+                build_ready(&g_range->state, "indexed vertex ranges");
             if (g_range && g_range->itype != 0 && g_range->mode <= 5 &&
                 g_range->vertex_ranges_valid &&
                 (g_range->stream_mask & (1u << s)) &&
