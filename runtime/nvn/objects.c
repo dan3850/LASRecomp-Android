@@ -463,6 +463,9 @@ NVN(nvnTextureInitialize) {
     SET_HOST(A(0), t);
     RET(1);
 }
+#ifdef LASRECOMP_MARIO_TEST
+static void mario_texture_descriptors_forget(NvnTexture *texture);
+#endif
 NVN(nvnTextureFinalize) {
 #ifdef LASRECOMP_MARIO_TEST
     uint64_t claimed = G(uint64_t, A(0), 0);
@@ -483,6 +486,8 @@ NVN(nvnTextureFinalize) {
                 (unsigned long long)A(0), (unsigned long long)claimed,
                 (void *)t, (unsigned long long)c->x[30]);
     }
+    // A descriptor must never retain a freed host-side texture object.
+    mario_texture_descriptors_forget(t);
     backend_texture_destroyed(t);
     free(t);
 #else
@@ -620,6 +625,24 @@ NVN(nvnSamplerGetDebugID) { RET(A(0)); }
 
 // ================================================================== descriptor pools
 NvnDescPool *g_texture_pools[64], *g_sampler_pools[64];
+#ifdef LASRECOMP_MARIO_TEST
+// Mario registers NVN texture handles in long-lived descriptor pools.
+// Finalizing a texture invalidates those descriptors before its host memory
+// is reclaimed, preventing later render passes from dereferencing freed data.
+static void mario_texture_descriptors_forget(NvnTexture *texture) {
+    for (unsigned pool = 0; pool < 64; ++pool) {
+        NvnDescPool *d = g_texture_pools[pool];
+        if (!d || !d->entries || d->count <= 0) continue;
+        NvnTexEntry *entries = (NvnTexEntry *)d->entries;
+        for (int i = 0; i < d->count; ++i) {
+            if (entries[i].tex == texture) {
+                entries[i].tex = NULL;
+                entries[i].has_view = false;
+            }
+        }
+    }
+}
+#endif
 RT_ON_RESET(desc_pools_reset) { memset(g_texture_pools, 0, sizeof g_texture_pools); memset(g_sampler_pools, 0, sizeof g_sampler_pools); }
 
 static NvnDescPool *desc_pool_init(uint64_t guest, uint64_t pool, uint64_t off, int count, size_t entry, NvnDescPool **reg) {
