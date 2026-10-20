@@ -216,7 +216,10 @@ mkdir -p "$OBJ" "$LIB"
 STAMP="$OUT/flags.stamp"
 HASH="$(python3 tools/termux_compile_id.py "$0")"
 if [[ -n "${LASRECOMP_MARIO_PROFILE:-}" ]]; then
- HASH="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(sys.argv[1].encode() + pathlib.Path(sys.argv[2]).read_bytes()).hexdigest())' "$HASH" "$LASRECOMP_MARIO_PROFILE")"
+ # Kernel layouts cross runtime translation units. Include their content in
+ # the profile key as well as depfiles; never reuse mixed layout objects.
+ # This key does not belong to the private recompiled game or dependency builds.
+ HASH="$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(sys.argv[1].encode() + pathlib.Path(sys.argv[2]).read_bytes() + pathlib.Path(sys.argv[3]).read_bytes()).hexdigest())' "$HASH" "$LASRECOMP_MARIO_PROFILE" "$ROOT/runtime/kernel.h")"
 fi
 if [[ ! -f "$OUT/flags.id" || "$(cat "$OUT/flags.id")" != "$HASH" ]]; then
  printf '%s' "$HASH" > "$OUT/flags.id"; touch "$STAMP"

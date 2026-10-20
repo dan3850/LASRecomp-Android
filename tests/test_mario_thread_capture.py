@@ -51,6 +51,12 @@ class MarioThreadCapture(unittest.TestCase):
         self.assertIn('sample=2 ', report)
         self.assertIn('complete=1 samples_available=2', report)
 
+    def test_preserves_thread_handle_and_callback_offsets_for_existing_callers(self):
+        self.assertEqual(self.capture('layout'), '')
+
+    def test_full_event_diagnostic_table_does_not_prevent_signaling(self):
+        self.assertEqual(self.capture('event-table'), '')
+
     def test_records_condition_mutex_owner_without_waking_or_stealing_it(self):
         report = self.capture('condvar')
         self.assertIn('wait=condvar', report)

@@ -42,17 +42,48 @@ static __thread KThread *t_cur;
 #define MAX_HANDLES 4096
 static KObject *handles[MAX_HANDLES];
 
+#ifdef LASRECOMP_MARIO_TEST
+// Keep diagnostic metadata outside shared object prefixes. This table is
+// protected by g_klock and cannot affect handle allocation or event semantics.
+typedef struct {
+    KObject *object;
+    bool capture_origin_set;
+    uint64_t capture_creator, capture_origin_pc, capture_origin_lr;
+    uint64_t capture_signals, capture_last_signaler, capture_svc_resets;
+    char capture_service[64];
+    uint32_t capture_command;
+} CaptureEvent;
+static CaptureEvent capture_events[8192];
+static CaptureEvent *capture_event(KObject *o, bool create) {
+    if (!o || o->type!=KOBJ_EVENT) return NULL;
+    size_t start=((uintptr_t)o>>4)%8192;
+    for (size_t i=0;i<8192;i++) {
+        CaptureEvent *entry=&capture_events[(start+i)%8192];
+        if (entry->object==o) return entry;
+        if (!entry->object) {
+            if (!create) return NULL;
+            entry->object=o;
+            return entry;
+        }
+    }
+    return NULL; // diagnostic capacity exhaustion never fails a guest call
+}
+_Static_assert(sizeof(KObject)==12, "diagnostics must preserve KObject ABI");
+_Static_assert(offsetof(KThread,cpu)==16, "diagnostics must preserve thread Cpu offset");
+#endif
+
 static uint32_t handle_alloc(KObject *o) {
 #ifdef LASRECOMP_MARIO_TEST
-    if (o->type == KOBJ_EVENT && !o->capture_origin_set) {
-        o->capture_origin_set = true;
+    CaptureEvent *event=capture_event(o,true);
+    if (event && !event->capture_origin_set) {
+        event->capture_origin_set = true;
         if (t_cur) {
-            o->capture_creator = t_cur->id;
-            o->capture_origin_pc = t_cur->capture_in_svc ? t_cur->capture_svc_pc : t_cur->cpu.pc;
-            o->capture_origin_lr = t_cur->cpu.x[30];
+            event->capture_creator = t_cur->id;
+            event->capture_origin_pc = t_cur->capture_in_svc ? t_cur->capture_svc_pc : t_cur->cpu.pc;
+            event->capture_origin_lr = t_cur->cpu.x[30];
             if (t_cur->capture_ipc_service) {
-                snprintf(o->capture_service, sizeof o->capture_service, "%s", t_cur->capture_ipc_service);
-                o->capture_command = t_cur->capture_ipc_command;
+                snprintf(event->capture_service, sizeof event->capture_service, "%s", t_cur->capture_ipc_service);
+                event->capture_command = t_cur->capture_ipc_command;
             }
         }
     }
@@ -95,9 +126,10 @@ static void wake(KThread *t) { pthread_cond_signal(&t->cond); }
 void kernel_signal(KObject *o) {
     // caller holds g_klock
 #ifdef LASRECOMP_MARIO_TEST
-    if (o->type == KOBJ_EVENT) {
-        o->capture_signals++;
-        o->capture_last_signaler = t_cur ? t_cur->id : 0; // 0: host producer
+    CaptureEvent *event=capture_event(o,false);
+    if (event) {
+        event->capture_signals++;
+        event->capture_last_signaler = t_cur ? t_cur->id : 0; // 0: host producer
     }
 #endif
     o->signaled = true;
@@ -773,7 +805,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
                 else {
                     ev->signaled = false;
 #ifdef LASRECOMP_MARIO_TEST
-                    ev->capture_svc_resets++;
+                    CaptureEvent *event=capture_event(ev,false);
+                    if (event) event->capture_svc_resets++;
 #endif
                 }
                 x[0] = R_OK;
@@ -997,6 +1030,9 @@ void kernel_reset(void) {
     g_waitlist = NULL;
     g_syncwaiters = NULL;
     memset(handles, 0, sizeof handles);
+#ifdef LASRECOMP_MARIO_TEST
+    memset(capture_events, 0, sizeof capture_events);
+#endif
     nregions = 0;
     heap_size = 0;
     tls_next = TLS_BASE;

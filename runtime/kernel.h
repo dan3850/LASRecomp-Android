@@ -17,13 +17,6 @@ typedef struct KObject {
     KType type;
     int refs;
     bool signaled;
-#ifdef LASRECOMP_MARIO_TEST
-    bool capture_origin_set;
-    uint64_t capture_creator, capture_origin_pc, capture_origin_lr;
-    uint64_t capture_signals, capture_last_signaler, capture_svc_resets;
-    char capture_service[64];
-    uint32_t capture_command;
-#endif
 } KObject;
 
 typedef KObject KEvent;
@@ -56,13 +49,14 @@ struct KThread {
     uint64_t capture_svc_pc, capture_svc_args[4]; // written by this guest thread
     uint32_t capture_svc;
     bool capture_in_svc;
-    const char *capture_ipc_service; // synchronous IPC context on this guest thread
-    uint32_t capture_ipc_command;
     _Atomic uint64_t capture_request, capture_ack;
     _Atomic uint64_t capture_pc, capture_lr, capture_sp, capture_native_pc, capture_native_lr;
-    _Atomic uint64_t capture_fp;
     _Atomic uint64_t capture_svc_sample_pc, capture_args[4];
     _Atomic unsigned capture_svc_sample, capture_in_svc_sample;
+    // Append only: preserve the previous thread layout for cached callers.
+    _Atomic uint64_t capture_fp;
+    const char *capture_ipc_service;
+    uint32_t capture_ipc_command;
 #endif
 };
 

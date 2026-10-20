@@ -89,6 +89,41 @@ static void *bridge_clear(void *unused) {
 
 int main(int argc,char **argv) {
     assert(argc==2); mode=argv[1];
+    if (!strcmp(mode,"layout")) {
+        // Prefix baked into callers before event diagnostics were introduced.
+        // Read it by byte offset, as separately cached machine code does.
+        struct LegacyObject { KType type; int refs; bool signaled; };
+        struct LegacyThreadPrefix {
+            struct LegacyObject obj;
+            Cpu cpu;
+            pthread_t host;
+            uint64_t entry,tlr,id;
+            uint32_t handle;
+        };
+        worker.handle=0x101;
+        worker.cpu.x[4]=0x7080000040;
+        uint32_t old_handle;
+        uint64_t old_finalizer;
+        memcpy(&old_handle,(char *)&worker+offsetof(struct LegacyThreadPrefix,handle),sizeof old_handle);
+        memcpy(&old_finalizer,(char *)&worker+offsetof(struct LegacyThreadPrefix,cpu)+32,sizeof old_finalizer);
+        assert(old_handle==0x101 && old_finalizer==0x7080000040);
+        return 0;
+    }
+    if (!strcmp(mode,"event-table")) {
+        KObject *objects=calloc(8193,sizeof *objects);
+        assert(objects);
+        pthread_mutex_lock(&g_klock);
+        for (unsigned i=0;i<8193;i++) {
+            objects[i].type=KOBJ_EVENT;
+            CaptureEvent *metadata=capture_event(&objects[i],true);
+            assert(i<8192 ? metadata!=NULL : metadata==NULL);
+        }
+        kernel_signal(&objects[8192]);
+        assert(objects[8192].signaled); // even without room for diagnostic data
+        pthread_mutex_unlock(&g_klock);
+        free(objects);
+        return 0;
+    }
     if (!strcmp(mode,"bridge")) {
         assert(mario_capture_bridge_run()==0);
         mario_capture_bridge_set(bridge_callback); atomic_store(&bridge_release,true);
@@ -163,7 +198,7 @@ int main(int argc,char **argv) {
         worker.capture_svc_pc=SDK_BASE+0x999;
         uint32_t alias=kernel_new_handle(&event);
         assert(handles[alias-0x100]==&event);
-        assert(event.capture_origin_pc==SDK_BASE+0x100);
+        assert(capture_event(&event,false)->capture_origin_pc==SDK_BASE+0x100);
         t_cur=NULL;
         frames[0]=(uintptr_t)(frames+2); frames[1]=MAIN_BASE+0x1234;
         frames[2]=0; frames[3]=SDK_BASE+0x5678;
@@ -199,7 +234,7 @@ int main(int argc,char **argv) {
     } else if (!strcmp(mode,"sync")) {
         assert(!event.signaled);
         pthread_mutex_lock(&g_klock); kernel_signal(&event); pthread_mutex_unlock(&g_klock);
-        assert(event.capture_signals==1 && event.capture_last_signaler==0);
+        assert(capture_event(&event,false)->capture_signals==1 && capture_event(&event,false)->capture_last_signaler==0);
     } else {
         assert(atomic_load(&iterations)>before); // native loop keeps running between samples
         atomic_store(&stop,true);

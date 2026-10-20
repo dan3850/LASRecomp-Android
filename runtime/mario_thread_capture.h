@@ -155,17 +155,18 @@ static void capture_thread_row(FILE *out,KThread *t,uint64_t request,int sent) {
                 KObject *object=handle>=0x101 && handle<0x100+MAX_HANDLES?handle_get(handle):NULL;
                 CAPTURE_STATE(" sync%llu=%x:type%d:signaled%d",(unsigned long long)i,handle,
                               object?(int)object->type:0,object?object->signaled:0);
-                if (object && object->type==KOBJ_EVENT) {
+                CaptureEvent *event=capture_event(object,false);
+                if (event) {
                     CAPTURE_STATE(" event%llu_origin=%d:thread%llu:pc%llx:lr%llx:service%s:cmd%u"
                                   ":signals%llu:last_thread%llu:svc_resets%llu",
-                                  (unsigned long long)i,object->capture_origin_set,
-                                  (unsigned long long)object->capture_creator,
-                                  (unsigned long long)object->capture_origin_pc,
-                                  (unsigned long long)object->capture_origin_lr,
-                                  object->capture_service[0]?object->capture_service:"none",
-                                  object->capture_command,(unsigned long long)object->capture_signals,
-                                  (unsigned long long)object->capture_last_signaler,
-                                  (unsigned long long)object->capture_svc_resets);
+                                  (unsigned long long)i,event->capture_origin_set,
+                                  (unsigned long long)event->capture_creator,
+                                  (unsigned long long)event->capture_origin_pc,
+                                  (unsigned long long)event->capture_origin_lr,
+                                  event->capture_service[0]?event->capture_service:"none",
+                                  event->capture_command,(unsigned long long)event->capture_signals,
+                                  (unsigned long long)event->capture_last_signaler,
+                                  (unsigned long long)event->capture_svc_resets);
                 }
             }
             // Only inspect a sleeping thread while holding the lock that keeps

@@ -342,3 +342,40 @@ comando, restauração do contexto externo, preservação da origem no segundo
 handle, frames sintéticos e ausência de despertar durante a captura.
 Os quatro módulos Android/Vulkan indisponíveis continuam excluídos pelos
 motivos já documentados; não foi compilado nem executado um novo APK aqui.
+
+### Regressão de layout introduzida em ee7edde
+
+O relatório seguinte identifica ee7edde, mas a captura tem zero threads na
+primeira amostra e apenas a principal na segunda. O fim do log registra três
+SIGSEGVs em `f_7004344590`, acesso a 0x1b0, LR guest 0x7004144984, antes dos
+callbacks de inicialização. O último SVC é GetThreadPriority (0x0c), com
+handle de entrada zero, apesar do handle da thread principal ser 0x101.
+Os três presents registrados no arquivo não comprovam progresso nessa
+execução: o arquivo agrega sessões anteriores.
+
+A extensão de KObject em ee7edde mudou seu tamanho de 12 para 136 bytes,
+deslocou KThread.cpu de 16 para 144 e KThread.handle de 1072 para 1200.
+Isso quebrou a compatibilidade com callers compilados com o layout anterior.
+Em um experimento sintético com o header real de ee7edde e leituras pelos
+offsets anteriores, o handle e o callback foram lidos como zero (exit 1);
+com o layout restaurado, retornaram 0x101 e 0x7080000040 (exit 0).
+Esse mecanismo reproduz a entrada inválida observada. Sem inspecionar o
+APK novo, a presença exata de objetos antigos nele não foi verificada.
+
+A correção mantém os metadados dos eventos em uma tabela separada por
+identidade do objeto, protegida pelo lock existente; restaura KObject e o
+prefixo de KThread; e acrescenta novos campos de thread somente no final.
+Asserts impedem novo deslocamento do prefixo. A capacidade da tabela de
+diagnóstico não interfere em sinalização nem alocação de handles.
+
+O build Mario agora inclui o conteúdo de kernel.h na chave dos objetos do
+runtime, além dos depfiles. A atualização recompila o runtime afetado sem
+apagar caches, reconstruir a biblioteca privada ou baixar dependências por
+esse motivo. Os testes verificam acesso por offsets antigos e sinalização
+mesmo com a tabela de diagnóstico cheia. A confirmação de que o crash
+sumiu depende do APK no aparelho; esta correção de regressão não demonstra
+a resolução da espera original no evento 0x13f.
+
+Validação da correção de layout: 194 testes disponíveis aprovados no host,
+incluindo os 12 da captura; verificação sintática do script e do diff
+aprovadas. Os mesmos quatro módulos Android/Vulkan permanecem indisponíveis.
