@@ -4262,7 +4262,9 @@ static uint32_t *expand_indices(uint32_t mode, uint32_t count, const void *indic
     uint32_t tris = mode == 7 ? count / 4 * 2 : count >= 3 ? count - 2 : 0;
     if ((uint64_t)tris * 3 * sizeof(uint32_t) + 4 > SIZE_MAX)
         return NULL;
-    uint32_t *out = malloc((size_t)tris * 3 * sizeof(uint32_t) + 4);
+    // vk_transient_copy uploads the index payload plus four pad bytes.
+    // Zero the tail to avoid reading uninitialized bytes on the CPU upload.
+    uint32_t *out = calloc(1, (size_t)tris * 3 * sizeof(uint32_t) + 4);
     if (!out) return NULL;
     uint32_t n = 0;
 #define IDX(i) (indices ? (itype == 0 ? ((const uint8_t *)indices)[i] : itype == 1 ? ((const uint16_t *)indices)[i] : ((const uint32_t *)indices)[i]) : first + (i))
@@ -4965,6 +4967,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                 ib = vk_transient_copy(g->indices, (uint64_t)icount * 4 + 4, 4);
             } else {
                 uint32_t *e = expand_indices(mode, count, NULL, 0, first, &icount);
+                if (!e) FATAL("required non-indexed geometry allocation failed\n");
                 ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
                 free(e);
             }
@@ -5013,6 +5016,7 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                 ib = vk_transient_copy(g->expanded, (uint64_t)icount * 4 + 4, 4);
             } else {
                 uint32_t *e = expand_indices(mode, count, src, (int)itype, 0, &icount);
+                if (!e) FATAL("required indexed geometry allocation failed\n");
                 for (uint32_t i = 0; i < icount; i++) if (e[i] > max_index) max_index = e[i];
                 ib = vk_transient_copy(e, (uint64_t)icount * 4 + 4, 4);
                 free(e);
@@ -5070,8 +5074,17 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
                     g->mode == mode && g->count == icount &&
                     g->restart_enabled == st.prim_restart &&
                     g->restart_index == st.restart_index) {
-                    (void)optional_job_ready(&g->state);
-                    if (g->max_index > max_index) max_index = g->max_index;
+                    if (optional_job_ready(&g->state)) {
+                        if (g->max_index > max_index) max_index = g->max_index;
+                    } else if (scan_isz == 2) {
+                        const uint16_t *q = scan_src;
+                        for (uint32_t i = 0; i < icount; i++)
+                            if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i];
+                    } else {
+                        const uint32_t *q = scan_src;
+                        for (uint32_t i = 0; i < icount; i++)
+                            if (q[i] > max_index && q[i] != scan_restart) max_index = q[i];
+                    }
                 } else if (scan_isz == 2) {
                     const uint16_t *q = scan_src;
                     for (uint32_t i = 0; i < icount; i++) if (q[i] > max_index && q[i] != (uint16_t)scan_restart) max_index = q[i];
@@ -5088,10 +5101,10 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
             // The producer publishes vertex_need before signaling state.
             // Join before reading any worker-owned fields, even when index
             // data was copied rather than accessed through guest_direct.
-            if (g_range && g_range->itype != 0 && g_range->mode <= 5)
-                (void)optional_job_ready(&g_range->state);
-            if (g_range && g_range->itype != 0 && g_range->mode <= 5 &&
-                g_range->vertex_ranges_valid &&
+            const bool indexed_ranges_ready =
+                g_range && g_range->itype != 0 && g_range->mode <= 5 &&
+                optional_job_ready(&g_range->state);
+            if (indexed_ranges_ready && g_range->vertex_ranges_valid &&
                 (g_range->stream_mask & (1u << s)) &&
                 g_range->stride[s] == k.stride[s] &&
                 g_range->divisor[s] == k.divisor[s] &&
