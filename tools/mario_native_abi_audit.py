@@ -1,80 +1,76 @@
 #!/usr/bin/env python3
-"""Audit original Mario NSO AArch64 instructions needing Android adaptation.
+"""Read-only ARM64 ABI triage, without Capstone/native disassembly libraries.
 
-Read-only. Uses Capstone to distinguish actual x18 operands from raw bit
-patterns. Reports SVC immediates, TLS register access, and x18 use; does not
-execute code, change source files, or assume that x18 can be clobbered.
-Run: python3 tools/mario_native_abi_audit.py /path/to/Super-extraido
-Requires: python3 -m pip install capstone (if not already available).
+Counts known SVC and TLS/system-register instruction encodings and reports
+a deliberately LIMITED set of x18 instruction patterns. This is not a full
+ARM64 decoder: x18 reports are lower bounds and never establish ABI safety.
+Does not execute or modify game files.
 """
 import argparse
 from collections import Counter, defaultdict
 from pathlib import Path
+import struct
 
 from nso import Nso
 
+TLS = {
+    0xD53BD040: "MRS_TPIDR_EL0",
+    0xD53BD060: "MRS_TPIDRRO_EL0",
+    0xD51BD040: "MSR_TPIDR_EL0",
+    0xD51BD060: "MSR_TPIDRRO_EL0",
+}
+SYS = {
+    0xD53BE040: "MRS_CNTVCT_EL0",
+    0xD53BE020: "MRS_CNTPCT_EL0",
+    0xD53BE000: "MRS_CNTFRQ_EL0",
+}
 
-def inspect_module(name, nso, capstone, arm64):
-    md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
-    md.detail = True
-    # NSO text may contain embedded data/invalid words. Continue past them.
-    md.skipdata = True
+
+def classify(word):
+    # SVC immediate has bits [20:5]; compare opcode with immediate masked.
+    if word & 0xFFE0001F == 0xD4000001:
+        return "SVC", (word >> 5) & 0xFFFF
+    register = word & ~31
+    if register in TLS:
+        return TLS[register], None
+    if register in SYS:
+        return SYS[register], None
+    # Limited, unambiguous x18 operand patterns. Other classes are not decoded.
+    if word & 0xFFFFFC1F in (0xD61F0000, 0xD63F0000, 0xD65F0000):
+        return ("X18_BRANCH" if (word >> 5) & 31 == 18 else None), None
+    if word & 0x9F000000 == 0x90000000 and word & 31 == 18:
+        return "X18_ADRP_DEST", None
+    # LDR/STR (unsigned immediate): base and transfer register operands.
+    if word & 0x3B000000 == 0x39000000:
+        if (word >> 5) & 31 == 18 or word & 31 == 18:
+            return "X18_LOADSTORE", None
+    return None, None
+
+
+def audit(name, nso):
     lo, size = nso.text
-    samples = defaultdict(list)
     counts = Counter()
-    svc_imm = Counter()
-    decoded = 0
-    skipped = 0
-    sysreg_counts = Counter()
-    for ins in md.disasm(bytes(nso.image[lo:lo + size]), lo):
-        if ins.mnemonic == ".byte":
-            skipped += ins.size
+    samples = defaultdict(list)
+    svc_immediates = Counter()
+    words = memoryview(nso.image)[lo:lo + size]
+    for idx, (word,) in enumerate(struct.iter_unpack("<I", words[:len(words) // 4 * 4])):
+        kind, immediate = classify(word)
+        if kind is None:
             continue
-        decoded += 1
-        is_svc = ins.mnemonic == "svc"
-        sysreg = any(tag in ins.op_str.lower()
-                     for tag in ("tpidr_el0", "tpidrro_el0", "cntvct_el0", "cntpct_el0", "cntfrq_el0"))
-        # x18, w18 register operands. Op strings also include memory bases and
-        # address operands; match complete register tokens only.
-        import re
-        uses_x18 = re.search(r"(?<![\w])(?:x18|w18)(?![\w])", ins.op_str.lower()) is not None
-        if is_svc:
-            counts["SVC"] += 1
-            svc_imm[ins.op_str.strip()] += 1
-        if sysreg:
-            counts["SYSTEM_REGISTER"] += 1
-            for tag in ("tpidr_el0", "tpidrro_el0", "cntvct_el0", "cntpct_el0", "cntfrq_el0"):
-                if tag in ins.op_str.lower():
-                    sysreg_counts[tag] += 1
-        if uses_x18:
-            counts["X18_OPERAND"] += 1
-        categories = []
-        if is_svc:
-            categories.append("SVC")
-        if sysreg:
-            categories.append("SYSTEM_REGISTER")
-        if uses_x18:
-            categories.append("X18_OPERAND")
-        for cat in categories:
-            if len(samples[cat]) < 12:
-                samples[cat].append(f"0x{ins.address:x} {ins.mnemonic} {ins.op_str}")
+        counts[kind] += 1
+        if len(samples[kind]) < 10:
+            samples[kind].append(f"0x{lo + idx * 4:x}")
+        if kind == "SVC":
+            svc_immediates[immediate] += 1
+
     print(f"=== {name} ===")
     print(f"build_id={nso.build_id} text_bytes={size}")
-    print(f"decoded_instructions={decoded} skipped_invalid_bytes={skipped}")
-    raw_svc = sum(1 for off in range(lo, lo + size - size % 4, 4)
-                  if (nso.u32(off) & 0xFFE0001F) == 0xD4000001)
-    if decoded == 0 or counts["SVC"] != raw_svc:
-        raise ValueError(
-            f"{name}: incomplete ARM64 decode: decoded={decoded} "
-            f"SVC_disasm={counts['SVC']} SVC_raw={raw_svc}"
-        )
-    for cat in ("SVC", "SYSTEM_REGISTER", "X18_OPERAND"):
-        print(f"{cat}={counts[cat]}")
-        for example in samples[cat]:
-            print(f"  {example}")
-    print("svc_immediates:", " ".join(f"{k}={v}" for k, v in sorted(svc_imm.items())) or "none")
-    print("system_registers:", " ".join(f"{k}={v}" for k, v in sorted(sysreg_counts.items())) or "none")
-    print("NOTE: operand sightings are not control-flow coverage or proven runtime calls.")
+    print(f"scanned_aligned_words={len(words) // 4}")
+    for kind in ("SVC", *TLS.values(), *SYS.values(),
+                 "X18_BRANCH", "X18_ADRP_DEST", "X18_LOADSTORE"):
+        print(f"{kind}={counts[kind]} samples={','.join(samples[kind])}")
+    print("svc_immediates=" + ", ".join(f"{k:#x}:{v}" for k, v in sorted(svc_immediates.items())))
+    print("X18_NOTE: partial opcode coverage only; do not interpret zero as no x18 use")
     return counts
 
 
@@ -82,25 +78,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("game", type=Path)
     args = parser.parse_args()
-    try:
-        import capstone
-        from capstone import arm64
-    except ImportError as error:
-        parser.error("Capstone required: python3 -m pip install capstone")
     root = args.game / "exefs" if (args.game / "exefs").is_dir() else args.game
     combined = Counter()
     for name in ("main", "sdk"):
-        nso = Nso(root / name)
-        combined.update(inspect_module(name, nso, capstone, arm64))
+        combined.update(audit(name, Nso(root / name)))
     print("=== TOTAL ===")
-    for cat in ("SVC", "SYSTEM_REGISTER", "X18_OPERAND"):
-        print(f"{cat}={combined[cat]}")
-    print("READ_ONLY: no ARM64 executed, no original NSOs or APK modified.")
-    print("NEXT: design x18/TLS-safe trampolines and SVC mappings, then verify individual functions.")
+    for kind in ("SVC", *TLS.values(), *SYS.values(),
+                 "X18_BRANCH", "X18_ADRP_DEST", "X18_LOADSTORE"):
+        print(f"{kind}={combined[kind]}")
+    print("READ_ONLY: Python-only scanner; no native library, execution or APK changes.")
+    print("NEXT: targeted ARM64 instruction rewriting after independent decoder validation.")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, AssertionError, ValueError) as error:
+    except (OSError, ValueError, AssertionError, ImportError, struct.error) as error:
         raise SystemExit(f"ERROR: {error}")
