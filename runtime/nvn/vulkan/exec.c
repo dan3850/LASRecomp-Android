@@ -5410,20 +5410,27 @@ static void shader_list_preflight(uint64_t handle) {
     for (int i = 0; i < ncolor; i++)
         if (st.rt.color[i])
             color_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    // A bounded work list avoids repeated hash-table probes and work queue
+    // traffic for the hundreds of identical draws in an overworld frame.
+    // Only distinct shader variants count against the lookahead budget.
+    struct {
+        NvnProgram *program;
+        ShaderKey vertex, fragment;
+    } planned[32];
+    unsigned nplanned = 0;
     uint64_t p = handle;
-    unsigned launched = 0;
-    for (unsigned step = 0; step < 512 && launched < 32; step++) {
+    for (unsigned step = 0; step < 512; step++) {
         if (!p) break;
         const CmdRec *r = (const CmdRec *)(uintptr_t)p;
         if (r->size < sizeof *r) break;
         switch (r->op) {
-        case CMD_END: return;
+        case CMD_END: goto submit_planned;
         case CMD_BIND_PROGRAM:
             program = (NvnProgram *)(uintptr_t)r->x[0];
             break;
         case CMD_BIND_VERTEX_ATTRIB:
             nattrib = (int)(r->x[0] > 16 ? 16 : r->x[0]);
-            if (nattrib && !r->extra) return;
+            if (nattrib && !r->extra) goto submit_planned;
             if (nattrib) memcpy(attrib, r->extra, (size_t)nattrib * 4);
             break;
         case CMD_SET_RENDER_TARGETS: {
@@ -5435,7 +5442,7 @@ static void shader_list_preflight(uint64_t handle) {
                 NvnTextureView dview;
                 uint8_t has_dview;
             } *rt = r->extra;
-            if (!rt) return;
+            if (!rt) goto submit_planned;
             ncolor = (int)(r->x[0] > 8 ? 8 : r->x[0]);
             memset(color_kind, 0, sizeof color_kind);
             for (int i = 0; i < ncolor; i++) {
@@ -5455,8 +5462,22 @@ static void shader_list_preflight(uint64_t handle) {
                     vk.attr_kind[i] = (uint8_t)attr_kind(attrib[i] & 0xff);
                 for (int i = 0; i < ncolor; i++)
                     fk.rt_kind[i] = color_kind[i];
-                (void)get_program(program, &vk, &fk);
-                launched++;
+                bool already_planned = false;
+                for (unsigned i = 0; i < nplanned; i++) {
+                    if (planned[i].program == program &&
+                        !memcmp(&planned[i].vertex, &vk, sizeof vk) &&
+                        !memcmp(&planned[i].fragment, &fk, sizeof fk)) {
+                        already_planned = true;
+                        break;
+                    }
+                }
+                if (!already_planned) {
+                    if (nplanned == 32) goto submit_planned;
+                    planned[nplanned].program = program;
+                    planned[nplanned].vertex = vk;
+                    planned[nplanned].fragment = fk;
+                    nplanned++;
+                }
             }
             break;
         // State-only operations: no guest memory modifications.
@@ -5473,10 +5494,14 @@ static void shader_list_preflight(uint64_t handle) {
         case CMD_SET_COPY_STRIDES:
             break;
         default:
-            return;
+            goto submit_planned;
         }
         p += r->size;
     }
+submit_planned:
+    for (unsigned i = 0; i < nplanned; i++)
+        (void)get_program(planned[i].program,
+                          &planned[i].vertex, &planned[i].fragment);
 }
 
 // ================================================================== executor (renderer.m exec_list)
