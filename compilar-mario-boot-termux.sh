@@ -80,6 +80,7 @@ if [[ "${MARIO_AUTO_BATCH:-1}" == 1 ]]; then
     MARIO_AUTO_POINTS="$(python3 -u tools/mario_resume_batch.py \
         --game "$MARIO_GAME" --output "$MARIO_CODE" \
         --anchor main:0x8099d0 --anchor main:0x8209d0 --anchor main:0x8cfa78 --anchor main:0x95009c \
+        --anchor sdk:0x2bfbd8 --anchor sdk:0x376ac0 \
         --limit "${MARIO_AUTO_BATCH_LIMIT:-32}" \
         --budget-bytes "${MARIO_AUTO_BATCH_BYTES:-524288}" \
         --radius "${MARIO_AUTO_BATCH_RADIUS:-65536}" \
@@ -95,10 +96,10 @@ if [[ "${MARIO_AUTO_BATCH:-1}" == 1 ]]; then
 fi
 # Verified runtime dispatch gaps. Keep previously confirmed boot repair and
 # repair both new missing main-module functions without rebuilding everything.
-# The two latest failures have indirect targets in x10:
+# Recent missing indirect targets are validated as main or sdk offsets:
 #   main+0x66c48c (LR main+0x66d150)
 #   main+0x669c74 (LR main+0x6698e0)
-for MARIO_REQUIRED_ENTRY in main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384 main:0x66a0fc main:0x8099d0 main:0x8209d0 main:0x8cfa78 main:0x95009c; do
+for MARIO_REQUIRED_ENTRY in main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384 main:0x66a0fc main:0x8099d0 main:0x8209d0 main:0x8cfa78 main:0x95009c sdk:0x2bfbd8 sdk:0x376ac0; do
     if [[ " ${MARIO_RESUME_AT:-} " != *" $MARIO_REQUIRED_ENTRY "* ]]; then
         MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_REQUIRED_ENTRY"
     fi
