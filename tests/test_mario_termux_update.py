@@ -45,7 +45,8 @@ class MarioTermuxUpdate(unittest.TestCase):
                 '#!/usr/bin/env bash\nset -eu\nmkdir -p build/mario-android-boot\n'
                 'printf "simulated APK" > build/mario-android-boot/Mario-Recomp-Boot-Test.apk\n'
                 'git branch --show-current > build/built-branch\n'
-                'cp settings.txt build/built-settings\n',
+                'cp settings.txt build/built-settings\n'
+                'printf "%s" "${MARIO_RESUME_AT-}" > build/received-resume-target\n',
         }
         for name, content in fixtures.items():
             path = self.seed / name
@@ -143,6 +144,17 @@ class MarioTermuxUpdate(unittest.TestCase):
         self.verify_built(self.build())
         self.assertEqual(set(self.git(self.project, 'branch', '--format=%(refname:short)')
                              .stdout.splitlines()), {SOURCE, BRANCH})
+
+    def test_explicit_missing_guest_entry_is_forwarded_without_speculative_batch(self):
+        self.env['MARIO_RESUME_AT'] = 'main:0x65057c'
+        self.verify_built(self.build())
+        self.assertEqual((self.project / 'build/received-resume-target').read_text(),
+                         'main:0x65057c')
+
+    def test_ordinary_build_without_opt_in_has_no_resume_target(self):
+        self.env.pop('MARIO_RESUME_AT', None)
+        self.verify_built(self.build())
+        self.assertEqual((self.project / 'build/received-resume-target').read_text(), '')
 
     def test_checks_out_existing_remote_branch_when_not_local(self):
         self.verify_built(self.build())
