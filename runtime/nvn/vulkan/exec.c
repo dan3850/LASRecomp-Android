@@ -4366,7 +4366,10 @@ static void prepare_indexed_geometry(void *arg) {
     if (g->itype == 0 && g->mode <= 5) {
         // Native 8-bit index streams are widened to Vulkan's 16-bit format.
         // The worker owns the source snapshot and writes host-only output.
-        g->widened = malloc((size_t)g->count * sizeof *g->widened);
+        // vk_transient_copy below requests four extra bytes of padding.
+        // Allocate and initialize them so the CPU upload cannot read past
+        // the end of this worker-owned buffer.
+        g->widened = calloc(1, (size_t)g->count * sizeof *g->widened + 4);
         if (!g->widened) {
             build_finished(&g->state, 2);
             return;
