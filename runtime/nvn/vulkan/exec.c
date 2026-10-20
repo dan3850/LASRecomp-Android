@@ -4660,8 +4660,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
         run_job(build_pipeline, pp);
     }
     build_ready(&pp->state, "graphics pipeline");
-    if (vertex_job_started)
-        build_ready(&vertex_job.state, "vertex range preparation");
+    // Keep the CPU-only vertex range job running while we record dynamic
+    // pipeline state and assemble descriptor bindings below.
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
@@ -4742,7 +4742,14 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
             for (int i = 0; i < pr->fi->ntex; i++) {
                 NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
                 const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
-                if (b && b->tp > 0 && texpatch_is_item_cursor(b->tp - 1)) { stat_skipped++; return; }
+                if (b && b->tp > 0 && texpatch_is_item_cursor(b->tp - 1)) {
+                // This skip occurs after a stack-owned vertex job was queued.
+                // Join it before returning so workers never touch dead stack.
+                if (vertex_job_started)
+                    build_ready(&vertex_job.state, "vertex range preparation");
+                stat_skipped++;
+                return;
+            }
             }
     }
     float tint[8] = {0};
@@ -4950,6 +4957,10 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
         vkCmdBindIndexBuffer(cb, ib.buf, ib.off, itype_vk);
     }
 
+    // Join immediately before consuming the computed ranges; this overlaps
+    // geometry CPU work with the entire dynamic-state/descriptor recording.
+    if (vertex_job_started)
+        build_ready(&vertex_job.state, "vertex range preparation");
     // ---- vertex streams: the range this draw can read, copied once per submission
     // Batch contiguous changed bindings into one Vulkan call instead of
     // recording a separate vkCmdBindVertexBuffers for each stream.
