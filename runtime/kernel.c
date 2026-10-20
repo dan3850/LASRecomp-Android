@@ -665,15 +665,24 @@ int mario_native_svc_from_frame(MarioNativeSvcFrame *frame, uint32_t svc_id, uin
         return MARIO_NATIVE_SVC_NO_THREAD;
     // PC is an address in the guest module's executable range; never accept a
     // host callback or an address outside the actual guest modules.
+    if (svc_id >= 0x80 || (guest_pc & 3))
+        return MARIO_NATIVE_SVC_BAD_PC;
     bool pc_ok = false;
+    const uint32_t expected_svc = UINT32_C(0xd4000001) | (svc_id << 5);
     for (int i = 0; i < g_nmodules; ++i) {
         const Module *m = &g_modules[i];
         uint64_t start = m->base + m->text_off;
         uint64_t size = m->text_size;
-        if (guest_pc >= start && guest_pc - start < size &&
-            (guest_pc & 3) == 0) { pc_ok = true; break; }
+        // Guest PC must point to the exact original SVC instruction.
+        // This check applies before future text rewriting/branch islands.
+        if (size < sizeof(uint32_t) || guest_pc < start ||
+            guest_pc - start > size - sizeof(uint32_t))
+            continue;
+        uint32_t instruction;
+        memcpy(&instruction, (const void *)(uintptr_t)guest_pc, sizeof instruction);
+        if (instruction == expected_svc) { pc_ok = true; break; }
     }
-    if (!pc_ok || svc_id >= 0x80) return MARIO_NATIVE_SVC_BAD_PC;
+    if (!pc_ok) return MARIO_NATIVE_SVC_BAD_PC;
 
     Cpu *c = &t_cur->cpu;
     memcpy(c->x, frame->x, sizeof(frame->x));
