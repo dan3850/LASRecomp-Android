@@ -983,6 +983,18 @@ void backend_present(NvnTexture *t) {
             mario_graphics_event("backend-present", guest_presents, t != NULL);
     }
 #endif
+#ifdef LASRECOMP_MARIO_TEST
+    {
+        extern uint64_t mario_guest_draw_count(void);
+        static uint64_t last_draw_count;
+        uint64_t draws = mario_guest_draw_count();
+        if (total_frames < 3 || total_frames % 60 == 0) {
+            mario_graphics_event("draws-total", draws, (int)(draws - last_draw_count));
+            mario_graphics_event("present-frame", guest_presents, (int)g_vk.sc_count);
+        }
+        last_draw_count = draws;
+    }
+#endif
     g_last_presented = t;
     extern void vk_alias_before_present(NvnTexture *);
     vk_alias_before_present(t);
