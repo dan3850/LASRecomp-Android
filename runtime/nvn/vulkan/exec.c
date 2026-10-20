@@ -5061,7 +5061,8 @@ static void draw_(CmdRec *r, bool indexed, IndexedGeometryJob **prepared) {
             }
             uint64_t stride = k.stride[s], need;
             IndexedGeometryJob *g_range = *prepared;
-            if (g_range && scan_isz && g_range->vertex_ranges_valid &&
+            if (g_range && g_range->itype != 0 && g_range->mode <= 5 &&
+                g_range->vertex_ranges_valid &&
                 (g_range->stream_mask & (1u << s)) &&
                 g_range->stride[s] == k.stride[s] &&
                 g_range->divisor[s] == k.divisor[s] &&
