@@ -5521,8 +5521,11 @@ static void exec_list(uint64_t handle, int depth) {
             }
             ++stat_rt_sets;
             const bool old_equal = memcmp(&prev, &st.rt, sizeof prev) == 0;
-            const bool equivalent = effective_on
-                ? rt_same_effective(&prev, &st.rt) : old_equal;
+            // Most bindings are byte-identical. Only inspect active slots
+            // when raw fields differ; the disabled path stays bit-for-bit
+            // equivalent to the previous renderer.
+            const bool equivalent = old_equal ||
+                (effective_on && rt_same_effective(&prev, &st.rt));
             if (always || !equivalent) {
                 st.rt_dirty = true;
             } else if (effective_on && !old_equal) {
