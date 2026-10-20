@@ -159,13 +159,31 @@ const char *loader_symbol_at(uint64_t addr, uint64_t *offset) {
 static uint64_t resolve(Module *m, uint32_t symidx) {
     Elf64Sym *s = sym(m, symidx);
     const char *name = symname(m, s);
-    if (s->shndx) return m->base + s->value;
+    // Diagnose the real Mario startup import without changing resolution order.
+    const bool trace = !strcmp(name, "__nnmusl_init_dso");
+    if (s->shndx) {
+        uint64_t address = m->base + s->value;
+        if (trace) LOG("[mario-nnmusl] module=%s source=local target=%llx\n", m->name, (unsigned long long)address);
+        return address;
+    }
     HostFn impl = hle_lookup_impl(name);
-    if (impl) return hle_register(name, impl);  // host implementation wins over the guest SDK's
+    if (impl) {
+        uint64_t address = hle_register(name, impl);
+        if (trace) LOG("[mario-nnmusl] module=%s source=host-hle target=%llx\n", m->name, (unsigned long long)address);
+        return address;  // host implementation wins over the guest SDK's
+    }
     uint64_t a = loader_find_symbol(name);
-    if (a) return a;
-    if ((s->info >> 4) == 2) return 0;  // weak undefined
-    return hle_register(name, NULL);
+    if (a) {
+        if (trace) LOG("[mario-nnmusl] module=%s source=guest-export target=%llx\n", m->name, (unsigned long long)a);
+        return a;
+    }
+    if ((s->info >> 4) == 2) {
+        if (trace) LOG("[mario-nnmusl] module=%s source=weak-unresolved target=0\n", m->name);
+        return 0;  // weak undefined
+    }
+    uint64_t address = hle_register(name, NULL);
+    if (trace) LOG("[mario-nnmusl] module=%s source=unimplemented-stub target=%llx\n", m->name, (unsigned long long)address);
+    return address;
 }
 
 static void relocate(Module *m) {
