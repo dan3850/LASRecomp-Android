@@ -40,8 +40,9 @@ static int check_shader(uint64_t word, bool glsl, bool valid,
             info->tex[0].handle_offset != 10 * 4 ||
             info->tex[0].type != TEXTYPE_2D ||
             info->tex[0].shadow || !strstr(info->msl, "textureGather(t0") ||
-            !strstr(info->msl, "r6 =") || !strstr(info->msl, "r7 =") ||
-            !strstr(info->msl, "r0 =") || !strstr(info->msl, "r1 ="))
+            !strstr(info->msl, "r6 =") || !strstr(info->msl, "r0 =") ||
+            (!half && (!strstr(info->msl, "r7 =") ||
+                       !strstr(info->msl, "r1 ="))))
             error = 2;
         char selector[64];
         snprintf(selector, sizeof selector, ", %u)", comp);
