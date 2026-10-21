@@ -90,12 +90,66 @@ def recognize(window, nso, base):
     }
 
 
+def _writes_table_register(ins, reg):
+    """Conservatively reject a distant ADRP/ADD if its table base is clobbered."""
+    try:
+        _, written = ins.regs_access()
+        names = {ins.reg_name(r).lower() for r in written}
+    except (AttributeError, ValueError):
+        # No instruction register detail: cannot prove the distant base survives.
+        return True
+    return f"x{reg}" in names or f"w{reg}" in names
+
+
+def recognize_spaced(window, nso, base):
+    """Recognize a guarded byte-switch whose table setup predates the guard.
+
+    The final CMP/B.HI/ADR/LDRB/ADD/BR must remain contiguous. The ADRP/ADD
+    pair may appear up to 26 preceding instructions earlier, but the table
+    register must survive every intervening instruction. Require Capstone
+    register-write metadata; do not extrapolate across unknown writes.
+    """
+    if not 9 <= len(window) <= 32:
+        return None
+    c, guard, adr, load, add2, branch = window[-6:]
+    for a, b in zip(window[-6:-1], window[-5:]):
+        if a.address + 4 != b.address:
+            return None
+    if not fields(c, "cmp", rf"w{REG},#({NUM})"):
+        return None
+    if not fields(guard, "b.hi", rf"#({NUM})"):
+        return None
+    if not fields(branch, "br", rf"x{REG}"):
+        return None
+    # The two table-address instructions must be contiguous, unmodified,
+    # and earlier than the final guarded dispatch sequence.
+    for i in range(len(window) - 8, -1, -1):
+        adrp, add1 = window[i:i + 2]
+        if adrp.address + 4 != add1.address:
+            continue
+        setup = fields(adrp, "adrp", rf"x{REG},#({NUM})")
+        if not setup:
+            continue
+        result = recognize([c, guard, adrp, add1, adr, load, add2, branch],
+                           nso, base)
+        if result is None:
+            continue
+        table_reg = setup[0]
+        if any(_writes_table_register(ins, table_reg)
+               for ins in window[i + 2:-3]):
+            continue
+        result["layout"] = "spaced-table-base"
+        return result
+    return None
+
+
 def scan_switches(nso, base):
     try:
         from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
     except ImportError as e:
         raise ValueError("Capstone missing: pkg install python-capstone") from e
     disasm = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+    disasm.detail = True
     start, size = nso.text
     image = nso.image
     for offset in range(start + 28, start + size, 4):
@@ -104,9 +158,14 @@ def scan_switches(nso, base):
             continue
         beginning = offset - 28
         window = list(disasm.disasm(bytes(image[beginning:offset + 4]), base + beginning))
-        if len(window) != 8:
-            continue
-        result = recognize(window, nso, base)
+        result = recognize(window, nso, base) if len(window) == 8 else None
+        if result is None:
+            # Most addresses aren't indirect BRs; only those are examined
+            # with an extended 32-instruction window.
+            beginning = max(start, offset - 31 * 4)
+            extended = list(disasm.disasm(
+                bytes(image[beginning:offset + 4]), base + beginning))
+            result = recognize_spaced(extended, nso, base)
         if result:
             yield result
 
