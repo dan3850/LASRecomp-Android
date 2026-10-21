@@ -5,12 +5,21 @@ from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from mario_static_switches import recognize, blocks_for_targets, select_census, select_global_census, valid_selection_mode
+from mario_static_switches import (recognize, recognize_spaced, blocks_for_targets,
+                                  select_census, select_global_census, valid_selection_mode)
 
 
 class Insn:
     def __init__(self, address, mnemonic, op_str):
         self.address, self.mnemonic, self.op_str = address, mnemonic, op_str
+
+    def regs_access(self):
+        if self.mnemonic in ("cmp", "b.hi", "bl", "tbz", "br"):
+            return (), ()
+        return (), (self.op_str.split(",")[0].strip(),)
+
+    def reg_name(self, register):
+        return register
 
 
 class TestMarioStaticSwitch(unittest.TestCase):
@@ -40,6 +49,55 @@ class TestMarioStaticSwitch(unittest.TestCase):
         self.assertEqual(found["table_rva"], 0x1010)
         self.assertEqual(found["cases"], 5)
         self.assertEqual(found["targets"], (0x40, 0x48, 0x58, 0x68, 0x88))
+
+    def test_spaced_guarded_switch_observed_mario_layout(self):
+        # Reproduces main+0x9b6d60..0x9b6d98: ADRP/ADD x26 precedes
+        # several loads, a BL, a TBZ, and the guarded BR x10.
+        seq = [
+            ("adrp", "x26, #0x7000001000"),
+            ("add", "x26, x26, #0x10"),
+            ("ldr", "x0, [x20, #0x20]"),
+            ("bl", "#0x7000000150"),
+            ("tbz", "w0, #0, #0x7000000090"),
+            ("add", "w9, w8, w23"),
+            ("cmp", "w9, #4"),
+            ("b.hi", "#0x7000000090"),
+            ("adr", "x10, #0x7000000040"),
+            ("ldrb", "w11, [x26, x9]"),
+            ("add", "x10, x10, x11, lsl #2"),
+            ("br", "x10"),
+        ]
+        code = [Insn(self.base + 4*i, m, operands)
+                for i, (m, operands) in enumerate(seq)]
+        self.assertIsNone(recognize(code[-8:], self.nso, self.base))
+        found = recognize_spaced(code, self.nso, self.base)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["layout"], "spaced-table-base")
+        self.assertEqual(found["branch_rva"], 0x2c)
+        self.assertEqual(found["cases"], 5)
+        self.assertEqual(found["targets"], (0x40, 0x48, 0x58, 0x68, 0x88))
+
+    def test_spaced_guarded_switch_refuses_clobbered_table_base(self):
+        seq = [
+            ("adrp", "x26, #0x7000001000"),
+            ("add", "x26, x26, #0x10"),
+            ("mov", "x26, x0"),  # invalidates saved table base
+            ("bl", "#0x7000000150"),
+            ("tbz", "w0, #0, #0x7000000090"),
+            ("add", "w9, w8, w23"),
+            ("cmp", "w9, #4"),
+            ("b.hi", "#0x7000000090"),
+            ("adr", "x10, #0x7000000040"),
+            ("ldrb", "w11, [x26, x9]"),
+            ("add", "x10, x10, x11, lsl #2"),
+            ("br", "x10"),
+        ]
+        code = [Insn(self.base + 4*i, m, operands)
+                for i, (m, operands) in enumerate(seq)]
+        self.assertIsNone(recognize_spaced(code, self.nso, self.base))
+        code[2] = Insn(self.base + 8, "ldr", "x0, [x20]")
+        code[7] = Insn(self.base + 28, "b.lo", "#0x7000000090")
+        self.assertIsNone(recognize_spaced(code, self.nso, self.base))
 
     def test_rejects_wrong_register_or_missing_guard(self):
         for index, name, arg in [
