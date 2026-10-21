@@ -5,7 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from mario_static_switches import (recognize, recognize_spaced, blocks_for_targets,
+from mario_static_switches import (recognize, recognize_spaced, recognize_masked_guarded,
+                                  blocks_for_targets,
                                   select_census, select_global_census, valid_selection_mode)
 
 
@@ -14,6 +15,8 @@ class Insn:
         self.address, self.mnemonic, self.op_str = address, mnemonic, op_str
 
     def regs_access(self):
+        if self.mnemonic == "adds":
+            return (), ("w0", "nzcv")
         if self.mnemonic in ("cmp", "b.hi", "bl", "tbz", "br"):
             return (), ()
         return (), (self.op_str.split(",")[0].strip(),)
@@ -49,6 +52,60 @@ class TestMarioStaticSwitch(unittest.TestCase):
         self.assertEqual(found["table_rva"], 0x1010)
         self.assertEqual(found["cases"], 5)
         self.assertEqual(found["targets"], (0x40, 0x48, 0x58, 0x68, 0x88))
+
+    def masked_fixture(self):
+        # main+0x8ad25c..0x8ad288, rebased to synthetic fixture addresses.
+        self.img[0x1030:0x1034] = bytes([0, 2, 10, 26])
+        asm = [
+            ("cmp", "w26, #3"),
+            ("strb", "wzr, [x8, #0x464]"),
+            ("b.hi", "#0x70000000f0"),
+            ("and", "x10, x26, #0xffffffff"),
+            ("adrp", "x13, #0x7000001000"),
+            ("add", "x13, x13, #0x30"),
+            ("adr", "x12, #0x7000000040"),
+            ("ldrb", "w11, [x13, x10]"),
+            ("add", "x12, x12, x11, lsl #2"),
+            ("ldr", "x11, [sp, #0x48]"),
+            ("mov", "w9, #1"),
+            ("br", "x12"),
+        ]
+        return [Insn(self.base + i * 4, mnemonic, operands)
+                for i, (mnemonic, operands) in enumerate(asm)]
+
+    def test_masked_guarded_real_mario_jump_table(self):
+        code = self.masked_fixture()
+        self.assertIsNone(recognize_spaced(code, self.nso, self.base))
+        result = recognize_masked_guarded(code, self.nso, self.base)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["layout"], "masked-index-spaced-br")
+        self.assertEqual(result["branch_rva"], 0x2c)
+        self.assertEqual(result["table_rva"], 0x1030)
+        self.assertEqual(result["targets"], (0x40, 0x48, 0x68, 0xa8))
+        self.assertIn(0xa8, result["targets"])
+
+    def test_masked_guarded_rejects_invalid_register_and_branch(self):
+        for index, mnemonic, operands in [
+            (2, "b.lo", "#0x70000000f0"),
+            (3, "and", "x10, x27, #0xffffffff"),
+            (7, "ldrb", "w11, [x13, x9]"),
+            (8, "add", "x12, x12, x11, lsl #3"),
+            (10, "mov", "x12, x0"),
+            (11, "br", "x14"),
+        ]:
+            with self.subTest(index=index, mnemonic=mnemonic):
+                code = self.masked_fixture()
+                code[index] = Insn(code[index].address, mnemonic, operands)
+                self.assertIsNone(recognize_masked_guarded(code, self.nso, self.base))
+
+    def test_masked_guarded_rejects_flag_change_or_out_of_text(self):
+        code = self.masked_fixture()
+        # A flag-setting instruction between CMP and B.HI invalidates guard.
+        code[1] = Insn(code[1].address, "adds", "w0, w0, #1")
+        self.assertIsNone(recognize_masked_guarded(code, self.nso, self.base))
+        code = self.masked_fixture()
+        self.img[0x1033] = 0xff
+        self.assertIsNone(recognize_masked_guarded(code, self.nso, self.base))
 
     def test_spaced_guarded_switch_observed_mario_layout(self):
         # Reproduces main+0x9b6d60..0x9b6d98: ADRP/ADD x26 precedes
