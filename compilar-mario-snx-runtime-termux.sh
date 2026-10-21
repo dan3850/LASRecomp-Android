@@ -72,15 +72,14 @@ export LASRECOMP_MANIFEST="$ROOT/android/mario/AndroidManifest.xml"
 export LASRECOMP_APK_FILENAME=Mario-SNX-Runtime-BOOT.apk
 export LASRECOMP_DOWNLOAD_FOLDER=MarioRecomp
 export LASRECOMP_GAME_SO="$CODE/libmario_test.so"
-echo "===== COMPILANDO APP ANDROID COM CACHES PRESERVADOS ====="
-bash compilar-lasrecomp-termux.sh
-[ -s "$OUT/unsigned.apk" ] || die "APK base nao produzido"
-
+echo "===== PREPARANDO BIBLIOTECAS SCARLETNX ANTES DO APK ====="
 EXTRA="$OUT/snx-stage"
 rm -rf "$EXTRA"
 mkdir -p "$EXTRA/lib/arm64-v8a" "$EXTRA/assets/licenses"
 SNLIB="$EXTRA/lib/arm64-v8a"
-MAINLIB="$OUT/stage/lib/arm64-v8a"
+# Cross-check against the previous LASRecomp test's native library names.
+# That stage is NOT modified; the freshly compiled stage is made afterwards.
+MAINLIB="$BASE/stage/lib/arm64-v8a"
 unzip -p "$SNX_APK" lib/arm64-v8a/libscarletnx.so > "$SNLIB/libscarletnx.so"
 [ -s "$SNLIB/libscarletnx.so" ] || die "Falha ao extrair runtime"
 llvm-nm -D --defined-only "$SNLIB/libscarletnx.so" | grep -Eq '[[:space:]]main$' ||
@@ -101,11 +100,11 @@ while IFS= read -r member; do
   unzip -p "$SNX_APK" "$member" > "$temp"
   [ -s "$temp" ] || die "Nao extraiu $name"
   dest="$name"
-  if [ -s "$MAINLIB/$name" ]; then
-    if cmp -s "$temp" "$MAINLIB/$name"; then continue; fi
-    dest="libsnx_$(printf %s "$name" | cut -c4-)"
-    printf '%s %s\n' "$name" "$dest" >> "$MAP"
-  fi
+  # Separate process, but the Android linker namespace is still shared by
+  # nativeLibraryDir. Rename original ScarletNX dependencies to prevent
+  # collisions with the app's SDL, libc++ and runtime .so files.
+  dest="libsnx_$(printf %s "$name" | cut -c4-)"
+  printf '%s %s\n' "$name" "$dest" >> "$MAP"
   cp "$temp" "$SNLIB/$dest"
   printf '%s\n' "$SNLIB/$dest" >> "$COPIED"
   if [ "$dest" != "$name" ]; then
@@ -146,37 +145,31 @@ while IFS= read -r elf; do
   done < <(llvm-readelf -d "$elf" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
 done < "$COPIED"
 
-UNSIGNED="$OUT/snx-runtime-unsigned.apk"
-cp "$OUT/unsigned.apk" "$UNSIGNED"
-(cd "$EXTRA" && zip -q -0 -r "$UNSIGNED" lib && zip -q -r "$UNSIGNED" assets)
-unzip -Z1 "$UNSIGNED" | grep -Fx 'lib/arm64-v8a/libscarletnx.so' >/dev/null ||
-  die "ScarletNX nao entrou no APK"
-
-ANDROID_HOME="$(printenv ANDROID_HOME || true)"
-[ -n "$ANDROID_HOME" ] || ANDROID_HOME="$HOME/android-sdk"
-[ -d "$ANDROID_HOME/build-tools" ] || ANDROID_HOME="$HOME/android-sdk"
-APKSIGNER="$(command -v apksigner || true)"
-APKSIGNER_JAR=""
-if [ -z "$APKSIGNER" ]; then
-  APKSIGNER_JAR="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner.jar 2>/dev/null | sort -V | tail -1)"
-  [ -s "$APKSIGNER_JAR" ] || die "Apksigner ausente"
-fi
-signer() {
-  if [ -n "$APKSIGNER" ]; then "$APKSIGNER" "$@"
-  else java -jar "$APKSIGNER_JAR" "$@"; fi
-}
-KEYSTORE="$(printenv LASRECOMP_KEYSTORE || true)"
-[ -n "$KEYSTORE" ] || KEYSTORE="$HOME/.lasrecomp-android-debug.keystore"
-[ -s "$KEYSTORE" ] || die "Keystore ausente"
+# Add all native libraries to the normal Android app's JNI staging BEFORE
+# the APK is assembled and signed, not to an already-built ZIP. Android's
+# package manager will see these as normal nativeLibraryDir entries.
+export LASRECOMP_SNX_STAGE_LIB_DIR="$SNLIB"
+export LASRECOMP_SNX_STAGE_LICENSE_DIR="$EXTRA/assets/licenses"
+echo "===== COMPILANDO E ASSINANDO APK COM SCARLETNX INTEGRADO ====="
+bash compilar-lasrecomp-termux.sh
 APK="$OUT/Mario-SNX-Runtime-BOOT.apk"
-signer sign --ks "$KEYSTORE" --ks-key-alias androiddebugkey \
-  --ks-pass pass:android --key-pass pass:android --out "$APK" "$UNSIGNED"
-signer verify "$APK"
+[ -s "$APK" ] || die "APK final nao foi produzido"
+
+# The main build script already verified and signed the completed archive;
+# this second verification ensures the file delivered to Downloads is correct.
+python3 - "$APK" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for n in ["lib/arm64-v8a/libscarletnx.so", "lib/arm64-v8a/libmario_snx.so"]:
+        f = z.getinfo(n)
+        print("BIBLIOTECA INSTALAVEL:", n, f.file_size, "bytes")
+        if f.file_size < 100000:
+            raise SystemExit("ERRO: arquivo nativo pequeno ou ausente: " + n)
+PY
 mkdir -p /storage/emulated/0/Download/MarioRecomp
-cp "$APK" /storage/emulated/0/Download/MarioRecomp/Mario-SNX-Runtime-BOOT.apk
-echo "===== CONCLUIDO ====="
+cp -f "$APK" /storage/emulated/0/Download/MarioRecomp/Mario-SNX-Runtime-BOOT.apk
+echo "===== APK SNX PRONTO ====="
 echo "APK: /storage/emulated/0/Download/MarioRecomp/Mario-SNX-Runtime-BOOT.apk"
-echo "Abrir Mario SNX Runtime TESTE > Selecionar pasta Super-extraido"
-echo "Executar Mario pelo runtime ScarletNX (experimental)"
-echo "Este primeiro teste copia ExeFS, mas ainda NAO a RomFS de varios GB."
-echo "Voltar ao app: Ver ultimo log / Salvar log."
+echo "Tela: Mario SNX Runtime — diagnóstico 3"
+echo "Botao: INICIAR MARIO — CPU ScarletNX"
+echo "Se nao abrir, use Salvar log. O log identifica a biblioteca ausente."
