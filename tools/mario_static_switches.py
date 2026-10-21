@@ -227,7 +227,7 @@ def main():
     if not (1 <= args.max_blocks <= 64 and 128 <= args.budget_bytes <= 1048576
             and 16 <= args.max_block_bytes <= 262144
             and (args.anchor is None or (args.anchor >= 0 and args.anchor % 4 == 0))
-            and (args.all_verified != (args.anchor is not None))):
+            and (args.all_verified == (args.anchor is not None))):
         ap.error("invalid planning bounds")
     output = args.output.resolve()
     if (output / "resume-transaction").exists():
