@@ -80,8 +80,16 @@ SNLIB="$EXTRA/lib/arm64-v8a"
 # Cross-check against the previous LASRecomp test's native library names.
 # That stage is NOT modified; the freshly compiled stage is made afterwards.
 MAINLIB="$BASE/stage/lib/arm64-v8a"
-unzip -p "$SNX_APK" lib/arm64-v8a/libscarletnx.so > "$SNLIB/libscarletnx.so"
-[ -s "$SNLIB/libscarletnx.so" ] || die "Falha ao extrair runtime"
+# The original APK runtime cannot graft an external RomFS directory.
+# Explicitly require a rebuilt ScarletNX with tools/patch_scarletnx_romfs.py;
+# fail instead of delivering another APK with the known FS_TREE_INVALID error.
+SNX_PATCHED_RUNTIME="${SCARLETNX_PATCHED_RUNTIME_SO:-$HOME/scarletnx-romfs-build/libscarletnx.so}"
+[ -s "$SNX_PATCHED_RUNTIME" ] ||
+  die "Runtime ScarletNX com suporte RomFS ainda nao compilado: $SNX_PATCHED_RUNTIME. Veja tools/patch_scarletnx_romfs.py."
+cp -L "$SNX_PATCHED_RUNTIME" "$SNLIB/libscarletnx.so"
+grep -aF 'SNX_EXTERNAL_ROMFS' "$SNLIB/libscarletnx.so" >/dev/null ||
+  die "Runtime sem patch SNX_EXTERNAL_ROMFS; compilacao interrompida para evitar FS_TREE_INVALID"
+echo "SCARLETNX: runtime com graft externo confirmado"
 # Do not use grep -q here: with "set -o pipefail" and a big symbol
 # table, an early grep match may SIGPIPE llvm-nm and incorrectly fail the build.
 # Save the whole table once and check it AFTER llvm-nm has exited normally.
