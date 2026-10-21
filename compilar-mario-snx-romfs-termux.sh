@@ -211,16 +211,22 @@ fi
 echo "CXX_PROBE_OK: link nativo Android arm64 concluido"
 
 
-# ScarletNX statically includes a getauxval() implementation that must
-# remain callable internally, but exporting it can interpose libc's
-# getauxval used by dynamically linked Termux libffi during constructors.
-# Hide just that symbol in the shared runtime's .dynsym; keep all existing
-# game/SDL entry points exported. Do not alter system libraries.
+# The Termux/NDK hybrid runtime contains private libc functions (including
+# IFUNC strcmp and getauxval). Exporting them globally lets Android's
+# libc++_shared and other APK libraries accidentally bind to ScarletNX.
+# Export only the entry points needed by SDL's Java JNI and the launcher.
+# Internal symbols stay usable within ScarletNX; nothing under $PREFIX is changed.
 SYMBOL_MAP="$BASE/scarletnx-android-symbols.map"
 cat > "$SYMBOL_MAP" <<'MAP'
 {
-  global: *;
-  local: getauxval; memset; memcpy; memmove;
+  global:
+    main;
+    SDL_main;
+    JNI_OnLoad;
+    JNI_OnUnload;
+    Java_*;
+    SDL_*;
+  local: *;
 };
 MAP
 # Force only the runtime entry object/relink when the version script
@@ -268,11 +274,45 @@ RUNTIME="$BUILD/src/nx/libscarletnx.so"
 [ -s "$RUNTIME" ] || RUNTIME="$(find "$BUILD" -name libscarletnx.so -type f -print -quit)"
 [ -s "$RUNTIME" ] || die "Compilacao terminou mas libscarletnx.so nao encontrada"
 
-# Ensure the Android libc implementations cannot be interposed by our runtime.
-if llvm-nm -D --defined-only "$RUNTIME" | grep -E '[[:space:]](getauxval|memset|memcpy|memmove)$' >/dev/null; then
+# Check the exported dynamic symbols, not the full static symbol table.
+# In particular, libc++ must not bind its locale/IFUNC operations to ScarletNX.
+SYMBOL_EXPORTS="$BASE/scarletnx-dynamic-exports.txt"
+llvm-nm -D --defined-only "$RUNTIME" > "$SYMBOL_EXPORTS" ||
+  die "Falha ao inspecionar as exportacoes ELF do ScarletNX"
+for required in main JNI_OnLoad; do
+  grep -E "[[:space:]]${required}$" "$SYMBOL_EXPORTS" >/dev/null ||
+    die "Entrada publica obrigatoria do ScarletNX ausente: $required"
+done
+if grep -E '[[:space:]](getauxval|strcmp|newlocale|memset|memcpy|memmove)
+
+grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
+  die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
+
+cp "$RUNTIME" "$OUT"
+echo "===== SCARLETNX MODIFICADO PRONTO ====="
+ls -lh "$OUT"
+echo "===== COMPILANDO APK MARIO ====="
+cd "$ROOT"
+export SCARLETNX_PATCHED_RUNTIME_SO="$OUT"
+bash compilar-mario-snx-runtime-termux.sh
+ "$SYMBOL_EXPORTS" >/dev/null; then
+  grep -E '[[:space:]](getauxval|strcmp|newlocale|memset|memcpy|memmove)
+
+grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
+  die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
+
+cp "$RUNTIME" "$OUT"
+echo "===== SCARLETNX MODIFICADO PRONTO ====="
+ls -lh "$OUT"
+echo "===== COMPILANDO APK MARIO ====="
+cd "$ROOT"
+export SCARLETNX_PATCHED_RUNTIME_SO="$OUT"
+bash compilar-mario-snx-runtime-termux.sh
+ "$SYMBOL_EXPORTS" >&2
   die "Simbolos libc ainda exportados pelo ScarletNX; interrompendo APK"
 fi
 echo "SCARLETNX_LIBC_INTERPOSITION_GUARD: OK"
+echo "SCARLETNX_EXPORT_ALLOWLIST: OK"
 
 grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
   die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
