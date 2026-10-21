@@ -43,21 +43,20 @@ def clustered_cases(branches, *, lo, hi, spread=0x800, minimum=4):
     result = {}
     for join, source_sites in sorted(by_join.items()):
         sites = sorted(set(source_sites))
-        groups = []
-        segment = []
-        for site in sites:
-            if segment and site - segment[-1] > spread:
-                groups.append(segment)
-                segment = []
-            segment.append(site)
-        if segment:
-            groups.append(segment)
-        for group in groups:
-            if len(group) < minimum or group[-1] - group[0] > spread:
+        # Sliding windows avoid dropping a dense local switch merely because
+        # more jumps to the same join exist farther away in a large routine.
+        right = 0
+        for left, site in enumerate(sites):
+            if right < left:
+                right = left
+            while right < len(sites) and sites[right] - site <= spread:
+                right += 1
+            if right - left < minimum:
                 continue
-            for site in group:
-                candidate = site + 4
-                result.setdefault(candidate, (join, tuple(group)))
+            group = tuple(sites[left:right])
+            for source in group:
+                candidate = source + 4
+                result.setdefault(candidate, (join, group))
     return result
 
 
