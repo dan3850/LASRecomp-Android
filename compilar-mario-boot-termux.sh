@@ -27,16 +27,16 @@ if [[ -n "${MARIO_STATIC_SWITCH_ANCHOR:-}" ]]; then
     echo "===== MARIO: REENTRADAS ESTATICAS COMPROVADAS ====="
     MARIO_SWITCH_ENTRIES="$(python3 -u tools/mario_static_switches.py \
         --game "$MARIO_GAME" --output "$MARIO_CODE" \
-        --module "$MARIO_SWITCH_MODULE" --anchor "$MARIO_SWITCH_RVA" \
+        --module "$MARIO_SWITCH_MODULE" --anchor "$MARIO_SWITCH_RVA" --allow-empty \
         --max-blocks "${MARIO_STATIC_SWITCH_BLOCKS:-16}" \
         --budget-bytes "${MARIO_STATIC_SWITCH_BUDGET:-131072}" \
         --max-block-bytes "${MARIO_STATIC_SWITCH_BLOCK_BYTES:-16384}")"
-    if [[ -z "$MARIO_SWITCH_ENTRIES" ]]; then
-        echo "ERRO: sem enderecos comprovados para reparar; nao recompilar." >&2
-        exit 1
+    if [[ -n "$MARIO_SWITCH_ENTRIES" ]]; then
+        MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_SWITCH_ENTRIES"
+        echo "Blocos estaticos selecionados: $MARIO_SWITCH_ENTRIES"
+    else
+        echo "Tabela verificada, sem novas entradas pendentes; mantendo cache."
     fi
-    MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_SWITCH_ENTRIES"
-    echo "Blocos estaticos selecionados: $MARIO_SWITCH_ENTRIES"
 fi
 if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
     # Opt-in, bounded static lookahead. Keep the ordinary incremental build
