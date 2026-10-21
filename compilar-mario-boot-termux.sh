@@ -93,7 +93,35 @@ fi
 # Automatic coverage from verified ADRP/ADD/ADR/LDRB/BR jump tables.
 # Unlike crash-address batches, these targets are recovered from the original
 # NSO's read-only tables, bounded as whole owning functions before repair.
-if [[ "${MARIO_VERIFIED_SWITCHES:-1}" == 1 ]]; then
+if [[ "${MARIO_VERIFIED_SWITCHES:-1}" == full ]]; then
+    # Explicit exhaustive census: reject incomplete plans BEFORE any generated
+    # code or linked library is modified. Both modules must pass. One
+    # transactional resume repair below then updates only affected C chunks.
+    # Do not enable this as the default: a comprehensive repair is larger
+    # than the legacy limited per-APK selection.
+    echo "===== MARIO: COBERTURA ESTRUTURAL DE TODAS AS TABELAS COMPROVADAS ====="
+    python3 tests/test_mario_static_switches.py
+    python3 -c 'import capstone' >/dev/null 2>&1 || {
+        echo "ERRO: modo full exige python-capstone; nada sera recompilado." >&2
+        exit 1
+    }
+    for MARIO_SWITCH_NAME in main sdk; do
+        echo "===== PLANEJAMENTO ESTRITO (SOMENTE LEITURA): $MARIO_SWITCH_NAME ====="
+        MARIO_VERIFIED_POINTS="$(python3 -u tools/mario_static_switches.py \
+            --game "$MARIO_GAME" --output "$MARIO_CODE" \
+            --module "$MARIO_SWITCH_NAME" --all-verified --require-complete \
+            --max-blocks "${MARIO_VERIFIED_SWITCH_BLOCKS:-256}" \
+            --budget-bytes "${MARIO_VERIFIED_SWITCH_BYTES:-1048576}" \
+            --max-block-bytes "${MARIO_VERIFIED_SWITCH_BLOCK_BYTES:-65536}")"
+        if [[ -n "$MARIO_VERIFIED_POINTS" ]]; then
+            MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_VERIFIED_POINTS"
+            read -r -a MARIO_SWITCH_PLAN <<< "$MARIO_VERIFIED_POINTS"
+            echo "Plano completo $MARIO_SWITCH_NAME: ${#MARIO_SWITCH_PLAN[@]} blocos validados."
+        else
+            echo "Plano completo $MARIO_SWITCH_NAME: nenhum destino pendente."
+        fi
+    done
+elif [[ "${MARIO_VERIFIED_SWITCHES:-1}" == 1 ]]; then
     echo "===== MARIO: TABELAS DE SALTO VERIFICADAS (GLOBAL) ====="
     python3 tests/test_mario_static_switches.py
     if python3 -c 'import capstone' >/dev/null 2>&1; then
