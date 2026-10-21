@@ -70,6 +70,30 @@ if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
     MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_BATCH_POINTS"
     echo "Reentradas selecionadas: $MARIO_BATCH_POINTS"
 fi
+# Automatic coverage from verified ADRP/ADD/ADR/LDRB/BR jump tables.
+# Unlike crash-address batches, these targets are recovered from the original
+# NSO's read-only tables, bounded as whole owning functions before repair.
+if [[ "${MARIO_VERIFIED_SWITCHES:-1}" == 1 ]]; then
+    echo "===== MARIO: TABELAS DE SALTO VERIFICADAS (GLOBAL) ====="
+    python3 tests/test_mario_static_switches.py
+    if python3 -c 'import capstone' >/dev/null 2>&1; then
+        for MARIO_SWITCH_NAME in main sdk; do
+            MARIO_VERIFIED_POINTS="$(python3 -u tools/mario_static_switches.py \
+                --game "$MARIO_GAME" --output "$MARIO_CODE" \
+                --module "$MARIO_SWITCH_NAME" --all-verified \
+                --max-blocks "${MARIO_VERIFIED_SWITCH_BLOCKS:-16}" \
+                --budget-bytes "${MARIO_VERIFIED_SWITCH_BYTES:-131072}" \
+                --max-block-bytes "${MARIO_VERIFIED_SWITCH_BLOCK_BYTES:-16384}")"
+            if [[ -n "$MARIO_VERIFIED_POINTS" ]]; then
+                MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_VERIFIED_POINTS"
+                echo "Tabelas verificadas $MARIO_SWITCH_NAME: $MARIO_VERIFIED_POINTS"
+            fi
+        done
+    else
+        echo "AVISO: python-capstone indisponivel; varredura de tabelas ignorada."
+        echo "Para habilitar depois: pkg install python-capstone"
+    fi
+fi
 # The post-Start transition has repeatedly branched into neighbouring main
 # functions through the same callsite region. Handle BOTH observed destinations
 # and their nearby owners before the generic cross-module batch can exhaust its
