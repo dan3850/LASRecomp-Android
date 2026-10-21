@@ -652,6 +652,15 @@ if [[ -n "${LASRECOMP_SNX_STAGE_LIB_DIR:-}" ]]; then
  done
  [[ -s "$LIBDIR/libscarletnx.so" && -s "$LIBDIR/libmario_snx.so" ]] ||
   fail "Faltam runtime ou modulo Mario SNX no staging"
+ # Normalize native Termux LLVM's Linux zlib SONAME to Android's
+ # platform libz.so, just like the base runtime earlier in this script.
+ for snx_so in "$LASRECOMP_SNX_STAGE_LIB_DIR"/*.so; do
+  dest="$LIBDIR/$(basename "$snx_so")"
+  if llvm-readelf -d "$dest" | grep -F 'Shared library: [libz.so.1]' >/dev/null; then
+   patchelf --replace-needed libz.so.1 libz.so "$dest"
+   echo "SNX zlib Android: $(basename "$dest") libz.so.1 -> libz.so"
+  fi
+ done
  for snx_so in "$LASRECOMP_SNX_STAGE_LIB_DIR"/*.so; do
   dest="$LIBDIR/$(basename "$snx_so")"
   while IFS= read -r dep; do
