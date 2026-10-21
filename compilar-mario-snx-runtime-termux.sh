@@ -165,6 +165,31 @@ done < "$COPIED"
 # package manager will see these as normal nativeLibraryDir entries.
 export LASRECOMP_SNX_STAGE_LIB_DIR="$SNLIB"
 export LASRECOMP_SNX_STAGE_LICENSE_DIR="$EXTRA/assets/licenses"
+
+# Android crash identified: ScarletNX's SDL 3.4.18 JNI_OnLoad requires
+# SDLActivity.nativeSetupJNI()V. The LASRecomp-pinned SDL 3.2.22 Java declares
+# nativeSetupJNI()I and aborts ART during System.loadLibrary(scarletnx).
+# Fetch ONLY the pinned upstream SDL Java sources into a separate cache.
+# Do not switch or clean the LASRecomp SDL 3.2.22 checkout/native build.
+SDL_SOURCES="${LASRECOMP_CACHE:-$HOME/.cache/lasrecomp-termux}/src/sdl3"
+SDL_VERSION=release-3.4.18
+SDL_JAVA_CACHE="$CACHE/sdl-$SDL_VERSION"
+SDL_JAVA="$SDL_JAVA_CACHE/android-project/app/src/main/java"
+if [ ! -s "$SDL_JAVA/org/libsdl/app/SDLActivity.java" ]; then
+  [ -d "$SDL_SOURCES/.git" ] || die "Checkout do SDL do LASRecomp ausente: $SDL_SOURCES"
+  echo "===== OBTENDO APENAS SDL JAVA COMPATIVEL COM SCARLETNX ($SDL_VERSION) ====="
+  git -C "$SDL_SOURCES" fetch -q --depth 1 origin \
+    "refs/tags/$SDL_VERSION:refs/tags/$SDL_VERSION" ||
+    die "Nao foi possivel obter as classes Java SDL $SDL_VERSION"
+  mkdir -p "$SDL_JAVA_CACHE"
+  git -C "$SDL_SOURCES" archive "$SDL_VERSION" android-project/app/src/main/java |
+    tar -xf - -C "$SDL_JAVA_CACHE" ||
+    die "Nao foi possivel extrair as classes Java SDL $SDL_VERSION"
+fi
+grep -F 'native void nativeSetupJNI()' "$SDL_JAVA/org/libsdl/app/SDLActivity.java" >/dev/null ||
+  die "A classe SDLActivity nao corresponde ao runtime ScarletNX"
+export LASRECOMP_SNX_SDL_JAVA_DIR="$SDL_JAVA"
+echo "SCARLETNX JNI: SDLActivity.nativeSetupJNI()V compatível"
 echo "===== COMPILANDO E ASSINANDO APK COM SCARLETNX INTEGRADO ====="
 bash compilar-lasrecomp-termux.sh
 APK="$OUT/Mario-SNX-Runtime-BOOT.apk"
