@@ -63,7 +63,7 @@ todos os saltos indiretos possíveis do executável.
 
 ```bash
 MARIO_VERIFIED_SWITCHES=full \
-MARIO_STATIC_SWITCH_BLOCK_BYTES=65536 \
+MARIO_VERIFIED_SWITCH_BLOCK_BYTES=65536 \
 bash ./compilar-mario-boot-termux.sh
 ```
 
