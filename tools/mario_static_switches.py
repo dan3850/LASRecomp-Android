@@ -403,7 +403,7 @@ def select_global_census(tables, planned, base, max_blocks, byte_budget, max_blo
     unregistered target of that table behind. Owners already registered
     need no repair. Favor tables with fewer missing bytes first.
     """
-    if not (1 <= max_blocks <= 64 and 128 <= byte_budget <= 1048576
+    if not (1 <= max_blocks <= 256 and 128 <= byte_budget <= 1048576
             and 16 <= max_block_bytes <= 262144):
         raise ValueError("invalid global census limits")
     selected = set()
@@ -447,7 +447,7 @@ def main():
     ap.add_argument("--budget-bytes", type=int, default=131072)
     ap.add_argument("--max-block-bytes", type=int, default=16384)
     args = ap.parse_args()
-    if not (1 <= args.max_blocks <= 64 and 128 <= args.budget_bytes <= 1048576
+    if not (1 <= args.max_blocks <= 256 and 128 <= args.budget_bytes <= 1048576
             and 16 <= args.max_block_bytes <= 262144
             and (args.anchor is None or (args.anchor >= 0 and args.anchor % 4 == 0))
             and valid_selection_mode(args.all_verified, args.anchor)):
@@ -493,8 +493,21 @@ def main():
               f"cases={observed['cases']} table_rva=0x{observed['table_rva']:x} "
               f"observed_target=0x{args.anchor:x}", file=sys.stderr)
     else:
-        print(f"[mario-static-switch] verified-global selected_owners={len(chosen)}",
+        selected_owners = {block["owner"] for block in chosen}
+        selected_bytes = sum(block["bytes"] for block in chosen)
+        selected_targets = {pc for owner in selected_owners
+                            for pc in blocks[owner]["targets"]}
+        missing_targets = set(base + x for x in all_targets) - set(entries)
+        print(f"[mario-static-switch] verified-global selected_owners={len(chosen)} "
+              f"selected_bytes={selected_bytes} "
+              f"selected_case_targets={len(selected_targets)} "
+              f"pending_case_targets={len(missing_targets)} "
+              f"unselected_case_targets={len(missing_targets - selected_targets)}",
               file=sys.stderr)
+        if missing_targets - selected_targets:
+            print("[mario-static-switch] WARNING: some verified-table targets "
+                  "exceed the requested block/byte budget; do not treat this "
+                  "as complete jump-table coverage", file=sys.stderr)
     for block in chosen:
         print(f"[mario-static-switch] patch_owner=0x{block['owner']:x} "
               f"bytes={block['bytes']} targets={len(block['targets'])}",
