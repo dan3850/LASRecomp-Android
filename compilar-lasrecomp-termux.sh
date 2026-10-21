@@ -154,6 +154,18 @@ SDL_SO="$(find "$WORK/sdl3" -name libSDL3.so -type f -print -quit)"
 [[ -s "$SDL_SO" ]] || fail "SDL3 nao gerou libSDL3.so"
 SDL_HEADERS="$DEPS/sdl3/include"
 SDL_JAVA="$DEPS/sdl3/android-project/app/src/main/java"
+# The standalone ScarletNX ABI-12 runtime embeds SDL 3.4.18 while LASRecomp
+# uses SDL 3.2.22. JNI_OnLoad registers exact Java method signatures. Never
+# package SDL 3.2.22 Java against the newer ScarletNX native runtime.
+if [[ -n "${LASRECOMP_SNX_SDL_JAVA_DIR:-}" ]]; then
+ [[ -s "$LASRECOMP_SNX_SDL_JAVA_DIR/org/libsdl/app/SDLActivity.java" ]] ||
+  fail "ScarletNX SDL Java ausente: $LASRECOMP_SNX_SDL_JAVA_DIR"
+ grep -F 'native void nativeSetupJNI()' \
+  "$LASRECOMP_SNX_SDL_JAVA_DIR/org/libsdl/app/SDLActivity.java" >/dev/null ||
+  fail "JNI ScarletNX requer SDLActivity.nativeSetupJNI()V"
+ SDL_JAVA="$LASRECOMP_SNX_SDL_JAVA_DIR"
+ echo "SCARLETNX JNI: usando classes SDL 3.4.18 (nao SDL 3.2.22)"
+fi
 step "Shaderc — compila do fonte"
 python3 - "$DEPS/shaderc" <<'PY'
 from pathlib import Path
