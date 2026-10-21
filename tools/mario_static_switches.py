@@ -143,6 +143,133 @@ def recognize_spaced(window, nso, base):
     return None
 
 
+
+def _writes_flags(ins):
+    """Fail closed if a candidate instruction may overwrite CMP condition flags."""
+    try:
+        _, written = ins.regs_access()
+        return "nzcv" in {ins.reg_name(r).lower() for r in written}
+    except Exception:
+        return True
+
+
+def recognize_masked_guarded(window, nso, base):
+    """Verify Mario's masked-index byte table with a spaced BR tail.
+
+    Observed layout:
+      CMP W26,#3; STRB; B.HI; AND X10,X26,#0xffffffff;
+      ADRP/ADD X13; ADR X12; LDRB W11,[X13,X10];
+      ADD X12,X12,W11,LSL#2; LDR X11; MOV W9; BR X12.
+
+    Decode table bytes from the original read-only NSO, never guess
+    destinations. The two instructions after the scaled ADD are allowed
+    only if they do not clobber its computed branch register.
+    """
+    if not 10 <= len(window) <= 32:
+        return None
+    branch = window[-1]
+    branch_args = fields(branch, "br", rf"x{REG}")
+    if not branch_args:
+        return None
+    target_reg = branch_args[0]
+    start, size = nso.text
+    ro, ro_size = nso.rodata
+    for add_idx in range(max(7, len(window) - 4), len(window) - 1):
+        add_args = fields(window[add_idx], "add",
+                          rf"x{REG},x{REG},x{REG},lsl#2")
+        if not add_args or add_args[0] != target_reg or add_args[1] != target_reg:
+            continue
+        byte_reg = add_args[2]
+        # Apart from neutral register updates, nothing may replace Xtarget
+        # between the scaled destination computation and BR.
+        if any(_writes_table_register(ins, target_reg)
+               for ins in window[add_idx + 1:-1]):
+            continue
+
+        adr_idx, load_idx = add_idx - 2, add_idx - 1
+        table_page_idx, table_add_idx = add_idx - 4, add_idx - 3
+        index_idx, guard_idx = add_idx - 5, add_idx - 6
+        if guard_idx < 2:
+            continue
+        adr_args = fields(window[adr_idx], "adr", rf"x{REG},#({NUM})")
+        load_args = fields(window[load_idx], "ldrb",
+                           rf"w{REG},\[x{REG},x{REG}\]")
+        page_args = fields(window[table_page_idx], "adrp",
+                           rf"x{REG},#({NUM})")
+        table_args = fields(window[table_add_idx], "add",
+                            rf"x{REG},x{REG},#({NUM})")
+        index_args = fields(window[index_idx], "and",
+                            rf"x{REG},x{REG},#0xffffffff")
+        guard_args = fields(window[guard_idx], "b.hi", rf"#({NUM})")
+        if not all((adr_args, load_args, page_args, table_args,
+                    index_args, guard_args)):
+            continue
+        table_reg = page_args[0]
+        index_reg, source_reg = index_args
+        if (adr_args[0] != target_reg or
+                load_args != (byte_reg, table_reg, index_reg) or
+                table_args[0] != table_reg or table_args[1] != table_reg):
+            continue
+        if _number(guard_args[0]) <= branch.address:
+            continue
+
+        # The compare is allowed to precede B.HI by a few flag-neutral
+        # instructions, such as the observed STRB. Do not infer a guard
+        # when NZCV or its source register has changed.
+        for cmp_idx in range(guard_idx - 1, max(-1, guard_idx - 4), -1):
+            cmp_args = fields(window[cmp_idx], "cmp", rf"w{REG},#({NUM})")
+            if not cmp_args or cmp_args[0] != source_reg:
+                continue
+            limit = _number(cmp_args[1])
+            if limit > 63:
+                continue
+            if any(_writes_flags(ins) or
+                   _writes_table_register(ins, source_reg)
+                   for ins in window[cmp_idx + 1:guard_idx]):
+                continue
+            if any(_writes_table_register(ins, source_reg)
+                   for ins in window[guard_idx:index_idx]):
+                continue
+            if any(_writes_table_register(ins, index_reg)
+                   for ins in window[index_idx + 1:load_idx]):
+                continue
+            if any(_writes_table_register(ins, table_reg)
+                   for ins in window[table_add_idx + 1:load_idx]):
+                continue
+            if any(_writes_table_register(ins, target_reg)
+                   for ins in window[adr_idx + 1:add_idx]):
+                continue
+            if any(_writes_table_register(ins, byte_reg)
+                   for ins in window[load_idx + 1:add_idx]):
+                continue
+
+            table_rva = (_number(page_args[1]) +
+                         _number(table_args[2]) - base)
+            target_base_rva = _number(adr_args[1]) - base
+            count = limit + 1
+            if not (ro <= table_rva and
+                    table_rva + count <= ro + ro_size):
+                continue
+            raw = nso.image[table_rva:table_rva + count]
+            if len(raw) != count:
+                continue
+            targets = tuple(sorted({target_base_rva + value * 4
+                                    for value in raw}))
+            if any((target & 3) or
+                   not start <= target < start + size
+                   for target in targets):
+                continue
+            return {
+                "branch_rva": branch.address - base,
+                "table_rva": table_rva,
+                "target_base_rva": target_base_rva,
+                "targets": targets,
+                "cases": count,
+                "layout": "masked-index-spaced-br",
+            }
+    return None
+
+
 def scan_switches(nso, base):
     try:
         from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
@@ -166,6 +293,8 @@ def scan_switches(nso, base):
             extended = list(disasm.disasm(
                 bytes(image[beginning:offset + 4]), base + beginning))
             result = recognize_spaced(extended, nso, base)
+            if result is None:
+                result = recognize_masked_guarded(extended, nso, base)
         if result:
             yield result
 
