@@ -267,25 +267,16 @@ cmake --build "$BUILD" --target scarletnx --parallel "$JOBS"
 RUNTIME="$BUILD/src/nx/libscarletnx.so"
 [ -s "$RUNTIME" ] || RUNTIME="$(find "$BUILD" -name libscarletnx.so -type f -print -quit)"
 [ -s "$RUNTIME" ] || die "Compilacao terminou mas libscarletnx.so nao encontrada"
-# Verify the actual ELF dynamic exports. The local implementation of
-# getauxval may remain in the full symbol table, but must not interpose
-# Android libc's getauxval used by libffi.
-if llvm-nm -D --defined-only "$RUNTIME" | grep -E '[[:space:]](getauxval|memset|memcpy|memmove)
-grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
-  die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
-cp "$RUNTIME" "$OUT"
-echo "===== SCARLETNX MODIFICADO PRONTO ====="
-ls -lh "$OUT"
-echo "===== COMPILANDO APK MARIO ====="
-cd "$ROOT"
-export SCARLETNX_PATCHED_RUNTIME_SO="$OUT"
-bash compilar-mario-snx-runtime-termux.sh
- >/dev/null; then
-  die "Simbolos libc indevidamente exportados pelo ScarletNX (getauxval/memset/memcpy/memmove)"
+
+# Ensure the Android libc implementations cannot be interposed by our runtime.
+if llvm-nm -D --defined-only "$RUNTIME" | grep -E '[[:space:]](getauxval|memset|memcpy|memmove)$' >/dev/null; then
+  die "Simbolos libc ainda exportados pelo ScarletNX; interrompendo APK"
 fi
 echo "SCARLETNX_LIBC_INTERPOSITION_GUARD: OK"
+
 grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
   die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
+
 cp "$RUNTIME" "$OUT"
 echo "===== SCARLETNX MODIFICADO PRONTO ====="
 ls -lh "$OUT"
