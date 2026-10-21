@@ -1,20 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.retroaura.mario.snxprobe">
+    package="com.retroaura.mario.snxruntime">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <application android:label="Mario ScarletNX TESTE" android:hasCode="true"
+    <application android:label="Mario SNX Runtime TESTE" android:hasCode="true"
         android:allowBackup="false" android:extractNativeLibs="true">
         <activity android:name="com.retroaura.lasrecomp.MarioBootActivity"
-            android:label="Mario ScarletNX TESTE" android:exported="true"
+            android:label="Mario SNX Runtime TESTE" android:exported="true"
             android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Separate process prevents ScarletNX SDL/Horizon CPU from sharing LASRecomp global state. -->
+        <activity android:name="com.retroaura.lasrecomp.MarioSnxGameActivity"
+            android:label="Mario SNX Runtime TESTE"
+            android:process=":snx"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|layoutDirection|locale|fontScale" />
         <activity android:name="com.retroaura.lasrecomp.GameSDLActivity"
-            android:label="Mario ScarletNX TESTE" android:exported="false"
+            android:label="Mario SNX Runtime TESTE" android:exported="false"
             android:hardwareAccelerated="true" android:screenOrientation="sensorLandscape"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|layoutDirection|locale|fontScale" />
     </application>
