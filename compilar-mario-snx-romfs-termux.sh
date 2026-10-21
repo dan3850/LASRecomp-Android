@@ -263,18 +263,10 @@ cmake --build "$BUILD" --target scarletnx --parallel "$JOBS"
 RUNTIME="$BUILD/src/nx/libscarletnx.so"
 [ -s "$RUNTIME" ] || RUNTIME="$(find "$BUILD" -name libscarletnx.so -type f -print -quit)"
 [ -s "$RUNTIME" ] || die "Compilacao terminou mas libscarletnx.so nao encontrada"
-# Verify the fix on the actual runtime dynamic symbol table, not the
-# unstripped symtab (which may still contain a LOCAL implementation).
-if llvm-nm -D --defined-only "$RUNTIME" | grep -E '[[:space:]]getauxval
-  die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
-cp "$RUNTIME" "$OUT"
-echo "===== SCARLETNX MODIFICADO PRONTO ====="
-ls -lh "$OUT"
-echo "===== COMPILANDO APK MARIO ====="
-cd "$ROOT"
-export SCARLETNX_PATCHED_RUNTIME_SO="$OUT"
-bash compilar-mario-snx-runtime-termux.sh
- >/dev/null; then
+# Verify the actual ELF dynamic exports. The local implementation of
+# getauxval may remain in the full symbol table, but must not interpose
+# Android libc's getauxval used by libffi.
+if llvm-nm -D --defined-only "$RUNTIME" | grep -E '[[:space:]]getauxval$' >/dev/null; then
   die "getauxval continua exportado pelo ScarletNX: nao empacotar runtime com interposicao"
 fi
 echo "SCARLETNX_GETAUXVAL_NOT_EXPORTED: OK"
