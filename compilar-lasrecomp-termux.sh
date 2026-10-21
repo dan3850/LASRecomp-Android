@@ -648,7 +648,7 @@ if [[ -n "${LASRECOMP_SNX_STAGE_LIB_DIR:-}" ]]; then
     libc.so|libm.so|libdl.so|liblog.so|libandroid.so|libz.so|libvulkan.so|libEGL.so|libGLESv1_CM.so|libGLESv2.so|libGLESv3.so|libOpenSLES.so|libaaudio.so|libmediandk.so|libjnigraphics.so|libstdc++.so) continue;;
    esac
    fail "Dependencia Android SNX ausente: $(basename "$dest") -> $dep"
-  done < <(llvm-readelf -d "$dest" | sed -n 's/.*(NEEDED).*Shared library: \\[\\([^]]*\\)\\].*/\\1/p')
+  done < <(llvm-readelf -d "$dest" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
  done
  if [[ -d "${LASRECOMP_SNX_STAGE_LICENSE_DIR:-}" ]]; then
   cp -L "$LASRECOMP_SNX_STAGE_LICENSE_DIR"/* "$STAGE/assets/licenses/"
