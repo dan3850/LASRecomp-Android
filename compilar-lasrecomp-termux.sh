@@ -625,6 +625,35 @@ for so in "$LIBDIR"/*.so; do
   fail "Dependencia Android ausente: $(basename "$so") -> $dep"
  done < <(llvm-readelf -d "$so" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
 done
+# Optional private ScarletNX libraries are injected into the SAME standard APK
+# staging tree, before aapt2/zipalign/signing. The old post-sign custom ZIP
+# injection could pass zip listing yet not appear in Android nativeLibraryDir.
+if [[ -n "${LASRECOMP_SNX_STAGE_LIB_DIR:-}" ]]; then
+ [[ -d "$LASRECOMP_SNX_STAGE_LIB_DIR" ]] || fail "Pasta de bibliotecas SNX ausente"
+ echo "===== MARIO SNX: EMPACOTAMENTO NATIVO INTEGRADO ====="
+ for snx_so in "$LASRECOMP_SNX_STAGE_LIB_DIR"/*.so; do
+  [[ -s "$snx_so" ]] || fail "Biblioteca SNX inexistente: $snx_so"
+  dest="$LIBDIR/$(basename "$snx_so")"
+  [[ ! -e "$dest" ]] || fail "Conflito de nome no APK: $(basename "$snx_so")"
+  cp -L "$snx_so" "$dest"
+  is_arm64_so "$dest" || fail "Modulo SNX nao e ELF ARM64: $dest"
+ done
+ [[ -s "$LIBDIR/libscarletnx.so" && -s "$LIBDIR/libmario_snx.so" ]] ||
+  fail "Faltam runtime ou modulo Mario SNX no staging"
+ for snx_so in "$LASRECOMP_SNX_STAGE_LIB_DIR"/*.so; do
+  dest="$LIBDIR/$(basename "$snx_so")"
+  while IFS= read -r dep; do
+   [[ -z "$dep" || -s "$LIBDIR/$dep" ]] && continue
+   case "$dep" in
+    libc.so|libm.so|libdl.so|liblog.so|libandroid.so|libz.so|libvulkan.so|libEGL.so|libGLESv1_CM.so|libGLESv2.so|libGLESv3.so|libOpenSLES.so|libaaudio.so|libmediandk.so|libjnigraphics.so|libstdc++.so) continue;;
+   esac
+   fail "Dependencia Android SNX ausente: $(basename "$dest") -> $dep"
+  done < <(llvm-readelf -d "$dest" | sed -n 's/.*(NEEDED).*Shared library: \\[\\([^]]*\\)\\].*/\\1/p')
+ done
+ if [[ -d "${LASRECOMP_SNX_STAGE_LICENSE_DIR:-}" ]]; then
+  cp -L "$LASRECOMP_SNX_STAGE_LICENSE_DIR"/* "$STAGE/assets/licenses/"
+ fi
+fi
 APK="$OUT/$APK_FILENAME"
 rm -f -- "$OUT/unsigned.apk" "$OUT/aligned.apk" "$APK"
 if [[ "$NEO_ENABLE" == 1 ]]; then
@@ -651,6 +680,20 @@ fi
 ${APKSIGNER_CMD} sign --ks "$KEYSTORE" --ks-key-alias androiddebugkey \
  --ks-pass pass:android --key-pass pass:android --out "$APK" "$OUT/aligned.apk"
 ${APKSIGNER_CMD} verify "$APK"
+if [[ -n "${LASRECOMP_SNX_STAGE_LIB_DIR:-}" ]]; then
+ python3 - "$APK" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as apk:
+    for name in ("lib/arm64-v8a/libscarletnx.so", "lib/arm64-v8a/libmario_snx.so"):
+        info = apk.getinfo(name)
+        assert info.file_size > 100000, f"{name}: unexpectedly small"
+        print("SNX VERIFIED IN SIGNED APK:", name, "bytes=", info.file_size)
+        # Do not read a 102MB AOT blob into RAM; CRC-check in streaming chunks.
+        with apk.open(info) as src:
+            while src.read(1024 * 1024):
+                pass
+PY
+fi
 # BEGIN LICENSE_ASSET_PACKAGING
 # A signed APK must actually contain the legal notices and the full GPL text.
 python3 - "$APK" "$NEO_ENABLE" <<'PY'
