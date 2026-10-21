@@ -99,7 +99,7 @@ class TestMarioStaticSwitch(unittest.TestCase):
         ]
         planned = blocks_for_targets((0x48, 0x88), rows, base, base + 0x100)
         # Only the small single-owner table fits: no incomplete 2-owner table.
-        picked = select_global_census(tables, planned, base, 1, 0x40, 0x40)
+        picked = select_global_census(tables, planned, base, 1, 0x80, 0x40)
         self.assertEqual([b["owner"] for b in picked], [base + 0x40])
         picked = select_global_census(tables, planned, base, 2, 0x80, 0x40)
         self.assertEqual([b["owner"] for b in picked],
