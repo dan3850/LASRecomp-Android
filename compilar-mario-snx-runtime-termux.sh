@@ -155,6 +155,46 @@ Nintendo game dumps, extracted data, or Nintendo-derived generated code.
 Distributing GPL-covered binaries requires corresponding source and compliance.
 NOTICE
 
+# Termux LLVM is built as a shared ARM64 library. Unlike the
+# upstream APK's statically linked LLVM, this newly rebuilt ScarletNX
+# needs libLLVM.so at runtime. Include it and any non-platform shared
+# dependencies from the Termux prefix before validating the APK closure.
+# Never overwrite already staged SDL/ScarletNX libraries or platform libs.
+echo "===== COMPLETANDO DEPENDENCIAS LLVM ARM64 ====="
+SYSTEM_LIBS=' libc.so libm.so libdl.so liblog.so libandroid.so libz.so libvulkan.so libEGL.so libGLESv1_CM.so libGLESv2.so libGLESv3.so libOpenSLES.so libaaudio.so libmediandk.so libjnigraphics.so libstdc++.so '
+for dep in $(llvm-readelf -d "$SNLIB/libscarletnx.so" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p'); do
+  case "$dep" in
+    libLLVM.so|libLLVM-*.so)
+      candidate="$PREFIX/lib/$dep"
+      [ -s "$candidate" ] || die "LLVM compartilhado requerido mas ausente: $candidate (confira ls -l $PREFIX/lib/libLLVM*)"
+      cp -L "$candidate" "$SNLIB/$dep"
+      printf '%s\n' "$SNLIB/$dep" >> "$COPIED"
+      echo "LLVM empacotado: $dep"
+      ;;
+  esac
+done
+# Iteratively resolve the native dependency graph. All additions are
+# verified ELF dependencies, never an indiscriminate copy of Termux libs.
+index=1
+while :; do
+  count="$(wc -l < "$COPIED")"
+  [ "$index" -le "$count" ] || break
+  [ "$index" -le 128 ] || die "Mais de 128 bibliotecas na cadeia de dependencias; interrompendo"
+  elf="$(sed -n "${index}p" "$COPIED")"
+  while IFS= read -r dep; do
+    [ -n "$dep" ] || continue
+    [ -s "$SNLIB/$dep" ] && continue
+    [ -s "$MAINLIB/$dep" ] && continue
+    case "$SYSTEM_LIBS" in *" $dep "*) continue;; esac
+    candidate="$PREFIX/lib/$dep"
+    [ -s "$candidate" ] || continue
+    cp -L "$candidate" "$SNLIB/$dep"
+    printf '%s\n' "$SNLIB/$dep" >> "$COPIED"
+    echo "Dependencia Termux empacotada: $dep"
+  done < <(llvm-readelf -d "$elf" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
+  index=$((index + 1))
+done
+
 # Native dependencies must be present in the final APK or Android system.
 while IFS= read -r elf; do
   while IFS= read -r dep; do
