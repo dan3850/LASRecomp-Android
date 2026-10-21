@@ -173,8 +173,10 @@ for dep in $(llvm-readelf -d "$SNLIB/libscarletnx.so" | sed -n 's/.*(NEEDED).*Sh
       ;;
   esac
 done
-# Iteratively resolve the native dependency graph. All additions are
-# verified ELF dependencies, never an indiscriminate copy of Termux libs.
+# Resolve all ELF dependencies recursively, including versioned Termux SONAMEs.
+# Android APK native libraries need a .so filename. Rename versioned
+# libraries privately and rewrite their NEEDED references accordingly.
+# Keep the original files in $PREFIX untouched.
 index=1
 while :; do
   count="$(wc -l < "$COPIED")"
@@ -183,15 +185,38 @@ while :; do
   elf="$(sed -n "${index}p" "$COPIED")"
   while IFS= read -r dep; do
     [ -n "$dep" ] || continue
+    if [ "$dep" = libz.so.1 ]; then
+      patchelf --replace-needed libz.so.1 libz.so "$elf"
+      echo "SNX Android zlib: $(basename "$elf") libz.so.1 -> libz.so"
+      continue
+    fi
     [ -s "$SNLIB/$dep" ] && continue
     [ -s "$MAINLIB/$dep" ] && continue
     case "$SYSTEM_LIBS" in *" $dep "*) continue;; esac
     candidate="$PREFIX/lib/$dep"
     [ -s "$candidate" ] || continue
-    cp -L "$candidate" "$SNLIB/$dep"
-    printf '%s\n' "$SNLIB/$dep" >> "$COPIED"
-    echo "Dependencia Termux empacotada: $dep"
-  done < <(llvm-readelf -d "$elf" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
+    dest="$dep"
+    case "$dep" in
+      *.so.[0-9]*)
+        # e.g. libzstd.so.1 => libsnx_termux_zstd.so
+        stem="${dep#lib}"
+        stem="${stem%%.so.*}"
+        dest="libsnx_termux_${stem}.so"
+        [ -s "$SNLIB/$dest" ] || {
+          cp -L "$candidate" "$SNLIB/$dest"
+          patchelf --set-soname "$dest" "$SNLIB/$dest"
+          printf '%s\n' "$SNLIB/$dest" >> "$COPIED"
+          echo "Dependencia versionada: $dep -> $dest"
+        }
+        patchelf --replace-needed "$dep" "$dest" "$elf"
+        ;;
+      *)
+        cp -L "$candidate" "$SNLIB/$dest"
+        printf '%s\n' "$SNLIB/$dest" >> "$COPIED"
+        echo "Dependencia Termux empacotada: $dep"
+        ;;
+    esac
+  done < <(llvm-readelf -d "$elf" | sed -n 's/.*(NEEDED).*Shared library: \\[\\([^]]*\\)\\].*/\\1/p')
   index=$((index + 1))
 done
 
