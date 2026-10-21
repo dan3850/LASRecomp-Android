@@ -35,6 +35,16 @@ class MarioCaseClusterTests(unittest.TestCase):
         self.assertEqual(join, self.join)
         self.assertEqual(len(sources), len(self.sites))
 
+    def test_long_shared_join_keeps_dense_local_windows(self):
+        sites = [self.base + x for x in
+                 (0x20, 0x40, 0x60, 0x80, 0xa0, 0xc0, 0xe0, 0x100, 0x120)]
+        cases = clustered_cases(
+            [(pc, self.join) for pc in sites],
+            lo=self.base, hi=self.base + 0x1000,
+            spread=0x80, minimum=4)
+        self.assertIn(self.base + 0xa4, cases)
+        self.assertIn(self.base + 0x124, cases)
+
     def test_picks_entire_owner_with_budget_and_neighbor_cases(self):
         cases = clustered_cases(
             [(pc, self.join) for pc in self.sites],
