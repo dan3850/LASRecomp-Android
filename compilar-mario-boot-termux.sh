@@ -100,6 +100,12 @@ if [[ "${MARIO_VERIFIED_SWITCHES:-1}" == full ]]; then
     # Do not enable this as the default: a comprehensive repair is larger
     # than the legacy limited per-APK selection.
     echo "===== MARIO: COBERTURA ESTRUTURAL DE TODAS AS TABELAS COMPROVADAS ====="
+    # In full mode, do not silently add the old heuristic scene/next/third/
+    # auto batches. Users can explicitly opt them back in for experiments.
+    : "${MARIO_SCENE_BATCH:=0}"
+    : "${MARIO_NEXT_BATCH:=0}"
+    : "${MARIO_THIRD_BATCH:=0}"
+    : "${MARIO_AUTO_BATCH:=0}"
     python3 tests/test_mario_static_switches.py
     python3 -c 'import capstone' >/dev/null 2>&1 || {
         echo "ERRO: modo full exige python-capstone; nada sera recompilado." >&2
