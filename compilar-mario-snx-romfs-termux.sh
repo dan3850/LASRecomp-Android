@@ -19,7 +19,12 @@ BUILD="$BASE/android-arm64-build"
 LLVM_PREFIX="${SCARLETNX_LLVM_PREFIX:-$PREFIX}"
 OUT="$HOME/scarletnx-romfs-build/libscarletnx.so"
 COMMIT=34853eeae5af132e320adbb0193f13344085bf89
-JOBS="${SCARLETNX_BUILD_JOBS:-4}"
+# Android may kill Termux when independent ExternalProject jobs fan out.
+# Propagate a conservative limit to OpenSSL, FFmpeg and Ninja alike.
+JOBS="${SCARLETNX_BUILD_JOBS:-2}"
+export CMAKE_BUILD_PARALLEL_LEVEL="$JOBS"
+export MAKEFLAGS="-j$JOBS"
+echo "TERMUX_BUILD_PARALLELISM: $JOBS (including OpenSSL and FFmpeg)"
 
 # The current NDK is already used by the project's existing Termux builds.
 if [ -z "${ANDROID_NDK_ROOT:-}" ]; then
