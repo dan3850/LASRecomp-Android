@@ -65,6 +65,13 @@ public final class MarioSnxGameActivity extends SDLActivity {
             stage("SDL_ENV_FAILED: " + error);
             return new String[]{"--settings"};
         }
+        String externalRomfs = getIntent().getStringExtra("snx_romfs_source");
+        if (externalRomfs != null && new File(externalRomfs).isDirectory()) {
+            SDLActivity.nativeSetenv("SNX_EXTERNAL_ROMFS", externalRomfs);
+            stage("SDL_ROMFS_ENV_READY: " + externalRomfs);
+        } else {
+            stage("SDL_ROMFS_MISSING: " + externalRomfs);
+        }
         String base = getIntent().getStringExtra("snx_game_base");
         if (base == null || base.isEmpty()) {
             stage("SDL_GET_ARGUMENTS: missing game path, refusing to run");
