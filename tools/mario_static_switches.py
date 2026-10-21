@@ -179,19 +179,55 @@ def select_census(tables, planned, base, anchor, max_blocks, byte_budget, max_bl
     return [planned[owner] for owner in sorted(used)], priority
 
 
+
+def select_global_census(tables, planned, base, max_blocks, byte_budget, max_block_bytes):
+    """Select only complete, statically verified tables within a strict budget.
+
+    Individual tables are atomic: never claim coverage while leaving an
+    unregistered target of that table behind. Owners already registered
+    need no repair. Favor tables with fewer missing bytes first.
+    """
+    if not (1 <= max_blocks <= 64 and 128 <= byte_budget <= 1048576
+            and 16 <= max_block_bytes <= 262144):
+        raise ValueError("invalid global census limits")
+    selected = set()
+    used = 0
+    candidates = []
+    for table in tables:
+        owners = {
+            owner for owner, block in planned.items()
+            if any(base + target in block["targets"] for target in table["targets"])
+        }
+        candidates.append((sum(planned[o]["bytes"] for o in owners),
+                           table["branch_rva"], owners))
+    for _, _, owners in sorted(candidates, key=lambda x: (x[0], x[1])):
+        new = owners - selected
+        if not new or any(planned[o]["bytes"] > max_block_bytes for o in new):
+            continue
+        extra = sum(planned[o]["bytes"] for o in new)
+        if len(selected) + len(new) > max_blocks or used + extra > byte_budget:
+            continue
+        selected.update(new)
+        used += extra
+    return [planned[owner] for owner in sorted(selected)]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--game", type=Path, required=True)
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--module", choices=("main", "sdk"), default="main")
-    ap.add_argument("--anchor", type=lambda x: int(x, 0), required=True)
+    ap.add_argument("--anchor", type=lambda x: int(x, 0))
+    ap.add_argument("--all-verified", action="store_true",
+                    help="select whole verified jump tables without a crash address")
     ap.add_argument("--max-blocks", type=int, default=16)
     ap.add_argument("--budget-bytes", type=int, default=131072)
     ap.add_argument("--max-block-bytes", type=int, default=16384)
     args = ap.parse_args()
     if not (1 <= args.max_blocks <= 64 and 128 <= args.budget_bytes <= 1048576
-            and 16 <= args.max_block_bytes <= 262144 and args.anchor >= 0
-            and args.anchor % 4 == 0):
+            and 16 <= args.max_block_bytes <= 262144
+            and (args.anchor is None or (args.anchor >= 0 and args.anchor % 4 == 0))
+            and (args.all_verified != (args.anchor is not None))):
         ap.error("invalid planning bounds")
     output = args.output.resolve()
     if (output / "resume-transaction").exists():
@@ -218,20 +254,32 @@ def main():
     all_targets = [t for table in tables for t in table["targets"]]
     blocks = blocks_for_targets(all_targets, rows, base,
                                 base + nso.text[0] + nso.text[1])
-    chosen, observed = select_census(tables, blocks, base, args.anchor,
-                                     args.max_blocks, args.budget_bytes,
-                                     args.max_block_bytes)
+    if args.all_verified:
+        chosen = select_global_census(tables, blocks, base, args.max_blocks,
+                                      args.budget_bytes, args.max_block_bytes)
+        observed = None
+    else:
+        chosen, observed = select_census(tables, blocks, base, args.anchor,
+                                         args.max_blocks, args.budget_bytes,
+                                         args.max_block_bytes)
     print(f"[mario-static-switch] verified_tables={len(tables)} "
           f"missing_case_targets={len(set(base + x for x in all_targets) - set(entries))} "
           f"pending_owners={len(blocks)}", file=sys.stderr)
-    print(f"[mario-static-switch] observed_br={args.module}+0x{observed['branch_rva']:x} "
-          f"cases={observed['cases']} table_rva=0x{observed['table_rva']:x} "
-          f"observed_target=0x{args.anchor:x}", file=sys.stderr)
+    if observed is not None:
+        print(f"[mario-static-switch] observed_br={args.module}+0x{observed['branch_rva']:x} "
+              f"cases={observed['cases']} table_rva=0x{observed['table_rva']:x} "
+              f"observed_target=0x{args.anchor:x}", file=sys.stderr)
+    else:
+        print(f"[mario-static-switch] verified-global selected_owners={len(chosen)}",
+              file=sys.stderr)
     for block in chosen:
         print(f"[mario-static-switch] patch_owner=0x{block['owner']:x} "
               f"bytes={block['bytes']} targets={len(block['targets'])}",
               file=sys.stderr)
     if not chosen:
+        if args.all_verified:
+            print("[mario-static-switch] no pending verified owners", file=sys.stderr)
+            return
         raise ValueError("recognized switch has no missing entries: no rebuild needed")
     # Repair one anchor in each owner: transactional repair exposes *all*
     # instruction addresses inside that owner's function, not just the anchor.
