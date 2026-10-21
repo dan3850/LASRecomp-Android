@@ -18,6 +18,80 @@
 #include <jni.h>
 #include <SDL3/SDL_system.h>
 
+/*
+ * Standalone ScarletNX AOT module load probe. The generated libmario_snx.so
+ * is a user-provided ARM64 artifact, packaged only into the user's APK.
+ * This deliberately NEVER runs guest code: SNX_ABI 12 requires the ScarletNX
+ * CPU/memory/RTAPI state, which LASRecomp's CPU is not compatible with.
+ */
+typedef struct {
+    uint32_t abi, nmods;
+    const void *mods;
+    uint32_t nentries;
+    const uint64_t *entry_addr;
+    const void *const *entry_fn;
+    void *interp;
+    uint64_t code_lo, code_hi;
+    const char *title;
+    uint64_t title_id;
+    uint32_t main_stack, main_prio, main_core;
+} MarioSnxModule;
+
+typedef const MarioSnxModule *(*MarioSnxModuleFn)(void);
+
+JNIEXPORT jstring JNICALL
+Java_com_retroaura_lasrecomp_MarioBootActivity_nativeProbeScarletNx(JNIEnv *env, jclass cls) {
+    (void)cls;
+    char output[1400];
+    output[0] = '\0';
+    dlerror();
+    void *library = dlopen("libmario_snx.so", RTLD_NOW | RTLD_LOCAL);
+    if (!library) {
+        const char *error = dlerror();
+        snprintf(output, sizeof output, "SNX LOAD FAILED: %s",
+                 error ? error : "Android linker returned no details");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", output);
+        return (*env)->NewStringUTF(env, output);
+    }
+    MarioSnxModuleFn entry = (MarioSnxModuleFn)dlsym(library, "snx_module");
+    if (!entry) {
+        snprintf(output, sizeof output, "SNX LOAD OK; snx_module missing: %s",
+                 dlerror() ? "dlsym failed" : "symbol absent");
+    } else {
+        const MarioSnxModule *m = entry();
+        if (!m) {
+            snprintf(output, sizeof output, "SNX LOAD OK; snx_module returned NULL");
+        } else if (m->abi != 12) {
+            snprintf(output, sizeof output, "SNX LOAD OK; ABI mismatch: %u (expected 12)",
+                     (unsigned)m->abi);
+        } else if (m->nmods == 0 || m->nmods > 16 || m->nentries == 0 ||
+                   m->nentries > 10000000 || !m->entry_addr || !m->entry_fn ||
+                   m->code_lo >= m->code_hi) {
+            snprintf(output, sizeof output,
+                     "SNX LOAD OK, ABI 12; invalid descriptor: modules=%u entries=%u "
+                     "code=%#llx-%#llx", (unsigned)m->nmods, (unsigned)m->nentries,
+                     (unsigned long long)m->code_lo, (unsigned long long)m->code_hi);
+        } else {
+            uint64_t first = m->entry_addr[0], last = m->entry_addr[m->nentries - 1];
+            snprintf(output, sizeof output,
+                "SNX LIBRARY LOADED IN MARIO APK: OK\n"
+                "ABI: %u\nModules: %u\nCompiled entry addresses: %u\n"
+                "Code range: 0x%llx .. 0x%llx\n"
+                "First/last entry: 0x%llx / 0x%llx\n"
+                "Title ID: 0x%llx\n"
+                "This verifies loading and metadata only. Guest execution is NOT enabled "
+                "without a ScarletNX-compatible runtime.",
+                (unsigned)m->abi, (unsigned)m->nmods, (unsigned)m->nentries,
+                (unsigned long long)m->code_lo, (unsigned long long)m->code_hi,
+                (unsigned long long)first, (unsigned long long)last,
+                (unsigned long long)m->title_id);
+        }
+    }
+    SDL_Log("%s", output);
+    dlclose(library);
+    return (*env)->NewStringUTF(env, output);
+}
+
 static void boot_mark(const char *files, const char *stage, int value);
 typedef int (*GraphicsCaptureRequest)(void);
 static _Atomic(GraphicsCaptureRequest) graphics_capture_request;
