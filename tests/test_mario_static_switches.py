@@ -7,7 +7,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from mario_static_switches import (recognize, recognize_spaced, recognize_masked_guarded,
                                   recognize_guarded_mov_tail, blocks_for_targets,
-                                  select_census, select_global_census, valid_selection_mode)
+                                  select_census, select_global_census,
+                                  missing_census_targets, valid_selection_mode)
 
 
 class Insn:
@@ -256,6 +257,48 @@ class TestMarioStaticSwitch(unittest.TestCase):
         self.assertTrue(valid_selection_mode(False, 0x48))
         self.assertFalse(valid_selection_mode(True, 0x48))
         self.assertFalse(valid_selection_mode(False, None))
+
+    def test_full_census_counts_all_original_table_destinations(self):
+        base = self.base
+        rows = {
+            base + 0x40: f"f_{base + 0x40:x}",
+            base + 0x80: f"f_{base + 0x80:x}",
+            base + 0xc0: f"f_{base + 0xc0:x}",
+        }
+        tables = [
+            {"branch_rva": 0x1c, "targets": (0x48, 0x88)},
+            {"branch_rva": 0x2c, "targets": (0x48, 0x50)},
+        ]
+        planned = blocks_for_targets((0x48, 0x50, 0x88), rows, base,
+                                     base + 0x100)
+        selected = select_global_census(tables, planned, base, 1, 128, 64)
+        self.assertEqual([block["owner"] for block in selected],
+                         [base + 0x40])
+        self.assertEqual(
+            missing_census_targets(tables, planned, base, rows, selected),
+            {base + 0x88})
+        full = select_global_census(tables, planned, base, 2, 128, 64)
+        self.assertEqual(len(full), 2)
+        self.assertEqual(
+            missing_census_targets(tables, planned, base, rows, full), set())
+
+    def test_full_census_respects_already_registered_interior_cases(self):
+        base = self.base
+        rows = {
+            base + 0x40: f"f_{base + 0x40:x}",
+            base + 0x80: f"f_{base + 0x80:x}",
+            base + 0x48: f"mario_resume_{base + 0x40:x}",
+        }
+        tables = [{"branch_rva": 0x1c, "targets": (0x48, 0x88)}]
+        planned = blocks_for_targets((0x48, 0x88), rows, base,
+                                     base + 0xc0)
+        selected = select_global_census(tables, planned, base, 1, 128, 64)
+        self.assertEqual([b["owner"] for b in selected], [base + 0x80])
+        self.assertEqual(
+            missing_census_targets(tables, planned, base, rows, selected), set())
+        self.assertEqual(
+            missing_census_targets(tables, planned, base, rows, []),
+            {base + 0x88})
 
     def test_global_census_only_selects_complete_verified_tables(self):
         base = self.base
