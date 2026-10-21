@@ -70,6 +70,27 @@ done
 [ -n "$NDK_CXX" ] || die "libc++_shared.so ausente. Confira o NDK/Termux; nao crie biblioteca vazia."
 echo "C++ runtime: $NDK_CXX"
 LINK_FLAGS="-L$(dirname "$NDK_CXX") -L$PREFIX/lib"
+# The NDK toolchain injects -static-libstdc++ when linking. Its implicit
+# -lc++_shared resolution fails on the native Termux wrapper even with -L.
+# Tell Clang not to add a second implicit C++ runtime and link the exact
+# already-validated ARM64 .so file via the CMake standard libraries slot.
+# This setting also applies to CMake's CXX try_compile() before configure.
+CXX_FLAGS="-nostdlib++"
+CXX_RUNTIME="$NDK_CXX"
+
+# Fail early, with a short and reproducible diagnostic, if the NDK wrapper
+# cannot use the explicit C++ runtime. Do not discard the CMake cache.
+CHECK_DIR="$BASE/clang-cxx-probe"
+mkdir -p "$CHECK_DIR"
+printf 'int main() { return 0; }\n' > "$CHECK_DIR/main.cpp"
+NDK_CLANGXX="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/bin/clang++"
+if ! "$NDK_CLANGXX" --target=aarch64-none-linux-android26 \
+  --sysroot="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/sysroot" \
+  -nostdlib++ "$CHECK_DIR/main.cpp" -o "$CHECK_DIR/main" \
+  $LINK_FLAGS "$CXX_RUNTIME" -latomic -lm; then
+  die "Teste C++ isolado falhou; confira as bibliotecas ARM64 do NDK e Termux."
+fi
+echo "CXX_PROBE_OK: link nativo Android arm64 concluido"
 
 
 echo "Configurando ScarletNX ARM64 com RomFS externa..."
@@ -78,6 +99,8 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
   -DLLVM_DIR="$LLVM_PREFIX/lib/cmake/llvm" \
   -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" \
+  -DCMAKE_CXX_FLAGS="$CXX_FLAGS" \
+  -DCMAKE_CXX_STANDARD_LIBRARIES="$CXX_RUNTIME" \
   -DCMAKE_SHARED_LINKER_FLAGS="$LINK_FLAGS" \
   -DCMAKE_MODULE_LINKER_FLAGS="$LINK_FLAGS" \
   -DSNX_DEPLOY=OFF -DSNX_BUILD_GNUABI=OFF -DSNX_BUILD_3DS=OFF \
