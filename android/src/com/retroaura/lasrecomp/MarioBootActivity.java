@@ -266,14 +266,35 @@ public final class MarioBootActivity extends Activity {
                 // The game module is only a symlink; no executable is written
                 // to app data, which targetSdk >= 29 prohibits.
                 File link = new File(gameRoot, SNX_GAME_ID + "_code.so");
-                if (link.exists()) {
-                    String existing = android.system.Os.readlink(link.getAbsolutePath());
-                    if (!code.getAbsolutePath().equals(existing)) {
-                        if (!link.delete()) throw new IOException("Não foi possível substituir symlink inválido.");
-                    }
+                // File.exists() follows a symlink. A stale link to a native
+                // library from the PREVIOUS APK install therefore reports
+                // false even though the link itself is still present; calling
+                // symlink() then fails with EEXIST. Check the link itself.
+                String currentLink = null;
+                try {
+                    currentLink = android.system.Os.readlink(link.getAbsolutePath());
+                } catch (android.system.ErrnoException err) {
+                    if (err.errno != android.system.OsConstants.ENOENT &&
+                            err.errno != android.system.OsConstants.EINVAL)
+                        throw err;
+                    if (err.errno == android.system.OsConstants.EINVAL)
+                        throw new IOException("Destino AOT existe mas não é link simbólico: " +
+                                link.getAbsolutePath(), err);
                 }
-                if (!link.exists())
+                if (currentLink != null && !currentLink.equals(code.getAbsolutePath())) {
+                    snxStage("PREPARE: replacing stale game AOT link: " + currentLink);
+                    android.system.Os.unlink(link.getAbsolutePath());
+                    currentLink = null;
+                }
+                if (currentLink == null) {
                     android.system.Os.symlink(code.getAbsolutePath(), link.getAbsolutePath());
+                    snxStage("PREPARE: created AOT symlink");
+                } else {
+                    snxStage("PREPARE: reused correct AOT symlink");
+                }
+                String verifiedLink = android.system.Os.readlink(link.getAbsolutePath());
+                if (!code.getAbsolutePath().equals(verifiedLink))
+                    throw new IOException("Link do Mario incorreto: " + verifiedLink);
                 snxStage("PREPARE: native AOT link ready: " + link.getAbsolutePath());
                 File data = new File(gameRoot, SNX_GAME_ID + "_data");
                 File exefs = new File(data, "exefs");
