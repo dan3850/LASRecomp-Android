@@ -237,9 +237,9 @@ public final class MarioBootActivity extends Activity {
                     if (!dir.isDirectory() && !dir.mkdirs())
                         throw new IOException("Não foi possível criar pasta SNX: " + dir);
                 File folders = new File(gameRoot, SNX_GAME_ID + ".folders");
-                String foldersText = "state=" + snxState.getAbsolutePath() + "\\n"
-                        + "cache=" + snxCache.getAbsolutePath() + "\\n"
-                        + "config=" + snxConfig.getAbsolutePath() + "\\n";
+                String foldersText = "state=" + snxState.getAbsolutePath() + "\n"
+                        + "cache=" + snxCache.getAbsolutePath() + "\n"
+                        + "config=" + snxConfig.getAbsolutePath() + "\n";
                 try (FileOutputStream output = new FileOutputStream(folders, false)) {
                     output.write(foldersText.getBytes(StandardCharsets.UTF_8));
                     output.getFD().sync();
@@ -333,9 +333,19 @@ public final class MarioBootActivity extends Activity {
             try {
                 if (!GameDocumentBridge.hasPermission(this, tree))
                     throw new java.io.IOException("Selecione a pasta novamente para conceder acesso permanente");
-                JSONObject builds = profile().getJSONObject("build_ids");
-                checkModule(tree, "main", builds.getString("main"));
-                checkModule(tree, "sdk", builds.getString("sdk"));
+                String lasMismatch = null;
+                try {
+                    JSONObject builds = profile().getJSONObject("build_ids");
+                    checkModule(tree, "main", builds.getString("main"));
+                    checkModule(tree, "sdk", builds.getString("sdk"));
+                } catch (Exception lasError) {
+                    // The ScarletNX AOT module was built from Super.xci, which
+                    // may differ from LASRecomp's separately extracted NSOs.
+                    // Only disable the LASRecomp boot; SNX verifies its own
+                    // NSO build IDs before running CPU instructions.
+                    lasMismatch = lasError.getMessage();
+                }
+                final String lasReason = lasMismatch;
                 GameDocumentBridge.child(this, tree, "romfs");
                 int fd = GameDocumentBridge.openReadFd(this, tree, "exefs/main.npdm");
                 try (DataInputStream input = new DataInputStream(new ParcelFileDescriptor.AutoCloseInputStream(
@@ -362,10 +372,12 @@ public final class MarioBootActivity extends Activity {
                     checking = false;
                     selected = tree;
                     getSharedPreferences("mario_boot", MODE_PRIVATE).edit().putString("game_tree", tree.toString()).apply();
-                    play.setEnabled(true);
+                    play.setEnabled(lasReason == null);
                     snxRunButton.setEnabled(true);
-                    status.setText("Executáveis compatíveis com este APK. Toque em Iniciar teste. " +
-                        "Após um fechamento, abra este app novamente e use Ver último log ou Salvar log.");
+                    status.setText(lasReason == null ?
+                        "Executáveis compatíveis. Escolha Iniciar teste (LAS) ou Executar Mario pelo runtime ScarletNX." :
+                        "Atenção: LASRecomp não corresponde a esta extração (" + lasReason + "). " +
+                        "ScarletNX disponível: o runtime verificará suas próprias versões do jogo.");
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> { checking = false; status.setText("Falha: " + error.getMessage()); });
@@ -394,7 +406,7 @@ public final class MarioBootActivity extends Activity {
             int added = 0;
             for (File file : recorded) {
                 if (!file.isFile() || !file.getName().endsWith(".log")) continue;
-                text.append("\\n=== SNX RUNTIME: ").append(file.getName()).append(" ===\\n");
+                text.append("\n=== SNX RUNTIME: ").append(file.getName()).append(" ===\n");
                 try (RandomAccessFile input = new RandomAccessFile(file, "r")) {
                     long start = Math.max(0, input.length() - 240000);
                     input.seek(start);
