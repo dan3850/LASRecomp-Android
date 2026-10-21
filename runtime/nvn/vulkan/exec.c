@@ -5451,8 +5451,36 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // ================================================================== executor (renderer.m exec_list)
 static void exec_list(uint64_t handle, int depth) {
     uint64_t p = handle;
+#ifdef LASRECOMP_MARIO_TEST
+    // These records are always 8-byte aligned and sizes are rounded up to
+    // eight bytes in cmdbuf.c. A bad CMD_JUMP pointer or corrupted record size
+    // must be reported BEFORE dereferencing the next record: the previous
+    // executor simply SIGSEGV'ed at exec_list+0x50 (LDR [x22],#0x50).
+    uint64_t mario_prev = 0, mario_prev_next = 0;
+    uint32_t mario_prev_op = 0, mario_prev_size = 0;
+    const char *mario_transition = "list-handle";
+#endif
     for (int guard = 0; guard < 10000000; guard++) {
+#ifdef LASRECOMP_MARIO_TEST
+        if (!p || (p & 7) || p < 4096)
+            FATAL("[mario-nvn-stream] invalid-pointer p=%llx handle=%llx depth=%d iter=%d "
+                  "via=%s prev=%llx prev_op=%u prev_size=%u prev_next=%llx\\n",
+                  (unsigned long long)p, (unsigned long long)handle,
+                  depth, guard, mario_transition, (unsigned long long)mario_prev,
+                  mario_prev_op, mario_prev_size,
+                  (unsigned long long)mario_prev_next);
+#endif
         CmdRec *r = (CmdRec *)(uintptr_t)p;
+#ifdef LASRECOMP_MARIO_TEST
+        if (r->op >= CMD_COUNT || r->size < sizeof(CmdRec) ||
+            (r->size & 7) || r->size > (64u << 20))
+            FATAL("[mario-nvn-stream] invalid-record p=%llx handle=%llx depth=%d iter=%d "
+                  "op=%u size=%u via=%s prev=%llx prev_op=%u prev_size=%u\\n",
+                  (unsigned long long)p, (unsigned long long)handle,
+                  depth, guard, r->op, r->size, mario_transition,
+                  (unsigned long long)mario_prev, mario_prev_op,
+                  mario_prev_size);
+#endif
         void *x = r->extra;
         if (r->op < CMD_COUNT) {
             op_counts[r->op]++;
@@ -5462,10 +5490,35 @@ static void exec_list(uint64_t handle, int depth) {
         }
         switch (r->op) {
         case CMD_END: return;
-        case CMD_JUMP: p = r->x[0]; continue;
+        case CMD_JUMP: {
+#ifdef LASRECOMP_MARIO_TEST
+            mario_prev = p;
+            mario_prev_op = r->op;
+            mario_prev_size = r->size;
+            mario_prev_next = r->x[0];
+            mario_transition = "CMD_JUMP";
+#endif
+            p = r->x[0];
+            continue;
+        }
         case CMD_CALL: {
             const uint64_t *h = x;
-            for (uint64_t i = 0; i < r->x[0] && depth < 8; i++) exec_list(h[i], depth + 1);
+#ifdef LASRECOMP_MARIO_TEST
+            if (r->x[0] > (r->size - sizeof(CmdRec)) / sizeof(uint64_t))
+                FATAL("[mario-nvn-stream] invalid-call-list record=%llx size=%u count=%llu depth=%d\\n",
+                      (unsigned long long)p, r->size,
+                      (unsigned long long)r->x[0], depth);
+#endif
+            for (uint64_t i = 0; i < r->x[0] && depth < 8; i++) {
+#ifdef LASRECOMP_MARIO_TEST
+                if (!h[i] || (h[i] & 7))
+                    FATAL("[mario-nvn-stream] invalid-call-handle parent=%llx index=%llu "
+                          "count=%llu child=%llx depth=%d\\n",
+                          (unsigned long long)p, (unsigned long long)i,
+                          (unsigned long long)r->x[0], (unsigned long long)h[i], depth);
+#endif
+                exec_list(h[i], depth + 1);
+            }
             break;
         }
         case CMD_BIND_PROGRAM: st.program = (NvnProgram *)(uintptr_t)r->x[0]; break;
@@ -5706,6 +5759,13 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         default: break;
         }
+#ifdef LASRECOMP_MARIO_TEST
+        mario_prev = p;
+        mario_prev_op = r->op;
+        mario_prev_size = r->size;
+        mario_prev_next = p + r->size;
+        mario_transition = "record-size";
+#endif
         p += r->size;
     }
 }
