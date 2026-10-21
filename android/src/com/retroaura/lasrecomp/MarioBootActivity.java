@@ -165,6 +165,10 @@ public final class MarioBootActivity extends Activity {
                     output.write("Nenhum encerramento anterior registrado pelo Android.\n"
                             .getBytes(StandardCharsets.UTF_8));
                 }
+                // The app's normal removal may be exit[0]; its native :snx
+                // SIGSEGV is then exit[1]. Capture the newest crashing game
+                // process rather than blindly reading the first history item.
+                boolean capturedSnxCrash = false;
                 for (int i = 0; i < history.size(); i++) {
                     ApplicationExitInfo info = history.get(i);
                     String heading = "exit[" + i + "] timestamp=" + info.getTimestamp()
@@ -173,11 +177,22 @@ public final class MarioBootActivity extends Activity {
                             + " importance=" + info.getImportance()
                             + " description=" + info.getDescription() + "\n";
                     output.write(heading.getBytes(StandardCharsets.UTF_8));
-                    if (i != 0) continue;
-                    // Bound the Android-provided native tombstone/ANR trace size.
+                    boolean isNativeSnxCrash =
+                            (getPackageName() + ":snx").equals(info.getProcessName()) &&
+                            info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE;
+                    if (!isNativeSnxCrash || capturedSnxCrash) continue;
+                    capturedSnxCrash = true;
+                    output.write(("--- Latest SNX native crash: exit[" + i + "] ---\n")
+                            .getBytes(StandardCharsets.UTF_8));
+                    // Android 11+ may supply a binary native tombstone protobuf.
+                    // Preserve its original bytes for later decoding, up to 48 KiB.
                     try (InputStream trace = info.getTraceInputStream()) {
-                        if (trace == null) continue;
-                        output.write("--- Android exit trace (max 48 KiB) ---\n"
+                        if (trace == null) {
+                            output.write("Android did not retain a native tombstone for this exit.\n"
+                                    .getBytes(StandardCharsets.UTF_8));
+                            continue;
+                        }
+                        output.write("--- Android native tombstone (max 48 KiB) ---\n"
                                 .getBytes(StandardCharsets.UTF_8));
                         byte[] chunk = new byte[4096];
                         int total = 0, n;
@@ -186,10 +201,10 @@ public final class MarioBootActivity extends Activity {
                             output.write(chunk, 0, n);
                             total += n;
                         }
-                        output.write("\n--- end Android exit trace ---\n"
+                        output.write("\n--- end Android native tombstone ---\n"
                                 .getBytes(StandardCharsets.UTF_8));
                     } catch (Exception traceError) {
-                        output.write(("trace unavailable: " + traceError + "\n")
+                        output.write(("SNX native tombstone unavailable: " + traceError + "\n")
                                 .getBytes(StandardCharsets.UTF_8));
                     }
                 }
@@ -617,7 +632,10 @@ public final class MarioBootActivity extends Activity {
             int added = 0;
             for (File file : recorded) {
                 if (!file.isFile() || !file.getName().endsWith(".log")) continue;
-                text.append("\n=== SNX RUNTIME: ").append(file.getName()).append(" ===\n");
+                text.append("\n=== SNX RUNTIME: ").append(file.getName())
+                        .append(" (mtime=").append(file.lastModified())
+                        .append(", bytes=").append(file.length())
+                        .append(") ===\n");
                 try (RandomAccessFile input = new RandomAccessFile(file, "r")) {
                     long start = Math.max(0, input.length() - 240000);
                     input.seek(start);
