@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from mario_static_switches import recognize, blocks_for_targets, select_census
+from mario_static_switches import recognize, blocks_for_targets, select_census, select_global_census
 
 
 class Insn:
@@ -84,6 +84,28 @@ class TestMarioStaticSwitch(unittest.TestCase):
             select_census(tables, planned, self.base, 0x58, 1, 0x40, 0x40)
         with self.assertRaisesRegex(ValueError, "not in a verified"):
             select_census(tables, planned, self.base, 0x70, 2, 0x80, 0x40)
+
+
+    def test_global_census_only_selects_complete_verified_tables(self):
+        base = self.base
+        rows = {
+            base + 0x40: f"f_{base + 0x40:x}",
+            base + 0x80: f"f_{base + 0x80:x}",
+            base + 0xc0: f"f_{base + 0xc0:x}",
+        }
+        tables = [
+            {"branch_rva": 0x1c, "targets": (0x48, 0x88)},
+            {"branch_rva": 0x2c, "targets": (0x48,)},
+        ]
+        planned = blocks_for_targets((0x48, 0x88), rows, base, base + 0x100)
+        # Only the small single-owner table fits: no incomplete 2-owner table.
+        picked = select_global_census(tables, planned, base, 1, 0x40, 0x40)
+        self.assertEqual([b["owner"] for b in picked], [base + 0x40])
+        picked = select_global_census(tables, planned, base, 2, 0x80, 0x40)
+        self.assertEqual([b["owner"] for b in picked],
+                         [base + 0x40, base + 0x80])
+        self.assertEqual(select_global_census([], planned, base, 2, 0x80, 0x40), [])
+
 
 
 if __name__ == "__main__":
