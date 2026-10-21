@@ -3,6 +3,9 @@
 // A command handle is the guest address of a list's first record.
 #include <stdlib.h>
 #include <string.h>
+#ifdef LASRECOMP_MARIO_TEST
+#include <pthread.h>
+#endif
 
 #include "nvn.h"
 
@@ -11,19 +14,67 @@
 static NvnCmdBuf *cb_of(uint64_t guest) { return HOST(NvnCmdBuf, guest); }
 
 #ifdef LASRECOMP_MARIO_TEST
-// Diagnostic boot mode: keep overflow records in host-owned memory when the
-// guest callback declines to provide another command-memory chunk.
+// Diagnostic boot mode: when the guest memory callback declines additional
+// command memory, host-owned fallback blocks hold serialized CmdRec data.
+//
+// The old Finalize() freed these blocks even though NVN command-list handles
+// remain valid after their command buffer is finalized. Later CMD_JUMP edges
+// then accessed freed/reused memory (Mario-Recomp-boot (3): op=0x61726170,
+// "para", at a repeatedly reused host-spill address).
+//
+// NVN command-list handles have no independent destruction callback here.
+// Retain spilled command memory for the whole process in the Mario test ONLY.
+// Enforce a hard cap rather than silently consuming unbounded host RAM.
+#define MARIO_SPILL_RETAIN_MAX_BYTES (512ull * 1024 * 1024)
 typedef struct NvnSpillChunk {
     struct NvnSpillChunk *next;
+    uint64_t capacity;
     uint8_t bytes[];
 } NvnSpillChunk;
-static void release_spills(NvnCmdBuf *cb) {
-    NvnSpillChunk *chunk = cb->spill_chunks;
-    while (chunk) {
-        NvnSpillChunk *next = chunk->next;
-        free(chunk);
-        chunk = next;
+static pthread_mutex_t mario_spill_lock = PTHREAD_MUTEX_INITIALIZER;
+static NvnSpillChunk *mario_retained_spills;
+static uint64_t mario_spill_bytes, mario_retained_count;
+
+static uint64_t reserve_mario_spill(uint64_t capacity) {
+    pthread_mutex_lock(&mario_spill_lock);
+    if (capacity > MARIO_SPILL_RETAIN_MAX_BYTES ||
+        mario_spill_bytes > MARIO_SPILL_RETAIN_MAX_BYTES - capacity) {
+        uint64_t total = mario_spill_bytes;
+        pthread_mutex_unlock(&mario_spill_lock);
+        FATAL("[mario-nvn-memory] spill retention cap reached allocated=%llu "
+              "requested=%llu cap=%llu; refusing unsafe reuse of live command lists\\n",
+              (unsigned long long)total, (unsigned long long)capacity,
+              (unsigned long long)MARIO_SPILL_RETAIN_MAX_BYTES);
     }
+    mario_spill_bytes += capacity;
+    uint64_t total = mario_spill_bytes;
+    pthread_mutex_unlock(&mario_spill_lock);
+    return total;
+}
+
+static void retain_finalized_spills(NvnCmdBuf *cb) {
+    NvnSpillChunk *head = cb->spill_chunks;
+    if (!head) return;
+    cb->spill_chunks = NULL;
+    uint64_t retained_now = 1;
+    NvnSpillChunk *tail = head;
+    while (tail->next) {
+        tail = tail->next;
+        retained_now++;
+    }
+    pthread_mutex_lock(&mario_spill_lock);
+    tail->next = mario_retained_spills;
+    mario_retained_spills = head;
+    mario_retained_count += retained_now;
+    uint64_t retained_total = mario_retained_count;
+    pthread_mutex_unlock(&mario_spill_lock);
+    // Keep the log bounded: no per-command spam on normal render paths.
+    if (retained_total <= 8 || (retained_total & 127) == 0)
+        fprintf(stderr, "[mario-nvn-memory] retained-finalized chunks=%llu "
+                "retained-total=%llu bytes-allocated=%llu\\n",
+                (unsigned long long)retained_now,
+                (unsigned long long)retained_total,
+                (unsigned long long)mario_spill_bytes);
 }
 #endif
 
@@ -62,7 +113,9 @@ NVN(nvnCommandBufferInitialize) {
 NVN(nvnCommandBufferFinalize) {
     NvnCmdBuf *cb = cb_of(A(0));
 #ifdef LASRECOMP_MARIO_TEST
-    release_spills(cb);
+    // EndRecording() exposes raw command handles to the guest. They may be
+    // submitted or replayed AFTER this NvnCmdBuf object has been finalized.
+    retain_finalized_spills(cb);
 #endif
     free(cb);
     SET_HOST(A(0), 0);
@@ -155,8 +208,10 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
                       (unsigned long long)(cb->size - cb->used));
             uint64_t capacity = size + JUMP_RESERVE;
             if (capacity < 65536) capacity = 65536;
+            uint64_t retained_bytes = reserve_mario_spill(capacity);
             NvnSpillChunk *chunk = malloc(sizeof(*chunk) + capacity);
             if (!chunk) FATAL("nvn: host command spill allocation failed\n");
+            chunk->capacity = capacity;
             chunk->next = cb->spill_chunks;
             cb->spill_chunks = chunk;
             uint64_t next_mem = (uint64_t)(uintptr_t)chunk->bytes;
@@ -168,6 +223,10 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
                     (unsigned long long)capacity, op,
                     (unsigned long long)cb->mem, (unsigned long long)cb->used,
                     (unsigned long long)cb->size, (unsigned long long)next_mem);
+            if (retained_bytes <= 8 * 65536ull || (retained_bytes % (128ull * 65536)) < 65536)
+                fprintf(stderr, "[mario-nvn-memory] spill-retention total-bytes=%llu cap=%llu\\n",
+                        (unsigned long long)retained_bytes,
+                        (unsigned long long)MARIO_SPILL_RETAIN_MAX_BYTES);
             cb->mem = next_mem;
             cb->size = capacity;
             cb->used = 0;
