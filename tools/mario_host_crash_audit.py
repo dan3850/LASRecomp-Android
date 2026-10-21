@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 
 
 def parse_text_symbols(output):
@@ -54,12 +55,23 @@ def file_hash(file):
     return sha.hexdigest()
 
 
+
+def apk_library_hash(apk, member="lib/arm64-v8a/liblasrecomp_runtime.so"):
+    with zipfile.ZipFile(apk) as archive, archive.open(member) as stream:
+        sha = hashlib.sha256()
+        for data in iter(lambda: stream.read(1024 * 1024), b""):
+            sha.update(data)
+        return sha.hexdigest()
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--lib", type=Path, default=(
         root / "build/mario-android-boot/stage/lib/arm64-v8a/"
         "liblasrecomp_runtime.so"))
+    ap.add_argument("--apk", type=Path, default=(
+        root / "build/mario-android-boot/Mario-Recomp-Boot-Test.apk"))
     ap.add_argument("--pc", type=lambda s: int(s, 0), required=True)
     ap.add_argument("--lr", type=lambda s: int(s, 0), required=True)
     args = ap.parse_args()
@@ -71,7 +83,21 @@ def main():
             ap.error("not an ELF shared library")
     print(f"LIB={lib}")
     print(f"BYTES={lib.stat().st_size}")
-    print(f"SHA256={file_hash(lib)}")
+    lib_sha = file_hash(lib)
+    print(f"SHA256={lib_sha}")
+    apk = args.apk.expanduser().resolve()
+    if apk.is_file():
+        try:
+            apk_sha = apk_library_hash(apk)
+        except (zipfile.BadZipFile, KeyError) as exc:
+            ap.error(f"cannot inspect APK runtime library: {exc}")
+        print(f"APK={apk}")
+        print(f"APK_RUNTIME_SHA256={apk_sha}")
+        if apk_sha != lib_sha:
+            ap.error("staging library and APK runtime DIFFER: do not symbolize")
+        print("APK_ELF_MATCH=yes")
+    else:
+        print(f"APK_ELF_MATCH=unverified (APK absent: {apk})")
     for text in ("pc", "lr"):
         address = getattr(args, text)
         if address < 0 or address > lib.stat().st_size * 4:
