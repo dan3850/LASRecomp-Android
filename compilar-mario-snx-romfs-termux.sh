@@ -56,7 +56,20 @@ echo "Reutilizando LLVM ARM64 do Termux: $LLVM_PREFIX"
 # atomic/unwind archives are compatible in architecture, but are outside
 # that sysroot's default library search path. Supply an explicit -L.
 # No host-only x86_64 NDK executable is invoked.
-LINK_FLAGS="-L$PREFIX/lib"
+# Android NDK clang++ links -lc++_shared by default. Its wrapper on
+# native Termux does not supply the NDK libc++ search directory, so both
+# the C compiler test and the C++ compiler test need explicit -L paths.
+# Prefer the ABI-matched NDK library over a Termux-only alternative.
+NDK_CXX=""
+for candidate in \
+  "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+  "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+  "$PREFIX/lib/libc++_shared.so"; do
+  if [ -s "$candidate" ]; then NDK_CXX="$candidate"; break; fi
+done
+[ -n "$NDK_CXX" ] || die "libc++_shared.so ausente. Confira o NDK/Termux; nao crie biblioteca vazia."
+echo "C++ runtime: $NDK_CXX"
+LINK_FLAGS="-L$(dirname "$NDK_CXX") -L$PREFIX/lib"
 
 
 echo "Configurando ScarletNX ARM64 com RomFS externa..."
