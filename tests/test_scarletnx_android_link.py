@@ -107,7 +107,7 @@ unsigned long getauxval(unsigned long type) {
 }
 ''')
         (cls.p / "libc.map").write_text("LIBC { global: getauxval; local: *; };\n")
-        run([*cls.ld, "-shared", "--build-id", "-soname", "libc.so", cls.p / "system.o",
+        run([*cls.ld, "-shared", "--build-id=sha1", "-soname", "libc.so", cls.p / "system.o",
              "--version-script=" + str(cls.p / "libc.map"), "-o", cls.p / "libc.so"])
         cls.compile("private", '''
 struct Aux { unsigned long key, value; };
@@ -128,7 +128,9 @@ __attribute__((visibility("default"))) int main(void) {return __aarch64_have_lse
 __attribute__((visibility("default"))) int JNI_OnLoad(void) {return 0x10006;}
 ''')
         (cls.p / "runtime.map").write_text("{ global: main; JNI_OnLoad; local: *; };\n")
-        common = [*cls.ld, "-shared", "--build-id", "-Bsymbolic", cls.p / "entry.o",
+        # LLD defaults vary (fast 8-byte vs SHA-1). This fixture explicitly
+        # tests SHA-1; the production reader accepts arbitrary Build ID sizes.
+        common = [*cls.ld, "-shared", "--build-id=sha1", "-Bsymbolic", cls.p / "entry.o",
                   "--version-script=" + str(cls.p / "runtime.map")]
         run([*common, cls.p / "private.o", "-o", cls.p / "broken.so"])
         run([*common, "--no-as-needed", cls.p / "libc.so", "-o", cls.p / "fixed.so"])
