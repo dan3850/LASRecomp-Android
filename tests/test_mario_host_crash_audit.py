@@ -10,10 +10,10 @@ from mario_host_crash_audit import parse_text_symbols, closest_symbol
 class TestMarioHostCrashAudit(unittest.TestCase):
     def test_symbol_boundaries_and_offsets(self):
         rows = parse_text_symbols(
-            "00000000002e0dc0 t internal_renderer\\n"
-            "00000000002e0e20 T nvn_host_submit\\n"
-            "00000000002e0e60 D global_data\\n"
-            "00000000002e0d00 W weak_wrapper\\n"
+            "00000000002e0dc0 t internal_renderer\n"
+            "00000000002e0e20 T nvn_host_submit\n"
+            "00000000002e0e60 D global_data\n"
+            "00000000002e0d00 W weak_wrapper\n"
         )
         self.assertEqual(closest_symbol(rows, 0x2e0dfc),
                          ("internal_renderer", 0x2e0dc0, 0x3c))
@@ -22,10 +22,10 @@ class TestMarioHostCrashAudit(unittest.TestCase):
 
     def test_does_not_consider_non_code_symbols(self):
         rows = parse_text_symbols(
-            "00000100 T fn_a\\n"
-            "00000110 d data_payload\\n"
-            "00000120 U imported\\n"
-            "00000130 t fn_b\\n"
+            "00000100 T fn_a\n"
+            "00000110 d data_payload\n"
+            "00000120 U imported\n"
+            "00000130 t fn_b\n"
         )
         self.assertEqual(closest_symbol(rows, 0x118),
                          ("fn_a", 0x100, 0x18))
