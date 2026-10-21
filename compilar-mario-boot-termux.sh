@@ -13,6 +13,26 @@ MARIO_CODE="$MARIO_ROOT/build/private-mario-full-test"
 MARIO_BOOT="$MARIO_ROOT/build/mario-android-boot"
 echo "BRANCH=$(git branch --show-current)"
 echo "HEAD=$(git rev-parse HEAD)"
+# Repeated unconditional B instructions sharing a join can mark switch-like
+# case entries at B+4. Unlike a blind resume anchor, require the observed PC
+# to be present in that static cluster before any game-code recompilation.
+if [[ -n "${MARIO_CASE_CLUSTER_ANCHOR:-}" ]]; then
+    echo "===== MARIO: VERIFICANDO GRUPO DE CASES ARM64 ====="
+    python3 tests/test_mario_case_cluster.py
+    MARIO_CASE_POINTS="$(python3 -u tools/mario_case_cluster.py \
+        --game "$MARIO_GAME" --output "$MARIO_CODE" \
+        --target "$MARIO_CASE_CLUSTER_ANCHOR" \
+        --limit "${MARIO_CASE_CLUSTER_LIMIT:-12}" \
+        --budget-bytes "${MARIO_CASE_CLUSTER_BYTES:-131072}" \
+        --max-block-bytes "${MARIO_CASE_CLUSTER_BLOCK_BYTES:-16384}" \
+        --radius "${MARIO_CASE_CLUSTER_RADIUS:-0x4000}")"
+    if [[ -n "$MARIO_CASE_POINTS" ]]; then
+        MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_CASE_POINTS"
+        echo "Blocos de cases verificados: $MARIO_CASE_POINTS"
+    else
+        echo "Grupo de cases ja coberto; reutilizando cache."
+    fi
+fi
 if [[ -n "${MARIO_STATIC_SWITCH_ANCHOR:-}" ]]; then
     # Verified guarded byte-switch scan: one repair per containing block,
     # not repeated one-address-per-APK attempts. No full code regeneration.
