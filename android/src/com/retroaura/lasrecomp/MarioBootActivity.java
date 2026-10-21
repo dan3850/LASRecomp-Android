@@ -160,9 +160,9 @@ public final class MarioBootActivity extends Activity {
             }
             try (FileOutputStream output = new FileOutputStream(
                     new File(getFilesDir(), "mario-snx-probe.txt"), false)) {
-                output.write((result + "\\n").getBytes(StandardCharsets.UTF_8));
+                output.write((result + "\n").getBytes(StandardCharsets.UTF_8));
             } catch (IOException error) {
-                result += "\\nCould not save log: " + error;
+                result += "\nCould not save log: " + error;
             }
             final String message = result;
             runOnUiThread(() -> {
