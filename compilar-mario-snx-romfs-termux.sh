@@ -61,10 +61,32 @@ if s.count(new) == 1:
     print("LLVM Termux CMake integration already applied")
 elif s.count(old) == 1:
     s = s.replace(old, new)
-    p.write_text(s)
     print("LLVM Termux CMake integration applied")
 else:
     raise SystemExit("Unknown ScarletNX LLVM configuration; refusing automatic patch")
+# Only the Termux path uses shared LLVM, so the standard desktop builds
+# retain their existing component-linking semantics.
+a = 'snx_llvm_query(SNX_LLVM_LIBS --libs ${SNX_LLVM_COMPONENTS})'
+b = '''if(SNX_TERMUX_NATIVE_LLVM)
+    snx_llvm_query(SNX_LLVM_LIBS --link-shared --libs ${SNX_LLVM_COMPONENTS})
+else()
+    snx_llvm_query(SNX_LLVM_LIBS --libs ${SNX_LLVM_COMPONENTS})
+endif()'''
+if a in s:
+    s = s.replace(a, b, 1)
+elif b not in s:
+    raise SystemExit("LLVM component query changed; refusing patch")
+a = 'snx_llvm_query(SNX_LLVM_DISASM_LIBS --libs aarch64disassembler aarch64desc aarch64info)'
+b = '''if(SNX_TERMUX_NATIVE_LLVM)
+        snx_llvm_query(SNX_LLVM_DISASM_LIBS --link-shared --libs aarch64disassembler aarch64desc aarch64info)
+    else()
+        snx_llvm_query(SNX_LLVM_DISASM_LIBS --libs aarch64disassembler aarch64desc aarch64info)
+    endif()'''
+if a in s:
+    s = s.replace(a, b, 1)
+elif b not in s:
+    raise SystemExit("LLVM disassembler query changed; refusing patch")
+p.write_text(s)
 PY
 
 [ -f "$LLVM_PREFIX/lib/cmake/llvm/LLVMConfig.cmake" ] ||
