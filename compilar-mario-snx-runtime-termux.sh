@@ -216,7 +216,7 @@ while :; do
         echo "Dependencia Termux empacotada: $dep"
         ;;
     esac
-  done < <(llvm-readelf -d "$elf" | sed -n 's/.*(NEEDED).*Shared library: \\[\\([^]]*\\)\\].*/\\1/p')
+  done < <(llvm-readelf -d "$elf" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
   index=$((index + 1))
 done
 
