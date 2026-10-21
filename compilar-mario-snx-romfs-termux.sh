@@ -14,7 +14,9 @@ done
 BASE="$HOME/.cache/lasrecomp-scarletnx-romfs"
 SRC="$BASE/ScarletNX"
 BUILD="$BASE/android-arm64-build"
-LLVM_PREFIX="${SCARLETNX_LLVM_PREFIX:-$BASE/android-llvm/arm64-v8a}"
+# Termux already packages usable ARM64 LLVM libraries and their CMake config.
+# Do not cross-build another LLVM using the NDK compiler wrapper.
+LLVM_PREFIX="${SCARLETNX_LLVM_PREFIX:-$PREFIX}"
 OUT="$HOME/scarletnx-romfs-build/libscarletnx.so"
 COMMIT=34853eeae5af132e320adbb0193f13344085bf89
 JOBS="${SCARLETNX_BUILD_JOBS:-4}"
@@ -45,22 +47,28 @@ fi
 
 python3 "$ROOT/tools/patch_scarletnx_romfs.py" "$SRC"
 
-if [ ! -f "$LLVM_PREFIX/lib/cmake/llvm/LLVMConfig.cmake" ]; then
-  echo "LLVM Android para o ScarletNX ausente. Compilando uma unica vez; essa etapa pode ser longa."
-  echo "Pasta de cache: $LLVM_PREFIX"
-  # Upstream builds just the ARM64 LLVM libraries needed by the recompiler.
-  (cd "$SRC" && CMAKE_BUILD_PARALLEL_LEVEL="$JOBS" \
-      scripts/android-llvm.sh arm64-v8a "$LLVM_PREFIX")
-fi
 [ -f "$LLVM_PREFIX/lib/cmake/llvm/LLVMConfig.cmake" ] ||
-  die "LLVM ARM64 nao foi instalado corretamente: $LLVM_PREFIX"
+  die "LLVMConfig.cmake ausente em $LLVM_PREFIX; instale pkg install llvm"
+[ -f "$PREFIX/lib/libatomic.a" ] || die "Termux libatomic.a ausente"
+[ -f "$PREFIX/lib/libunwind.a" ] || die "Termux libunwind.a ausente"
+echo "Reutilizando LLVM ARM64 do Termux: $LLVM_PREFIX"
+# NDK clang wrapper uses the NDK sysroot. The Termux native ARM64
+# atomic/unwind archives are compatible in architecture, but are outside
+# that sysroot's default library search path. Supply an explicit -L.
+# No host-only x86_64 NDK executable is invoked.
+LINK_FLAGS="-L$PREFIX/lib"
+
 
 echo "Configurando ScarletNX ARM64 com RomFS externa..."
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
   -DLLVM_DIR="$LLVM_PREFIX/lib/cmake/llvm" \
-  -DSNX_DEPLOY=OFF -DSNX_BUILD_GNUABI=OFF -DBUILD_TESTING=OFF \
+  -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" \
+  -DCMAKE_SHARED_LINKER_FLAGS="$LINK_FLAGS" \
+  -DCMAKE_MODULE_LINKER_FLAGS="$LINK_FLAGS" \
+  -DSNX_DEPLOY=OFF -DSNX_BUILD_GNUABI=OFF -DSNX_BUILD_3DS=OFF \
+  -DSNX_BUILD_GUI=OFF -DBUILD_TESTING=OFF \
   -DCMAKE_BUILD_TYPE=Release
 
 echo "Compilando somente a biblioteca ScarletNX (mantendo o cache)..."
