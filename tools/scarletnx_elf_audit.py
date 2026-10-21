@@ -318,6 +318,31 @@ def cxx_problems(directory):
     return problems
 
 
+def diagnostic(command, output):
+    """Preserve optional tool evidence, including partial output and failures.
+
+    These tools do not decide whether the runtime passes the ELF policy. In
+    particular, a candidate .a may be a linker script, an unsupported archive,
+    or contain bitcode that this nm cannot read. A failed index proves nothing
+    about the absence of private libc symbols in the final shared library.
+    """
+    result = dict(command=command, output=str(output), status="unavailable",
+                  returncode=None)
+    try:
+        run = subprocess.run(command, text=True, errors="replace",
+                             capture_output=True, check=False)
+    except OSError as error:
+        result["error"] = str(error)
+        output.write_text(str(error) + "\n")
+        return result, ""
+    output.write_text("stdout:\n" + run.stdout + "\nstderr:\n" + run.stderr)
+    result.update(returncode=run.returncode,
+                  status="complete" if run.returncode == 0 else "incomplete")
+    if run.returncode:
+        result["error"] = run.stderr.strip()[-1000:] or "tool returned no stderr"
+    return result, run.stdout
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("elf", type=Path)
@@ -344,28 +369,54 @@ def main(argv=None):
         if args.cxx_dir:
             report["problems"].extend(cxx_problems(args.cxx_dir))
         report["archive_providers"] = []
+        report["archive_diagnostics"] = []
+        report["supporting_diagnostics"] = []
+        report["diagnostic_warnings"] = []
+        # Do not lose the mandatory ELF findings if optional tools fail later.
+        args.output.write_text(json.dumps(report, indent=2) + "\n")
+
+        def record(result):
+            if result["status"] in ("incomplete", "unavailable"):
+                report["diagnostic_warnings"].append(
+                    f'{result["command"][0]}: {result["status"]}, '
+                    f'exit={result["returncode"]}; {result["error"]}; '
+                    f'full output: {result["output"]}')
+
         for index, archive in enumerate(dict.fromkeys(args.archive)):
             if not archive.is_file():
+                report["archive_diagnostics"].append(
+                    dict(path=str(archive), status="missing"))
                 continue
-            run = subprocess.run([args.nm, "-A", "--defined-only", str(archive)],
-                                 text=True, capture_output=True, check=True)
             raw = args.output.with_name(args.output.stem + f"-archive-{index}.txt")
-            raw.write_text(run.stdout + run.stderr)
-            report["archive_providers"].extend(line for line in run.stdout.splitlines()
-                if any(n in line for n in WATCH))
+            result, stdout = diagnostic(
+                [args.nm, "-A", "--defined-only", str(archive)], raw)
+            result["path"] = str(archive)
+            result["resolved_path"] = str(archive.resolve())
+            providers = [line for line in stdout.splitlines()
+                         if any(n in line for n in WATCH)]
+            if result["status"] == "complete":
+                report["archive_providers"].extend(providers)
+            else:
+                # Partial nm output must never look like a complete index.
+                result["partial_providers"] = providers
+            report["archive_diagnostics"].append(result)
+            record(result)
         # These are supporting evidence only; the policy above reads the binary.
         for tool, flags, suffix in (("llvm-readelf", ["-aW"], "readelf"),
                                     ("llvm-objdump", ["-d", "--disassemble-symbols=init_have_lse_atomics,getauxval"], "disasm")):
             if shutil.which(tool):
-                with args.output.with_suffix("." + suffix + ".txt").open("w") as stream:
-                    subprocess.run([tool, *flags, str(args.elf)], stdout=stream,
-                                   stderr=subprocess.STDOUT, check=True)
+                result, _ = diagnostic([tool, *flags, str(args.elf)],
+                    args.output.with_suffix("." + suffix + ".txt"))
+                report["supporting_diagnostics"].append(result)
+                record(result)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
+        for warning in report["diagnostic_warnings"]:
+            print("ELF_AUDIT_DIAGNOSTIC_WARNING:", warning)
         for problem in report["problems"]:
             print("ELF_AUDIT:", problem)
         print("SCARLETNX_ELF_AUDIT:", "FAIL" if report["problems"] else "OK", args.output)
         return 0 if args.report_only or not report["problems"] else 1
-    except (ValueError, OSError, struct.error, subprocess.CalledProcessError) as error:
+    except (ValueError, OSError, struct.error) as error:
         print("ELF_AUDIT_ERROR:", error)
         return 1
 

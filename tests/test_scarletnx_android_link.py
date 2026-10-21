@@ -6,7 +6,10 @@ It is never packaged. A native subprocess proves why hiding the symbol is not
 a fix; AArch64 ELF fixtures verify the production guard and constructor audit.
 """
 import ast
+import contextlib
 import importlib.util
+import io
+import json
 import re
 import shutil
 import subprocess
@@ -14,10 +17,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from scarletnx_elf_audit import Elf, audit, cxx_problems
+from scarletnx_elf_audit import Elf, audit, cxx_problems, main as audit_main
 from scarletnx_link_probe import link_argv
 from patch_scarletnx_android_link import BEGIN, ENTRY_TRACE, patch
 
@@ -165,6 +169,93 @@ __attribute__((visibility("default"))) int JNI_OnLoad(void) {return 0x10006;}
         self.assertTrue(any(r["type"] == 1026 for r in report["getauxval_relocations"]))
         self.assertTrue(any("init_have_lse_atomics" in c["names"] for c in report["init_array"]))
         self.assertEqual(len(report["build_ids"][0]), 40)
+
+    @unittest.skipUnless(shutil.which("llvm-nm") or shutil.which("nm"), "requires nm")
+    def test_nm_rejecting_candidate_does_not_override_final_elf_policy(self):
+        # Real nm returns nonzero for a GNU linker script named .a. This
+        # reproduces the collector failure without guessing the phone's format.
+        nm = shutil.which("llvm-nm") or shutil.which("nm")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            archive = path / "libatomic.a"
+            archive.write_text("INPUT ( libc.so )\n")
+            for elf, report_only, expected in (("fixed.so", False, 0),
+                                                ("broken.so", False, 1),
+                                                ("broken.so", True, 0)):
+                with self.subTest(elf=elf, report_only=report_only):
+                    output = path / f"{elf}-{report_only}.json"
+                    args = [str(self.p / elf), "--output", str(output),
+                            "--archive", str(archive), "--nm", nm]
+                    if report_only:
+                        args.append("--report-only")
+                    with contextlib.redirect_stdout(io.StringIO()) as console:
+                        self.assertEqual(audit_main(args), expected)
+                    report = json.loads(output.read_text())
+                    candidate, = report["archive_diagnostics"]
+                    self.assertEqual(candidate["status"], "incomplete")
+                    self.assertNotEqual(candidate["returncode"], 0)
+                    self.assertTrue(Path(candidate["output"]).read_text().strip())
+                    self.assertTrue(candidate["error"])
+                    self.assertTrue(report["diagnostic_warnings"])
+                    self.assertIn("ELF_AUDIT_DIAGNOSTIC_WARNING", console.getvalue())
+                    self.assertEqual(bool(report["problems"]), elf == "broken.so")
+                    self.assertEqual(report["archive_providers"], [])
+
+    def test_partial_nm_output_is_retained_as_incomplete_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            nm = path / "partial-nm"
+            partial = "libatomic.a(cpu.o): 0 T init_have_lse_atomics"
+            nm.write_text("#!" + shutil.which("sh") + "\nprintf '%s\\n' '" + partial + "'\n"
+                          "printf '%s\\n' 'unsupported member' >&2\nexit 1\n")
+            nm.chmod(0o755)
+            output = path / "report.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(audit_main([str(self.p / "fixed.so"),
+                    "--output", str(output), "--archive", str(self.p / "entry.o"),
+                    "--nm", str(nm)]), 0)
+            report = json.loads(output.read_text())
+            candidate, = report["archive_diagnostics"]
+            self.assertEqual(candidate["partial_providers"], [partial])
+            self.assertEqual(report["archive_providers"], [])
+            raw = Path(candidate["output"]).read_text()
+            self.assertIn(partial, raw)
+            self.assertIn("unsupported member", raw)
+            self.assertEqual(report["problems"], [])
+
+    def test_missing_nm_preserves_core_report_and_records_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "report.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(audit_main([str(self.p / "fixed.so"),
+                    "--output", str(output), "--archive", str(self.p / "entry.o"),
+                    "--nm", str(Path(tmp) / "absent-nm")]), 0)
+            report = json.loads(output.read_text())
+            candidate, = report["archive_diagnostics"]
+            self.assertEqual(candidate["status"], "unavailable")
+            self.assertIsNone(candidate["returncode"])
+            self.assertIn("absent-nm", Path(candidate["output"]).read_text())
+            self.assertTrue(report["diagnostic_warnings"])
+            self.assertEqual(report["problems"], [])
+
+    def test_supporting_tools_cannot_discard_primary_elf_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "report.json"
+
+            def unavailable(*args, **kwargs):
+                # The ELF report already exists before external tools run.
+                self.assertEqual(json.loads(output.read_text())["problems"], [])
+                raise OSError("external dump unavailable")
+
+            with mock.patch("scarletnx_elf_audit.shutil.which", return_value="tool"), \
+                 mock.patch("scarletnx_elf_audit.subprocess.run", side_effect=unavailable), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(audit_main([str(self.p / "fixed.so"),
+                                            "--output", str(output)]), 0)
+            report = json.loads(output.read_text())
+            self.assertEqual(len(report["supporting_diagnostics"]), 2)
+            self.assertEqual(len(report["diagnostic_warnings"]), 2)
+            self.assertEqual(report["problems"], [])
 
     def test_android_packed_relocations_and_relr_preserve_constructor_audit(self):
         for packing in ("android", "relr", "android+relr"):

@@ -115,6 +115,22 @@ O script de build cria uma pasta por tentativa em
 | `*-archive-*.txt` | Índices de símbolos dos archives examinados; fornecedores candidatos, não prova de extração |
 | `selected-runtime-libraries.json` | Caminhos e hashes das bibliotecas selecionadas |
 
+Os índices de archives são diagnósticos auxiliares. Um `llvm-nm` com erro
+não interrompe a compilação nem elimina o relatório ELF: seu código de
+saída, stdout e stderr são preservados em `*-archive-*.txt` e descritos
+em `archive_diagnostics`. Símbolos de uma saída parcial ficam explicitamente
+em `partial_providers`, fora de `archive_providers`. O console registra
+`ELF_AUDIT_DIAGNOSTIC_WARNING`; falhas auxiliares de readelf/objdump recebem
+o mesmo tratamento. A auditoria direta do ELF e as verificações de C++
+continuam obrigatórias e rejeitam o runtime incompatível.
+
+Na execução de 21/10/2026 às 10:14, o coletor anterior parou em
+`$PREFIX/lib/libatomic.a` porque tratava o retorno não zero de `llvm-nm`
+como fatal, antes de salvar o stderr. Esse log não estabelece a causa
+do erro da ferramenta nem o formato desse arquivo no celular. A regressão
+usa um linker script chamado `.a` para reproduzir um retorno não zero real,
+sem atribuir esse formato ao arquivo do usuário.
+
 O replay antigo só acontece se o ELF contém definições de libc suspeitas.
 Ele é um relink de diagnóstico em outro arquivo, necessário para atribuir
 os símbolos aos objetos efetivos: não compila fontes, altera archives ou
@@ -135,12 +151,15 @@ Os demais passos seguem as dependências incrementais existentes.
 
 ## Validação feita fora do celular
 
-- 13 testes em `tests/test_scarletnx_android_link.py`, usando ELFs ARM64
+- 17 testes em `tests/test_scarletnx_android_link.py`, usando ELFs ARM64
   reais compilados com Clang/LLD (via Zig no ambiente de validação).
 - Caso negativo com `getauxval` local, invisível na tabela dinâmica;
   também caso stripped, IFUNC e archive `libc.a` sombreando o import.
 - Caso corrigido com import `LIBC`, `JUMP_SLOT` e construtor resolvido,
   inclusive APS2, RELR e `android+relr`.
+- Falhas de nm, incluindo saída parcial e executável ausente, preservam
+  os diagnósticos; um ELF incorreto continua rejeitado em modo obrigatório.
+  Falhas dos dumps auxiliares também preservam o relatório principal.
 - Regressão nativa em subprocesso Linux: cópia privada nula provoca
   SIGSEGV durante o carregamento; import da libc do processo carrega.
   Esse teste demonstra o mecanismo, não executa a Bionic/Android.
@@ -167,14 +186,17 @@ do Mario no dispositivo com esta correção até esse teste ser realizado.
 
 ## Comandos únicos para Termux
 
-Execute na instalação existente do projeto. A atualização é fast-forward;
-alterações locais rastreadas fazem o bloco parar sem descartá-las.
+Execute no worktree existente `LASRecomp-Mario-Teste`, que já usa a branch
+solicitada. A atualização é fast-forward; alterações locais rastreadas
+fazem o bloco parar sem descartá-las. Não é necessário trocar de branch
+no outro checkout `LASRecomp-Android`.
 
 ```bash
 (
 set -euo pipefail
-cd "$HOME/LASRecomp-Android"
+cd "$HOME/LASRecomp-Mario-Teste"
 BRANCH="android/mario-snx-runtime-boot"
+test "$(git branch --show-current)" = "$BRANCH"
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   git status --short
   echo "ERRO: preserve suas alteracoes locais antes de atualizar."
@@ -186,7 +208,6 @@ LOG="$LOG_DIR/mario-snx-link-$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$LOG") 2>&1
 trap 'echo "Log desta execucao: $LOG"' EXIT
 git fetch origin "$BRANCH"
-git switch "$BRANCH"
 git merge --ff-only "origin/$BRANCH"
 export SCARLETNX_BUILD_JOBS=2
 export LASRECOMP_JOBS=2
