@@ -4,6 +4,9 @@ import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.ApplicationExitInfo;
 import android.os.Build;
+import android.os.Environment;
+import android.provider.DocumentsContract;
+import android.provider.Settings;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -35,6 +38,85 @@ public final class MarioBootActivity extends Activity {
     private Button snxProbeButton;
     private Button snxRunButton;
     private static final String SNX_GAME_ID = "010028600EBDA000";
+
+    /**
+     * Converts ONLY an explicitly selected primary-volume SAF tree into a
+     * filesystem path. SAF alone does not grant native POSIX access; Android's
+     * separate All Files Access approval is required and never bypassed.
+     */
+    private File selectedRomfsPath(Uri tree) throws IOException {
+        if (tree == null || !GameDocumentBridge.hasPermission(this, tree))
+            throw new IOException("Selecione novamente a pasta do Mario.");
+        if (Build.VERSION.SDK_INT < 30 || !Environment.isExternalStorageManager())
+            throw new IOException("Autorize 'Acesso a todos os arquivos' nas configuracoes e tente novamente.");
+        String id = DocumentsContract.getTreeDocumentId(tree);
+        if (!id.startsWith("primary:"))
+            throw new IOException("Leitura direta so funciona para a memoria interna primaria: " + id);
+        String relative = id.substring("primary:".length());
+        if (relative.isEmpty() || relative.startsWith("/") || relative.contains("\\") ||
+                relative.contains(":") || relative.indexOf((char) 0) >= 0)
+            throw new IOException("Pasta selecionada invalida.");
+        for (String part : relative.split("/", -1)) {
+            if (part.isEmpty() || part.equals(".") || part.equals(".."))
+                throw new IOException("Caminho SAF invalido.");
+        }
+        File storage = Environment.getExternalStorageDirectory().getCanonicalFile();
+        File root = new File(storage, relative).getCanonicalFile();
+        if (!root.getPath().startsWith(storage.getPath() + File.separator))
+            throw new IOException("Pasta fora da memoria primaria.");
+        File romfs = new File(root, "romfs").getCanonicalFile();
+        if (!romfs.getPath().startsWith(root.getPath() + File.separator) ||
+                !romfs.isDirectory() || !romfs.canRead())
+            throw new IOException("RomFS indisponivel para leitura nativa: " + romfs);
+        File[] files = romfs.listFiles();
+        if (files == null || files.length == 0)
+            throw new IOException("RomFS vazia ou inacessivel ao processo Android.");
+        return romfs;
+    }
+
+    private void requestDirectRomfsAccess() {
+        if (Build.VERSION.SDK_INT < 30) {
+            status.setText("A leitura nativa direta requer Android 11 ou posterior.");
+            return;
+        }
+        if (Environment.isExternalStorageManager()) {
+            status.setText("Acesso direto autorizado. Selecione a pasta e execute o Mario.");
+            return;
+        }
+        status.setText("Permissao opcional: abra Configuracoes e autorize o acesso a todos os arquivos somente para este APK experimental. Volte e toque em INICIAR MARIO novamente.");
+        try {
+            Intent settings = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(settings);
+        } catch (Exception ignored) {
+            startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+        }
+    }
+
+    private void mountExternalRomfs(File target, File romfs) throws Exception {
+        String desired = romfs.getAbsolutePath();
+        String old = null;
+        try {
+            old = android.system.Os.readlink(target.getAbsolutePath());
+        } catch (android.system.ErrnoException err) {
+            if (err.errno != android.system.OsConstants.ENOENT &&
+                    err.errno != android.system.OsConstants.EINVAL)
+                throw err;
+            if (err.errno == android.system.OsConstants.EINVAL)
+                throw new IOException("Destino da RomFS existe e nao e symlink: " + target);
+        }
+        if (old != null && !old.equals(desired)) {
+            snxStage("ROMFS: replacing previous link " + old);
+            if (!target.delete())
+                throw new IOException("Falha ao atualizar o link da RomFS.");
+            old = null;
+        }
+        if (old == null) android.system.Os.symlink(desired, target.getAbsolutePath());
+        if (!desired.equals(android.system.Os.readlink(target.getAbsolutePath())) ||
+                !new File(target, "ObjectData").isDirectory())
+            throw new IOException("Nao foi possivel atravessar o link de RomFS. Verifique Acesso a todos os arquivos.");
+        snxStage("ROMFS_DIRECT_READY: " + target + " -> " + desired);
+    }
 
     private void snxStage(String text) {
         android.util.Log.i("MarioSNX", text);
@@ -126,12 +208,11 @@ public final class MarioBootActivity extends Activity {
         int padding = (int)(20 * getResources().getDisplayMetrics().density);
         layout.setPadding(padding, padding, padding, padding);
         TextView title = new TextView(this);
-        title.setText("Mario SNX Runtime — diagnóstico 3");
+        title.setText("Mario SNX Runtime — RomFS direta");
         title.setTextSize(23);
         layout.addView(title);
         TextView description = new TextView(this);
-        description.setText("Selecione a pasta Super-extraido que contém exefs e romfs. " +
-            "O jogo será lido dessa pasta. A biblioteca já está neste APK de teste.");
+        description.setText("Selecione Super-nstool-1.2.0 com exefs e romfs. A RomFS sera lida diretamente do armazenamento, sem copiar 2,9 GB; requer autorizacao opcional do Android.");
         layout.addView(description);
         Button folder = new Button(this);
         folder.setText("Selecionar pasta do Mario");
@@ -143,6 +224,10 @@ public final class MarioBootActivity extends Activity {
             startActivityForResult(intent, PICK_GAME);
         });
         layout.addView(folder);
+        Button directAccess = new Button(this);
+        directAccess.setText("Autorizar leitura direta da RomFS (Android)");
+        directAccess.setOnClickListener(v -> requestDirectRomfsAccess());
+        layout.addView(directAccess);
         play = new Button(this);
         play.setText("Iniciar LASRecomp antigo (não é ScarletNX)");
         play.setEnabled(false);
@@ -223,6 +308,10 @@ public final class MarioBootActivity extends Activity {
         final Uri tree = selected;
         if (tree == null || checking) {
             status.setText("Selecione primeiro a pasta Super-extraido.");
+            return;
+        }
+        if (Build.VERSION.SDK_INT < 30 || !Environment.isExternalStorageManager()) {
+            requestDirectRomfsAccess();
             return;
         }
         new File(getFilesDir(), "mario-snx-launch.log").delete();
@@ -310,6 +399,9 @@ public final class MarioBootActivity extends Activity {
                     snxStage("PREPARE: copied exefs/" + current +
                              " bytes=" + new File(exefs, current).length());
                 }
+                File romfsSource = selectedRomfsPath(tree);
+                snxStage("ROMFS_SOURCE_VALIDATED: " + romfsSource.getAbsolutePath());
+                mountExternalRomfs(new File(data, "romfs"), romfsSource);
                 // Force an app-readable location for the ScarletNX logs and
                 // settings, instead of relying on the SDL HOME/XDG defaults.
                 File snxState = new File(gameRoot, "state");
@@ -328,8 +420,8 @@ public final class MarioBootActivity extends Activity {
                 }
                 // The runtime builds a dispatch table, loads matching NSOs,
                 // initialises Horizon/JIT and attempts kernel_run_main().
-                // RomFS remains absent during this FIRST CPU boot attempt:
-                // do not silently copy several GB or claim the game will render.
+                // The original RomFS is mounted as a read-only external directory
+                // symlink. Do not copy 2.9 GB or claim that gameplay is verified.
                 snxStage("PREPARE_COMPLETE: launching real ScarletNX SDL runtime");
                 Intent intent = new Intent(this, MarioSnxGameActivity.class);
                 intent.putExtra("snx_game_base",
