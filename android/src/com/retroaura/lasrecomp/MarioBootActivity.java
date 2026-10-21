@@ -126,7 +126,7 @@ public final class MarioBootActivity extends Activity {
         int padding = (int)(20 * getResources().getDisplayMetrics().density);
         layout.setPadding(padding, padding, padding, padding);
         TextView title = new TextView(this);
-        title.setText("Mario SNX Runtime — diagnóstico 2");
+        title.setText("Mario SNX Runtime — diagnóstico 3");
         title.setTextSize(23);
         layout.addView(title);
         TextView description = new TextView(this);
@@ -227,6 +227,7 @@ public final class MarioBootActivity extends Activity {
         }
         new File(getFilesDir(), "mario-snx-launch.log").delete();
         snxStage("BUTTON_CLICK: preparing ScarletNX guest execution");
+        android.widget.Toast.makeText(this, "Preparando o Mario ScarletNX…", android.widget.Toast.LENGTH_SHORT).show();
         checking = true;
         snxRunButton.setEnabled(false);
         status.setText("ScarletNX: iniciando preparação. Os executáveis podem demorar para copiar; não feche o aplicativo.");
@@ -236,10 +237,28 @@ public final class MarioBootActivity extends Activity {
                 File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
                 File runtime = new File(nativeDir, "libscarletnx.so");
                 File code = new File(nativeDir, "libmario_snx.so");
-                if (!runtime.isFile() || !code.isFile())
-                    throw new IOException("APK não contém o runtime ScarletNX ou a biblioteca ARM64 do Mario.");
-                snxStage("PREPARE: found runtime size=" + runtime.length() +
-                         " game-so size=" + code.length());
+                boolean hasRuntime = runtime.isFile(), hasCode = code.isFile();
+                snxStage("NATIVE_LIBRARY_DIR: " + nativeDir.getAbsolutePath() +
+                         " exists=" + nativeDir.isDirectory());
+                snxStage("INSTALLED LIBS: runtime=" + hasRuntime +
+                         " size=" + runtime.length() + "; mario=" + hasCode +
+                         " size=" + code.length());
+                try (java.util.zip.ZipFile apk =
+                             new java.util.zip.ZipFile(getApplicationInfo().sourceDir)) {
+                    for (String name : new String[]{"lib/arm64-v8a/libscarletnx.so",
+                                                     "lib/arm64-v8a/libmario_snx.so"}) {
+                        java.util.zip.ZipEntry entry = apk.getEntry(name);
+                        snxStage("APK CONTENTS: " + name + " exists=" + (entry != null) +
+                                 " size=" + (entry == null ? 0 : entry.getSize()));
+                    }
+                } catch (Exception zipError) {
+                    snxStage("APK_CONTENTS_FAILED: " + zipError);
+                }
+                if (!hasRuntime || !hasCode)
+                    throw new IOException("Bibliotecas nativas nao instaladas: runtime=" +
+                                          hasRuntime + ", mario=" + hasCode +
+                                          ". Confira a secao APK CONTENTS no log.");
+                snxStage("PREPARE: runtime and Mario AOT module installed");
                 File gameRoot = new File(new File(getFilesDir(), "snx-games"), SNX_GAME_ID);
                 if (!gameRoot.isDirectory() && !gameRoot.mkdirs())
                     throw new IOException("Não foi possível criar a pasta do jogo.");
@@ -311,7 +330,8 @@ public final class MarioBootActivity extends Activity {
                 runOnUiThread(() -> {
                     checking = false;
                     snxRunButton.setEnabled(true);
-                    status.setText(message);
+                    status.setText(message + "\n\nToque em Salvar log para enviar o diagnóstico.");
+                    android.widget.Toast.makeText(this, "Falha ao preparar ScarletNX; veja o log.", android.widget.Toast.LENGTH_LONG).show();
                 });
             }
         }, "mario-snx-prep").start();
