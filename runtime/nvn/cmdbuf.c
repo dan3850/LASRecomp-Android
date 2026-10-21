@@ -42,7 +42,7 @@ static uint64_t reserve_mario_spill(uint64_t capacity) {
         uint64_t total = mario_spill_bytes;
         pthread_mutex_unlock(&mario_spill_lock);
         FATAL("[mario-nvn-memory] spill retention cap reached allocated=%llu "
-              "requested=%llu cap=%llu; refusing unsafe reuse of live command lists\\n",
+              "requested=%llu cap=%llu; refusing unsafe reuse of live command lists\n",
               (unsigned long long)total, (unsigned long long)capacity,
               (unsigned long long)MARIO_SPILL_RETAIN_MAX_BYTES);
     }
@@ -67,14 +67,15 @@ static void retain_finalized_spills(NvnCmdBuf *cb) {
     mario_retained_spills = head;
     mario_retained_count += retained_now;
     uint64_t retained_total = mario_retained_count;
+    uint64_t total_bytes = mario_spill_bytes;
     pthread_mutex_unlock(&mario_spill_lock);
     // Keep the log bounded: no per-command spam on normal render paths.
     if (retained_total <= 8 || (retained_total & 127) == 0)
         fprintf(stderr, "[mario-nvn-memory] retained-finalized chunks=%llu "
-                "retained-total=%llu bytes-allocated=%llu\\n",
+                "retained-total=%llu bytes-allocated=%llu\n",
                 (unsigned long long)retained_now,
                 (unsigned long long)retained_total,
-                (unsigned long long)mario_spill_bytes);
+                (unsigned long long)total_bytes);
 }
 #endif
 
@@ -224,7 +225,7 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
                     (unsigned long long)cb->mem, (unsigned long long)cb->used,
                     (unsigned long long)cb->size, (unsigned long long)next_mem);
             if (retained_bytes <= 8 * 65536ull || (retained_bytes % (128ull * 65536)) < 65536)
-                fprintf(stderr, "[mario-nvn-memory] spill-retention total-bytes=%llu cap=%llu\\n",
+                fprintf(stderr, "[mario-nvn-memory] spill-retention total-bytes=%llu cap=%llu\n",
                         (unsigned long long)retained_bytes,
                         (unsigned long long)MARIO_SPILL_RETAIN_MAX_BYTES);
             cb->mem = next_mem;
