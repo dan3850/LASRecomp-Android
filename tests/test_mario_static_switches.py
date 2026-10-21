@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from mario_static_switches import recognize, blocks_for_targets, select_census, select_global_census
+from mario_static_switches import recognize, blocks_for_targets, select_census, select_global_census, valid_selection_mode
 
 
 class Insn:
@@ -85,6 +85,12 @@ class TestMarioStaticSwitch(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not in a verified"):
             select_census(tables, planned, self.base, 0x70, 2, 0x80, 0x40)
 
+
+    def test_cli_modes_global_without_anchor_or_explicit_anchor(self):
+        self.assertTrue(valid_selection_mode(True, None))
+        self.assertTrue(valid_selection_mode(False, 0x48))
+        self.assertFalse(valid_selection_mode(True, 0x48))
+        self.assertFalse(valid_selection_mode(False, None))
 
     def test_global_census_only_selects_complete_verified_tables(self):
         base = self.base
