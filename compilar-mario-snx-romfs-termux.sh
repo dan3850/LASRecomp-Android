@@ -223,6 +223,10 @@ cat > "$SYMBOL_MAP" <<'MAP'
   local: getauxval; memset; memcpy; memmove;
 };
 MAP
+# Force only the runtime entry object/relink when the version script
+# contents change; Ninja cannot always track external linker scripts.
+# The heavyweight dependencies remain fully cached.
+touch "$SRC/src/nx/runtime/entry.c"
 SNX_CMAKE="$SRC/src/nx/CMakeLists.txt"
 python3 - "$SNX_CMAKE" "$SYMBOL_MAP" <<'PY'
 from pathlib import Path
