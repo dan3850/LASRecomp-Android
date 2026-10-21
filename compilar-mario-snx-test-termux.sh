@@ -25,6 +25,7 @@ SIGNED="$OUT/Mario-SNX-Lib-Test.signed.apk"
 command -v llvm-readelf >/dev/null || die "llvm-readelf ausente"
 command -v llvm-nm >/dev/null || die "llvm-nm ausente"
 command -v zip >/dev/null || die "zip ausente"
+command -v unzip >/dev/null || die "unzip ausente"
 
 llvm-readelf -h "$SNX_SO" | grep -Eq 'Machine:.*AArch64' || die "SNX: nao e AArch64"
 llvm-nm -D --defined-only "$SNX_SO" | grep -Eq '[[:space:]]snx_module$' ||
