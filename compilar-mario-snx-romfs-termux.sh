@@ -46,9 +46,40 @@ if [ "$(git rev-parse HEAD)" != "$COMMIT" ]; then
 fi
 
 python3 "$ROOT/tools/patch_scarletnx_romfs.py" "$SRC"
+# Termux's LLVM21 ships llvm-config plus shared LLVM, while its CMake
+# LLVMExports may name static .a components not installed on the phone.
+# Native Termux builds can query llvm-config; cross builds cannot.
+LLVM_CMAKE="$SRC/cmake/llvm.cmake"
+python3 - "$LLVM_CMAKE" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+old = 'if(ANDROID OR IOS OR (APPLE AND LLVM_DIR AND NOT SNX_LLVM_CONFIG))'
+new = 'if((ANDROID AND NOT SNX_TERMUX_NATIVE_LLVM) OR IOS OR (APPLE AND LLVM_DIR AND NOT SNX_LLVM_CONFIG))'
+if s.count(new) == 1:
+    print("LLVM Termux CMake integration already applied")
+elif s.count(old) == 1:
+    s = s.replace(old, new)
+    p.write_text(s)
+    print("LLVM Termux CMake integration applied")
+else:
+    raise SystemExit("Unknown ScarletNX LLVM configuration; refusing automatic patch")
+PY
 
 [ -f "$LLVM_PREFIX/lib/cmake/llvm/LLVMConfig.cmake" ] ||
   die "LLVMConfig.cmake ausente em $LLVM_PREFIX; instale pkg install llvm"
+LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
+[ -x "$LLVM_CONFIG" ] || die "llvm-config do Termux nao encontrado em $LLVM_CONFIG"
+if ! LLVM_LIBS="$("$LLVM_CONFIG" --link-shared --libs core orcjit native 2>&1)"; then
+  die "llvm-config nao conseguiu descrever bibliotecas LLVM compartilhadas: $LLVM_LIBS"
+fi
+echo "LLVM_SHARED_LIBS: $LLVM_LIBS"
+# Validate that llvm-config emits a shared-library linker name rather
+# than a list of absent static component archives.
+if ! printf '%s' "$LLVM_LIBS" | grep -E -- '-lLLVM([ -]|$)' >/dev/null; then
+  echo "AVISO: LLVM compartilhado nao aparece na consulta; CMake validara os componentes."
+fi
 [ -f "$PREFIX/lib/libatomic.a" ] || die "Termux libatomic.a ausente"
 [ -f "$PREFIX/lib/libunwind.a" ] || die "Termux libunwind.a ausente"
 echo "Reutilizando LLVM ARM64 do Termux: $LLVM_PREFIX"
@@ -98,6 +129,8 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
   -DLLVM_DIR="$LLVM_PREFIX/lib/cmake/llvm" \
+  -DSNX_TERMUX_NATIVE_LLVM=ON \
+  -DSNX_LLVM_CONFIG="$LLVM_CONFIG" \
   -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" \
   -DCMAKE_CXX_FLAGS="$CXX_FLAGS" \
   -DCMAKE_CXX_STANDARD_LIBRARIES="$CXX_RUNTIME" \
