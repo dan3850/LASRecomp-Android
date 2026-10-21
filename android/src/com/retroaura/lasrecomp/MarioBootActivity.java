@@ -33,6 +33,8 @@ public final class MarioBootActivity extends Activity {
     private Uri selected;
     private boolean checking;
     private Button snxProbeButton;
+    private Button snxRunButton;
+    private static final String SNX_GAME_ID = "010028600EBDA000";
     private static native String nativeProbeScarletNx();
 
     // A native abort or OOM kill may happen before the user can capture threads.
@@ -125,6 +127,11 @@ public final class MarioBootActivity extends Activity {
         snxProbeButton.setText("Testar biblioteca ScarletNX (sem iniciar o jogo)");
         snxProbeButton.setOnClickListener(v -> runSnxProbe());
         layout.addView(snxProbeButton);
+        snxRunButton = new Button(this);
+        snxRunButton.setText("Executar Mario pelo runtime ScarletNX (experimental)");
+        snxRunButton.setEnabled(false);
+        snxRunButton.setOnClickListener(v -> runScarletNxGame());
+        layout.addView(snxRunButton);
         Button logs = new Button(this);
         logs.setText("Ver último log");
         logs.setOnClickListener(v -> status.setText(readLogs()));
@@ -172,6 +179,102 @@ public final class MarioBootActivity extends Activity {
         }, "mario-snx-probe").start();
     }
 
+    /**
+     * This runs the actual ScarletNX runtime and its AOT code, in a separate
+     * Android process. The runtime requires POSIX-accessible ExeFS; the Zelda
+     * SAF bridge used by LASRecomp is not compatible with ScarletNX fs_tree.
+     * Copy only needed modules, never the user's private XCI.
+     *
+     * Do NOT call a compiled GuestFn directly: its CPU/RtAPI/memory layout is
+     * ABI-12, unlike the LASRecomp Cpu struct.
+     */
+    private void runScarletNxGame() {
+        final Uri tree = selected;
+        if (tree == null || checking) {
+            status.setText("Selecione primeiro a pasta Super-extraido.");
+            return;
+        }
+        checking = true;
+        snxRunButton.setEnabled(false);
+        status.setText("Preparando ExeFS no armazenamento privado para iniciar a CPU ScarletNX…");
+        new Thread(() -> {
+            try {
+                File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
+                File runtime = new File(nativeDir, "libscarletnx.so");
+                File code = new File(nativeDir, "libmario_snx.so");
+                if (!runtime.isFile() || !code.isFile())
+                    throw new IOException("APK não contém o runtime ScarletNX ou a biblioteca ARM64 do Mario.");
+                File gameRoot = new File(new File(getFilesDir(), "snx-games"), SNX_GAME_ID);
+                if (!gameRoot.isDirectory() && !gameRoot.mkdirs())
+                    throw new IOException("Não foi possível criar a pasta do jogo.");
+                // The Android linker loads the trusted, read-only APK library.
+                // The game module is only a symlink; no executable is written
+                // to app data, which targetSdk >= 29 prohibits.
+                File link = new File(gameRoot, SNX_GAME_ID + "_code.so");
+                if (link.exists()) {
+                    String existing = android.system.Os.readlink(link.getAbsolutePath());
+                    if (!code.getAbsolutePath().equals(existing)) {
+                        if (!link.delete()) throw new IOException("Não foi possível substituir symlink inválido.");
+                    }
+                }
+                if (!link.exists())
+                    android.system.Os.symlink(code.getAbsolutePath(), link.getAbsolutePath());
+                File data = new File(gameRoot, SNX_GAME_ID + "_data");
+                File exefs = new File(data, "exefs");
+                if (!exefs.isDirectory() && !exefs.mkdirs())
+                    throw new IOException("Não foi possível criar a pasta ExeFS.");
+                for (String module : new String[]{"rtld", "main", "sdk", "main.npdm"}) {
+                    final String current = module;
+                    runOnUiThread(() -> status.setText("Preparando ExeFS: " + current));
+                    copySnxExecutable(tree, module, new File(exefs, module));
+                }
+                // The runtime builds a dispatch table, loads matching NSOs,
+                // initialises Horizon/JIT and attempts kernel_run_main().
+                // RomFS remains absent during this FIRST CPU boot attempt:
+                // do not silently copy several GB or claim the game will render.
+                Intent intent = new Intent(this, MarioSnxGameActivity.class);
+                intent.putExtra("snx_game_base",
+                        new File(gameRoot, SNX_GAME_ID).getAbsolutePath());
+                runOnUiThread(() -> {
+                    checking = false;
+                    snxRunButton.setEnabled(true);
+                    status.setText("Iniciando CPU ScarletNX (ABI 12). Se fechar, use Ver último log.");
+                    startActivity(intent);
+                });
+            } catch (Throwable error) {
+                final String message = "SNX PREPARE FAILED: " + error;
+                runOnUiThread(() -> {
+                    checking = false;
+                    snxRunButton.setEnabled(true);
+                    status.setText(message);
+                });
+            }
+        }, "mario-snx-prep").start();
+    }
+
+    private void copySnxExecutable(Uri tree, String name, File dest) throws IOException {
+        // Match each run to the currently selected SAF tree, not a stale cache.
+        // Module files are immutable game executables; copy atomically.
+        int fd = GameDocumentBridge.openReadFd(this, tree, "exefs/" + name);
+        try (InputStream source = new ParcelFileDescriptor.AutoCloseInputStream(
+                ParcelFileDescriptor.adoptFd(fd))) {
+            File pending = new File(dest.getAbsolutePath() + ".partial");
+            try (FileOutputStream output = new FileOutputStream(pending, false)) {
+                byte[] buffer = new byte[1024 * 1024];
+                int length;
+                while ((length = source.read(buffer)) != -1) {
+                    output.write(buffer, 0, length);
+                }
+                output.getFD().sync();
+            } catch (IOException error) {
+                pending.delete();
+                throw error;
+            }
+            if (!pending.renameTo(dest))
+                throw new IOException("Não foi possível guardar ExeFS/" + name);
+        }
+    }
+
     private JSONObject profile() throws Exception {
         try (InputStream input = getAssets().open("mario_boot_profile.json");
              ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
@@ -208,6 +311,7 @@ public final class MarioBootActivity extends Activity {
         checking = true;
         selected = null;
         play.setEnabled(false);
+        if (snxRunButton != null) snxRunButton.setEnabled(false);
         status.setText("Verificando os executáveis e o acesso à pasta…");
         new Thread(() -> {
             try {
@@ -243,6 +347,7 @@ public final class MarioBootActivity extends Activity {
                     selected = tree;
                     getSharedPreferences("mario_boot", MODE_PRIVATE).edit().putString("game_tree", tree.toString()).apply();
                     play.setEnabled(true);
+                    snxRunButton.setEnabled(true);
                     status.setText("Executáveis compatíveis com este APK. Toque em Iniciar teste. " +
                         "Após um fechamento, abra este app novamente e use Ver último log ou Salvar log.");
                 });
