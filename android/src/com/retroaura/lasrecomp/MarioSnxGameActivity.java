@@ -2,7 +2,11 @@ package com.retroaura.lasrecomp;
 
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Bundle;
+import android.util.Log;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
 import org.libsdl.app.SDLActivity;
 
 /**
@@ -11,12 +15,42 @@ import org.libsdl.app.SDLActivity;
  * No LASRecomp Cpu* or Vulkan contexts are passed across engines.
  */
 public final class MarioSnxGameActivity extends SDLActivity {
-    @Override protected String[] getLibraries() { return new String[]{"scarletnx"}; }
+    private void stage(String message) {
+        Log.i("MarioSNX", "GUEST PROCESS " + message);
+        try (FileOutputStream file = new FileOutputStream(
+                new File(getFilesDir(), "mario-snx-launch.log"), true)) {
+            file.write((System.currentTimeMillis() + " [:snx] " + message + "\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            file.getFD().sync();
+        } catch (Exception error) {
+            Log.e("MarioSNX", "Could not write :snx stage", error);
+        }
+    }
+
+    @Override public void onCreate(Bundle savedState) {
+        stage("SDL_ACTIVITY_ONCREATE_ENTERED: child process started");
+        try {
+            super.onCreate(savedState);
+            stage("SDL_ACTIVITY_ONCREATE_RETURNED");
+        } catch (Throwable error) {
+            stage("SDL_ACTIVITY_ONCREATE_FAILED: " + error.toString());
+            throw error;
+        }
+    }
+
+    @Override protected String[] getLibraries() {
+        stage("SDL_GET_LIBRARIES: loading libscarletnx.so");
+        return new String[]{"scarletnx"};
+    }
     @Override protected String getMainFunction() { return "main"; }
 
     @Override protected String[] getArguments() {
         String base = getIntent().getStringExtra("snx_game_base");
-        if (base == null || base.isEmpty()) return new String[]{"--settings"};
+        if (base == null || base.isEmpty()) {
+            stage("SDL_GET_ARGUMENTS: missing game path, refusing to run");
+            return new String[]{"--settings"};
+        }
+        stage("SDL_GET_ARGUMENTS: invoking ScarletNX main with game base " + base);
         return new String[]{"--game=" + base, "--log=2"};
     }
 
@@ -39,6 +73,7 @@ public final class MarioSnxGameActivity extends SDLActivity {
     // ScarletNX's main() has process-long singleton state. Never reenter it
     // after SDL has destroyed its activity; the launcher uses another process.
     @Override protected void onDestroy() {
+        stage("SDL_ACTIVITY_ONDESTROY");
         super.onDestroy();
         System.exit(0);
     }
