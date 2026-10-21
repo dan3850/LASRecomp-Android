@@ -35,6 +35,34 @@ public final class MarioBootActivity extends Activity {
     private Button snxProbeButton;
     private Button snxRunButton;
     private static final String SNX_GAME_ID = "010028600EBDA000";
+
+    private void snxStage(String text) {
+        android.util.Log.i("MarioSNX", text);
+        try (FileOutputStream file = new FileOutputStream(
+                new File(getFilesDir(), "mario-snx-launch.log"), true)) {
+            file.write((System.currentTimeMillis() + " [launcher] " + text + "\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            file.getFD().sync();
+        } catch (IOException error) {
+            android.util.Log.e("MarioSNX", "Cannot save stage", error);
+        }
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (status == null || checking) return;
+        File stageFile = new File(getFilesDir(), "mario-snx-launch.log");
+        if (!stageFile.isFile()) return;
+        try (RandomAccessFile input = new RandomAccessFile(stageFile, "r")) {
+            long first = Math.max(0, input.length() - 5000);
+            input.seek(first);
+            byte[] bytes = new byte[(int) (input.length() - first)];
+            input.readFully(bytes);
+            String trace = new String(bytes, StandardCharsets.UTF_8);
+            status.setText("Última tentativa ScarletNX:\n" + trace +
+                    "\nUse Salvar log para enviar o relatório completo.");
+        } catch (IOException ignored) { }
+    }
     private static native String nativeProbeScarletNx();
 
     // A native abort or OOM kill may happen before the user can capture threads.
@@ -194,16 +222,21 @@ public final class MarioBootActivity extends Activity {
             status.setText("Selecione primeiro a pasta Super-extraido.");
             return;
         }
+        new File(getFilesDir(), "mario-snx-launch.log").delete();
+        snxStage("BUTTON_CLICK: preparing ScarletNX guest execution");
         checking = true;
         snxRunButton.setEnabled(false);
-        status.setText("Preparando ExeFS no armazenamento privado para iniciar a CPU ScarletNX…");
+        status.setText("ScarletNX: preparando ExeFS para iniciar a CPU. Acompanhe as etapas na tela.");
         new Thread(() -> {
             try {
+                snxStage("PREPARE: checking packaged runtime and AOT module");
                 File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
                 File runtime = new File(nativeDir, "libscarletnx.so");
                 File code = new File(nativeDir, "libmario_snx.so");
                 if (!runtime.isFile() || !code.isFile())
                     throw new IOException("APK não contém o runtime ScarletNX ou a biblioteca ARM64 do Mario.");
+                snxStage("PREPARE: found runtime size=" + runtime.length() +
+                         " game-so size=" + code.length());
                 File gameRoot = new File(new File(getFilesDir(), "snx-games"), SNX_GAME_ID);
                 if (!gameRoot.isDirectory() && !gameRoot.mkdirs())
                     throw new IOException("Não foi possível criar a pasta do jogo.");
@@ -219,14 +252,18 @@ public final class MarioBootActivity extends Activity {
                 }
                 if (!link.exists())
                     android.system.Os.symlink(code.getAbsolutePath(), link.getAbsolutePath());
+                snxStage("PREPARE: native AOT link ready: " + link.getAbsolutePath());
                 File data = new File(gameRoot, SNX_GAME_ID + "_data");
                 File exefs = new File(data, "exefs");
                 if (!exefs.isDirectory() && !exefs.mkdirs())
                     throw new IOException("Não foi possível criar a pasta ExeFS.");
                 for (String module : new String[]{"rtld", "main", "sdk", "main.npdm"}) {
                     final String current = module;
-                    runOnUiThread(() -> status.setText("Preparando ExeFS: " + current));
+                    snxStage("PREPARE: copying exefs/" + current);
+                    runOnUiThread(() -> status.setText("ScarletNX: preparando ExeFS/" + current + "…"));
                     copySnxExecutable(tree, module, new File(exefs, module));
+                    snxStage("PREPARE: copied exefs/" + current +
+                             " bytes=" + new File(exefs, current).length());
                 }
                 // Force an app-readable location for the ScarletNX logs and
                 // settings, instead of relying on the SDL HOME/XDG defaults.
@@ -248,6 +285,7 @@ public final class MarioBootActivity extends Activity {
                 // initialises Horizon/JIT and attempts kernel_run_main().
                 // RomFS remains absent during this FIRST CPU boot attempt:
                 // do not silently copy several GB or claim the game will render.
+                snxStage("PREPARE_COMPLETE: launching real ScarletNX SDL runtime");
                 Intent intent = new Intent(this, MarioSnxGameActivity.class);
                 intent.putExtra("snx_game_base",
                         new File(gameRoot, SNX_GAME_ID).getAbsolutePath());
@@ -255,10 +293,18 @@ public final class MarioBootActivity extends Activity {
                     checking = false;
                     snxRunButton.setEnabled(true);
                     status.setText("Iniciando CPU ScarletNX (ABI 12). Se fechar, use Ver último log.");
-                    startActivity(intent);
+                    try {
+                        snxStage("ACTIVITY_START_REQUESTED: " + MarioSnxGameActivity.class.getName());
+                        startActivity(intent);
+                        snxStage("ACTIVITY_START_CALLED: waiting for child process");
+                    } catch (Throwable error) {
+                        snxStage("ACTIVITY_START_FAILED: " + error.toString());
+                        status.setText("ScarletNX: não foi possível abrir a tela do jogo: " + error);
+                    }
                 });
             } catch (Throwable error) {
                 final String message = "SNX PREPARE FAILED: " + error;
+                snxStage(message);
                 runOnUiThread(() -> {
                     checking = false;
                     snxRunButton.setEnabled(true);
@@ -387,7 +433,7 @@ public final class MarioBootActivity extends Activity {
 
     private String readLogs() {
         StringBuilder text = new StringBuilder();
-        for (String name : new String[]{"mario-snx-probe.txt", "mario-exit.log", "neo_touch_crash.txt", "mario-threads.log", "mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
+        for (String name : new String[]{"mario-snx-launch.log", "mario-snx-probe.txt", "mario-exit.log", "neo_touch_crash.txt", "mario-threads.log", "mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
             text.append("\n=== ").append(name).append(" ===\n");
             try (RandomAccessFile input = new RandomAccessFile(new File(getFilesDir(), name), "r")) {
                 long start = (name.equals("mario-exit.log") || name.equals("neo_touch_crash.txt") || name.equals("mario-threads.log") || name.equals("mario-grafico.log") || name.equals("mario-esperas.log")) ? 0 : Math.max(0, input.length() - 160000);
