@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from mario_static_switches import (recognize, recognize_spaced, recognize_masked_guarded,
-                                  blocks_for_targets,
+                                  recognize_guarded_mov_tail, blocks_for_targets,
                                   select_census, select_global_census, valid_selection_mode)
 
 
@@ -106,6 +106,56 @@ class TestMarioStaticSwitch(unittest.TestCase):
         code = self.masked_fixture()
         self.img[0x1033] = 0xff
         self.assertIsNone(recognize_masked_guarded(code, self.nso, self.base))
+
+    def mario_guarded_mov_tail_fixture(self):
+        # Same instruction pattern as main+0x9bb5d8..main+0x9bb5f8.
+        # In the source log, table_rva=0x107816d; the synthetic 4-byte
+        # read-only table contains 0x0b, which maps base+0x40 to +0x6c.
+        self.img[0x106d:0x1071] = bytes([0, 11, 19, 33])
+        seq = [
+            ("cmp", "w8, #3"),
+            ("b.hi", "#0x7000000100"),
+            ("adrp", "x9, #0x7000001000"),
+            ("add", "x9, x9, #0x6d"),
+            ("adr", "x10, #0x7000000040"),
+            ("ldrb", "w11, [x9, x8]"),
+            ("add", "x10, x10, x11, lsl #2"),
+            ("mov", "x19, x0"),
+            ("br", "x10"),
+        ]
+        return [Insn(self.base + i * 4, m, op)
+                for i, (m, op) in enumerate(seq)]
+
+    def test_mario_9bb628_byte_switch_with_mov_before_branch(self):
+        code = self.mario_guarded_mov_tail_fixture()
+        result = recognize_guarded_mov_tail(code, self.nso, self.base)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["layout"], "guarded-neutral-mov-before-br")
+        self.assertEqual(result["cases"], 4)
+        self.assertEqual(result["table_rva"], 0x106d)
+        self.assertEqual(result["branch_rva"], 0x20)
+        self.assertIn(0x6c, result["targets"])
+        self.assertEqual(result["targets"], (0x40, 0x6c, 0x8c, 0xc4))
+
+    def test_mario_mov_tail_refuses_clobbering_or_wrong_guard(self):
+        # Accept only a MOV that preserves the computed BR register.
+        for idx, replacement in [
+                (7, ("mov", "x10, x0")),
+                (7, ("add", "x19, x0, #1")),
+                (1, ("b.lo", "#0x7000000100")),
+                (5, ("ldrb", "w11, [x9, x7]")),
+                (8, ("blr", "x10"))]:
+            code = self.mario_guarded_mov_tail_fixture()
+            code[idx] = Insn(code[idx].address, *replacement)
+            with self.subTest(idx=idx, replacement=replacement):
+                self.assertIsNone(
+                    recognize_guarded_mov_tail(code, self.nso, self.base))
+
+    def test_mario_mov_tail_refuses_out_of_range_table(self):
+        code = self.mario_guarded_mov_tail_fixture()
+        self.img[0x106f] = 255
+        self.assertIsNone(recognize_guarded_mov_tail(
+            code, self.nso, self.base))
 
     def test_spaced_guarded_switch_observed_mario_layout(self):
         # Reproduces main+0x9b6d60..0x9b6d98: ADRP/ADD x26 precedes
