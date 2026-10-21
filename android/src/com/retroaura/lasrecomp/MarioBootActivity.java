@@ -144,7 +144,7 @@ public final class MarioBootActivity extends Activity {
         });
         layout.addView(folder);
         play = new Button(this);
-        play.setText("Iniciar teste");
+        play.setText("Iniciar LASRecomp antigo (não é ScarletNX)");
         play.setEnabled(false);
         play.setOnClickListener(v -> {
             if (selected == null || checking) return;
