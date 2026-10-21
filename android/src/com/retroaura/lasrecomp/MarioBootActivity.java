@@ -228,6 +228,22 @@ public final class MarioBootActivity extends Activity {
                     runOnUiThread(() -> status.setText("Preparando ExeFS: " + current));
                     copySnxExecutable(tree, module, new File(exefs, module));
                 }
+                // Force an app-readable location for the ScarletNX logs and
+                // settings, instead of relying on the SDL HOME/XDG defaults.
+                File snxState = new File(gameRoot, "state");
+                File snxCache = new File(gameRoot, "cache");
+                File snxConfig = new File(gameRoot, "config");
+                for (File dir : new File[]{snxState, snxCache, snxConfig})
+                    if (!dir.isDirectory() && !dir.mkdirs())
+                        throw new IOException("Não foi possível criar pasta SNX: " + dir);
+                File folders = new File(gameRoot, SNX_GAME_ID + ".folders");
+                String foldersText = "state=" + snxState.getAbsolutePath() + "\\n"
+                        + "cache=" + snxCache.getAbsolutePath() + "\\n"
+                        + "config=" + snxConfig.getAbsolutePath() + "\\n";
+                try (FileOutputStream output = new FileOutputStream(folders, false)) {
+                    output.write(foldersText.getBytes(StandardCharsets.UTF_8));
+                    output.getFD().sync();
+                }
                 // The runtime builds a dispatch table, loads matching NSOs,
                 // initialises Horizon/JIT and attempts kernel_run_main().
                 // RomFS remains absent during this FIRST CPU boot attempt:
@@ -368,6 +384,28 @@ public final class MarioBootActivity extends Activity {
                 input.readFully(bytes);
                 text.append(new String(bytes, StandardCharsets.UTF_8));
             } catch (Exception error) { text.append("Sem registro de inicialização ainda.\n"); }
+        }
+        File snxState = new File(new File(new File(getFilesDir(),
+                "snx-games"), SNX_GAME_ID), "state");
+        File[] recorded = snxState.listFiles();
+        if (recorded != null) {
+            java.util.Arrays.sort(recorded, (a, b) ->
+                    Long.compare(b.lastModified(), a.lastModified()));
+            int added = 0;
+            for (File file : recorded) {
+                if (!file.isFile() || !file.getName().endsWith(".log")) continue;
+                text.append("\\n=== SNX RUNTIME: ").append(file.getName()).append(" ===\\n");
+                try (RandomAccessFile input = new RandomAccessFile(file, "r")) {
+                    long start = Math.max(0, input.length() - 240000);
+                    input.seek(start);
+                    byte[] bytes = new byte[(int)(input.length() - start)];
+                    input.readFully(bytes);
+                    text.append(new String(bytes, StandardCharsets.UTF_8));
+                } catch (IOException error) {
+                    text.append("Não foi possível ler log SNX: ").append(error);
+                }
+                if (++added >= 3) break;
+            }
         }
         return text.toString();
     }
