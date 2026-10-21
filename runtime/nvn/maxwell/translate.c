@@ -749,6 +749,36 @@ static void emit_texs(Ctx *c, uint64_t w, bool fetch) {
     write_tex_result(c, slot, call, mask, d0, d1, true, !bits(w, 59, 1));  // 0xd0/0xd2: .F16 results
 }
 
+// TLD4S: gather four neighboring texels from a 2D texture.
+// Maxwell encoding reference: Ryujinx InstTld4s / InstEmitTexture.EmitTexs.
+// The observed Mario instruction df0000a000b70a06 selects R component
+// (TexComp=0), texture handle 10, coords R10/R11, results R6/R7/R0/R1.
+// Keep non-Vulkan MSL and as-yet-unverified offset/depth-compare variants
+// on their existing unsupported path rather than silently approximating.
+static void emit_tld4s_glsl(Ctx *c, uint64_t w) {
+    bool aoffi = bits(w, 51, 1), dc = bits(w, 50, 1);
+    if (aoffi || dc) {
+        fail(c, "tld4s offset/depth-compare variant not implemented (aoffi=%d dc=%d)",
+             (int)aoffi, (int)dc);
+        return;
+    }
+    int d0 = (int)bits(w, 0, 8), d1 = (int)bits(w, 28, 8);
+    int a = (int)bits(w, 8, 8), b = (int)bits(w, 20, 8);
+    int comp = (int)bits(w, 52, 2);
+    uint32_t index = (uint32_t)bits(w, 36, 13);
+    bool f16 = bits(w, 55, 1);  // df8*: packed FP16; df0*: FP32
+    int slot = tex_slot(c, index, TEXTYPE_2D, false, false);
+    char coord_a[16], coord_b[16], call[256];
+    const char *A = reg(c, a, coord_a), *Bv = reg(c, b, coord_b);
+    snprintf(call, sizeof call,
+             "textureGather(t%d, vec2(as_type<float>(%s), as_type<float>(%s)), %d)",
+             slot, A, Bv, comp);
+    // TLD4S uses a fixed WMask=4. The existing TEXS mask table maps it to
+    // xyzw with two destinations, or xy when the second is RZ.
+    write_tex_result(c, slot, call, d1 == RZ ? 3u : 15u,
+                     d0, d1, true, f16);
+}
+
 // TEX (full form): coordinates from consecutive registers at gpr8, extra parameters at gpr20.
 static void emit_tex(Ctx *c, uint64_t w, bool bindless) {
     int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8), b = (int)bits(w, 20, 8);
@@ -913,6 +943,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_texs(c, w, false);
     } else if (OPM(0xd200000000000000ull, 0xf600000000000000ull)) {  // TLDS
         emit_texs(c, w, true);
+    } else if (c->glsl &&
+               (OPM(0xdf00000000000000ull, 0xffc0000000000000ull) ||
+                OPM(0xdf80000000000000ull, 0xffc0000000000000ull))) {  // TLD4S / TLD4S.F16
+        emit_tld4s_glsl(c, w);
     } else if (OPM(0xc038000000000000ull, 0xfc38000000000000ull)) {  // TEX
         emit_tex(c, w, false);
     } else if (OPM(0xdeb8000000000000ull, 0xfff8000000000000ull)) {  // TEX.B (bindless)
