@@ -283,7 +283,9 @@ public final class MarioBootActivity extends Activity {
                 }
                 if (currentLink != null && !currentLink.equals(code.getAbsolutePath())) {
                     snxStage("PREPARE: replacing stale game AOT link: " + currentLink);
-                    android.system.Os.unlink(link.getAbsolutePath());
+                    // File.delete() removes the symlink itself (without following its target).
+                    if (!link.delete())
+                        throw new IOException("Não foi possível remover o link AOT antigo: " + link.getAbsolutePath());
                     currentLink = null;
                 }
                 if (currentLink == null) {
