@@ -32,6 +32,8 @@ public final class MarioBootActivity extends Activity {
     private Button play;
     private Uri selected;
     private boolean checking;
+    private Button snxProbeButton;
+    private static native String nativeProbeScarletNx();
 
     // A native abort or OOM kill may happen before the user can capture threads.
     // Android preserves the process-exit reason for the NEXT launch of this app.
@@ -119,6 +121,10 @@ public final class MarioBootActivity extends Activity {
                 .putExtra("mario_thread_capture", true));
         });
         layout.addView(play);
+        snxProbeButton = new Button(this);
+        snxProbeButton.setText("Testar biblioteca ScarletNX (sem iniciar o jogo)");
+        snxProbeButton.setOnClickListener(v -> runSnxProbe());
+        layout.addView(snxProbeButton);
         Button logs = new Button(this);
         logs.setText("Ver último log");
         logs.setOnClickListener(v -> status.setText(readLogs()));
@@ -138,6 +144,32 @@ public final class MarioBootActivity extends Activity {
         String saved = getSharedPreferences("mario_boot", MODE_PRIVATE).getString("game_tree", null);
         if (saved != null) validateFolder(Uri.parse(saved));
         else status.setText("Aguardando a pasta do jogo. O primeiro boot ainda está em teste.");
+    }
+
+    /** Library is packaged inside this APK; no XCI/SAF permission is needed for this test. */
+    private void runSnxProbe() {
+        snxProbeButton.setEnabled(false);
+        status.setText("Carregando a biblioteca do Mario no processo Android…");
+        new Thread(() -> {
+            String result;
+            try {
+                System.loadLibrary("main");
+                result = nativeProbeScarletNx();
+            } catch (Throwable error) {
+                result = "SNX PROBE FAILED: " + error.toString();
+            }
+            try (FileOutputStream output = new FileOutputStream(
+                    new File(getFilesDir(), "mario-snx-probe.txt"), false)) {
+                output.write((result + "\\n").getBytes(StandardCharsets.UTF_8));
+            } catch (IOException error) {
+                result += "\\nCould not save log: " + error;
+            }
+            final String message = result;
+            runOnUiThread(() -> {
+                snxProbeButton.setEnabled(true);
+                status.setText(message);
+            });
+        }, "mario-snx-probe").start();
     }
 
     private JSONObject profile() throws Exception {
@@ -222,7 +254,7 @@ public final class MarioBootActivity extends Activity {
 
     private String readLogs() {
         StringBuilder text = new StringBuilder();
-        for (String name : new String[]{"mario-exit.log", "neo_touch_crash.txt", "mario-threads.log", "mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
+        for (String name : new String[]{"mario-snx-probe.txt", "mario-exit.log", "neo_touch_crash.txt", "mario-threads.log", "mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
             text.append("\n=== ").append(name).append(" ===\n");
             try (RandomAccessFile input = new RandomAccessFile(new File(getFilesDir(), name), "r")) {
                 long start = (name.equals("mario-exit.log") || name.equals("neo_touch_crash.txt") || name.equals("mario-threads.log") || name.equals("mario-grafico.log") || name.equals("mario-esperas.log")) ? 0 : Math.max(0, input.length() - 160000);
