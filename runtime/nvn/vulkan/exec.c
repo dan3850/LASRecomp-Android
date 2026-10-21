@@ -5464,7 +5464,7 @@ static void exec_list(uint64_t handle, int depth) {
 #ifdef LASRECOMP_MARIO_TEST
         if (!p || (p & 7) || p < 4096)
             FATAL("[mario-nvn-stream] invalid-pointer p=%llx handle=%llx depth=%d iter=%d "
-                  "via=%s prev=%llx prev_op=%u prev_size=%u prev_next=%llx\\n",
+                  "via=%s prev=%llx prev_op=%u prev_size=%u prev_next=%llx\n",
                   (unsigned long long)p, (unsigned long long)handle,
                   depth, guard, mario_transition, (unsigned long long)mario_prev,
                   mario_prev_op, mario_prev_size,
@@ -5475,7 +5475,7 @@ static void exec_list(uint64_t handle, int depth) {
         if (r->op >= CMD_COUNT || r->size < sizeof(CmdRec) ||
             (r->size & 7) || r->size > (64u << 20))
             FATAL("[mario-nvn-stream] invalid-record p=%llx handle=%llx depth=%d iter=%d "
-                  "op=%u size=%u via=%s prev=%llx prev_op=%u prev_size=%u\\n",
+                  "op=%u size=%u via=%s prev=%llx prev_op=%u prev_size=%u\n",
                   (unsigned long long)p, (unsigned long long)handle,
                   depth, guard, r->op, r->size, mario_transition,
                   (unsigned long long)mario_prev, mario_prev_op,
@@ -5505,7 +5505,7 @@ static void exec_list(uint64_t handle, int depth) {
             const uint64_t *h = x;
 #ifdef LASRECOMP_MARIO_TEST
             if (r->x[0] > (r->size - sizeof(CmdRec)) / sizeof(uint64_t))
-                FATAL("[mario-nvn-stream] invalid-call-list record=%llx size=%u count=%llu depth=%d\\n",
+                FATAL("[mario-nvn-stream] invalid-call-list record=%llx size=%u count=%llu depth=%d\n",
                       (unsigned long long)p, r->size,
                       (unsigned long long)r->x[0], depth);
 #endif
@@ -5513,7 +5513,7 @@ static void exec_list(uint64_t handle, int depth) {
 #ifdef LASRECOMP_MARIO_TEST
                 if (!h[i] || (h[i] & 7))
                     FATAL("[mario-nvn-stream] invalid-call-handle parent=%llx index=%llu "
-                          "count=%llu child=%llx depth=%d\\n",
+                          "count=%llu child=%llx depth=%d\n",
                           (unsigned long long)p, (unsigned long long)i,
                           (unsigned long long)r->x[0], (unsigned long long)h[i], depth);
 #endif
