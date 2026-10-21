@@ -189,6 +189,60 @@ def trace_direct_call(name, nso, base, entries, starts, lr_offset, target_offset
               "An indirect jump is possible, not proven.")
 
 
+
+def target_window_bounds(text_start, text_size, target, return_site=None):
+    """Bound a read-only AArch64 window around the missing instruction.
+
+    Include LR-4 only when it is near the target. An LR need not be the
+    origin of a BR; it is simply annotated for inspection.
+    """
+    high = text_start + text_size
+    if target & 3 or not text_start <= target < high:
+        raise ValueError("target outside aligned executable text")
+    begin = max(text_start, target - 40 * 4)
+    end = min(high, target + 16 * 4)
+    if return_site is not None and abs(return_site - target) <= 0x200:
+        begin = min(begin, max(text_start, return_site - 20))
+        end = max(end, min(high, return_site + 20))
+    return begin, end
+
+
+def trace_target_window(name, nso, base, entries, starts, target, return_site=None):
+    """Show original words around the missing PC, without rebuilding game code."""
+    try:
+        from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
+    except ImportError:
+        print("  TARGET DISASSEMBLY: Capstone unavailable (read-only audit continues)")
+        return
+    low, size = nso.text
+    begin, end = target_window_bounds(low, size, target, return_site)
+    cs = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+    registered = set(entries)
+    print(f"  TARGET DISASSEMBLY {name}+{begin:#x}..{end:#x}:")
+    previous_owner = None
+    for off in range(begin, end, 4):
+        pc = base + off
+        block = owner(starts, pc)
+        if block != previous_owner:
+            print(f"    OWNER {block:#x}" if block is not None else
+                  "    OWNER: unknown")
+            previous_owner = block
+        insns = list(cs.disasm(bytes(nso.image[off:off + 4]), pc))
+        ins = insns[0] if insns else None
+        instruction = f"{ins.mnemonic} {ins.op_str}" if ins else f".word {nso.u32(off):#010x}"
+        marks = []
+        if off == target:
+            marks.append("MISSING TARGET")
+        if return_site is not None and off == return_site - 4:
+            marks.append("LR-4 (not necessarily originating branch)")
+        if pc in registered:
+            marks.append("registered")
+        if ins and ins.mnemonic in ("br", "blr"):
+            marks.append("INDIRECT")
+        annotation = "  <-- " + ", ".join(marks) if marks else ""
+        print(f"    {name}+{off:#x}: {instruction}{annotation}")
+    print("  NOTE: LR proximity is not proof of a direct call, switch, or valid entry.")
+
 def sha256_file(path):
     h = hashlib.sha256()
     with path.open("rb") as stream:
@@ -250,6 +304,8 @@ def main():
     parser.add_argument("--target", required=True)
     parser.add_argument("--return-site")
     parser.add_argument("--check", action="append", default=[])
+    parser.add_argument("--trace-target", action="store_true",
+                        help="disassemble original ARM64 around the missing PC and LR (read-only)")
     parser.add_argument("--trace-callee", action="store_true",
                         help="disassemble direct BL callee near failed PC (read-only)")
     parser.add_argument("--scan-relocations", action="store_true",
@@ -288,6 +344,11 @@ def main():
             if field != "return-site":
                 show(name, offset, return_site if field == "target" else None,
                      base, nso, entries, starts)
+        if args.trace_target:
+            target = next((v for field, v in values if field == "target"), None)
+            if target is not None:
+                trace_target_window(name, nso, base, entries, starts,
+                                    target, return_site)
         if args.trace_callee and return_site is not None:
             target = next((v for field, v in values if field == "target"), None)
             if target is not None:
