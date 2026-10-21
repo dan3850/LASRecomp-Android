@@ -212,6 +212,11 @@ def select_global_census(tables, planned, base, max_blocks, byte_budget, max_blo
     return [planned[owner] for owner in sorted(selected)]
 
 
+def valid_selection_mode(all_verified, anchor):
+    """Exactly one mode: global verified-table scan or explicit target."""
+    return bool(all_verified) != (anchor is not None)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--game", type=Path, required=True)
@@ -227,7 +232,7 @@ def main():
     if not (1 <= args.max_blocks <= 64 and 128 <= args.budget_bytes <= 1048576
             and 16 <= args.max_block_bytes <= 262144
             and (args.anchor is None or (args.anchor >= 0 and args.anchor % 4 == 0))
-            and (args.all_verified == (args.anchor is not None))):
+            and valid_selection_mode(args.all_verified, args.anchor)):
         ap.error("invalid planning bounds")
     output = args.output.resolve()
     if (output / "resume-transaction").exists():
