@@ -221,9 +221,7 @@ cat > "$SYMBOL_MAP" <<'MAP'
 {
   global:
     main;
-    SDL_main;
     JNI_OnLoad;
-    JNI_OnUnload;
     Java_*;
     SDL_*;
   local: *;
