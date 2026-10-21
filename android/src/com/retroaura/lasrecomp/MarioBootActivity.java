@@ -126,7 +126,7 @@ public final class MarioBootActivity extends Activity {
         int padding = (int)(20 * getResources().getDisplayMetrics().density);
         layout.setPadding(padding, padding, padding, padding);
         TextView title = new TextView(this);
-        title.setText("Mario Recomp — teste de inicialização");
+        title.setText("Mario SNX Runtime — diagnóstico 2");
         title.setTextSize(23);
         layout.addView(title);
         TextView description = new TextView(this);
@@ -159,7 +159,7 @@ public final class MarioBootActivity extends Activity {
         snxProbeButton.setOnClickListener(v -> runSnxProbe());
         layout.addView(snxProbeButton);
         snxRunButton = new Button(this);
-        snxRunButton.setText("Executar Mario pelo runtime ScarletNX (experimental)");
+        snxRunButton.setText("INICIAR MARIO — CPU ScarletNX (diagnóstico 2)");
         snxRunButton.setEnabled(false);
         snxRunButton.setOnClickListener(v -> runScarletNxGame());
         layout.addView(snxRunButton);
