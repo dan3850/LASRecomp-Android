@@ -47,7 +47,13 @@ static int check_shader(uint64_t word, bool glsl, bool valid,
         char selector[64];
         snprintf(selector, sizeof selector, ", %u)", comp);
         if (!info->msl || !strstr(info->msl, selector)) error = 3;
-        if (!info->msl || !!strstr(info->msl, "packHalf2x16") != half) error = 4;
+        // The GLSL common prelude always defines hpack() using
+        // packHalf2x16, even for pure FP32 shaders. Check the actual
+        // translated destination assignments, not the helper definitions.
+        if (!info->msl ||
+            !!strstr(info->msl, "r6 = packHalf2x16(") != half ||
+            !!strstr(info->msl, "r0 = packHalf2x16(") != half)
+            error = 4;
     } else {
         if (info->msl || !strstr(info->error, message)) error = 5;
     }
