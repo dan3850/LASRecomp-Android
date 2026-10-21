@@ -91,6 +91,34 @@ PY
 
 [ -f "$LLVM_PREFIX/lib/cmake/llvm/LLVMConfig.cmake" ] ||
   die "LLVMConfig.cmake ausente em $LLVM_PREFIX; instale pkg install llvm"
+# FFmpeg runs its own configure/link probes outside CMake, so it does
+# not inherit CMAKE_EXE_LINKER_FLAGS. Provide Termux's ARM64 libunwind
+# and atomic paths explicitly to FFmpeg only. Keep the upstream NDK
+# target/sysroot and the existing source/cache unchanged.
+FFMPEG_CMAKE="$SRC/cmake/ffmpeg.cmake"
+python3 - "$FFMPEG_CMAKE" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+needle = 'if(ANDROID)\n    # the NDK\'s Clang takes its target and sysroot as flags'
+replacement = '''if(ANDROID)
+    # Termux-hosted NDK wrapper: FFmpeg configure links probes itself,
+    # outside CMake's linker flags. The native ARM64 unwind archive is
+    # available in the Termux prefix, not the wrapper's sysroot.
+    if(SNX_TERMUX_NATIVE_LLVM)
+        list(APPEND snx_ffmpeg_args "--extra-ldflags=-L$ENV{PREFIX}/lib")
+    endif()
+    # the NDK's Clang takes its target and sysroot as flags'''
+if s.count(replacement) == 1:
+    print("Termux FFmpeg linker patch already applied")
+elif s.count(needle) == 1:
+    p.write_text(s.replace(needle, replacement, 1))
+    print("Patched FFmpeg configure linker flags for Termux")
+else:
+    raise SystemExit("Unexpected FFmpeg source structure; refusing patch")
+PY
+
 LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
 [ -x "$LLVM_CONFIG" ] || die "llvm-config do Termux nao encontrado em $LLVM_CONFIG"
 if ! LLVM_LIBS="$("$LLVM_CONFIG" --link-shared --libs core orcjit native 2>&1)"; then
