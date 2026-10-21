@@ -1,9 +1,13 @@
 package com.retroaura.lasrecomp;
 
 import android.content.Intent;
-import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -31,11 +35,47 @@ public final class MarioSnxGameActivity extends SDLActivity {
         stage("SDL_ACTIVITY_ONCREATE_ENTERED: child process started");
         try {
             super.onCreate(savedState);
+            hideSystemBars();
             stage("SDL_ACTIVITY_ONCREATE_RETURNED");
         } catch (Throwable error) {
             stage("SDL_ACTIVITY_ONCREATE_FAILED: " + error.toString());
             throw error;
         }
+    }
+
+    private void hideSystemBars() {
+        // SDL 3.4.18 initially requests a windowed style. Clear that flag
+        // again when returning from Android UI; native startup also receives
+        // --fullscreen so SDL and the renderer agree on the window's size.
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController bars = getWindow().getInsetsController();
+            if (bars != null) {
+                bars.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                bars.hide(WindowInsets.Type.systemBars());
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        hideSystemBars();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
     }
 
     @Override protected String[] getLibraries() {
@@ -80,7 +120,7 @@ public final class MarioSnxGameActivity extends SDLActivity {
             return new String[]{"--settings"};
         }
         stage("SDL_GET_ARGUMENTS: invoking ScarletNX main with game base " + base);
-        return new String[]{"--game=" + base, "--log=2"};
+        return new String[]{"--game=" + base, "--log=2", "--fullscreen"};
     }
 
     /** ScarletNX's fatal-screen log sharing callback, if the renderer reaches it. */

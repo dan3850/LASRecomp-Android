@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <application android:label="Mario SNX Runtime TESTE" android:hasCode="true"
         android:allowBackup="false" android:extractNativeLibs="true">
+        <!-- SDL's resizable window must preserve both landscape orientations. -->
+        <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS"
+            android:value="LandscapeLeft LandscapeRight" />
         <activity android:name="com.retroaura.lasrecomp.MarioBootActivity"
             android:label="Mario SNX Runtime TESTE" android:exported="true"
             android:screenOrientation="sensorLandscape">
@@ -18,6 +21,7 @@
         <!-- Separate process prevents ScarletNX SDL/Horizon CPU from sharing LASRecomp global state. -->
         <activity android:name="com.retroaura.lasrecomp.MarioSnxGameActivity"
             android:label="Mario SNX Runtime TESTE"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"
             android:process=":snx"
             android:exported="false"
             android:hardwareAccelerated="true"

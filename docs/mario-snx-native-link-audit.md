@@ -181,8 +181,43 @@ arquivo e no logcat. O arquivo é incluído por **Salvar log**.
 
 O marcador comprova a entrada no runtime host. Depois dele, problemas de
 RomFS, CPU/Horizon, Vulkan ou inicialização do jogo devem ser examinados
-pelos logs dessa tentativa. Não há comprovação de boot ou jogabilidade
-do Mario no dispositivo com esta correção até esse teste ser realizado.
+pelos logs dessa tentativa. A validação inicial fora do celular não
+comprovava boot ou jogabilidade do Mario. O relato posterior do usuário
+está registrado abaixo.
+
+## Tela cheia após o boot
+
+Em 21/10/2026 o usuário relatou o jogo rodando e enviou uma captura com
+Mario renderizado, mas com a barra de título do ScarletNX, a barra de
+status e os botões de navegação Android ainda ocupando a tela. Essa captura
+comprova um avanço além do carregamento nativo; não mede estabilidade,
+velocidade do jogo nem identifica o Build ID do runtime instalado.
+
+O launcher não definia um tema sem título para `MarioSnxGameActivity` e
+não passava `--fullscreen`. No ScarletNX fixado, `settings.txt` define
+`fullscreen=0` por padrão e `backend/sdl3.c` só solicita fullscreen quando
+essa opção está ativa. O próprio SDL 3.4.18 começa com
+`setWindowStyle(false)` e escreve o título nativo no título da Activity.
+
+O tema da Activity agora é `Theme.Material.NoActionBar.Fullscreen` e o
+launcher passa `--fullscreen`, reconhecido pelo CLI desse commit. A Activity
+esconde as barras com `WindowInsetsController` no Android 11 ou posterior,
+com reaplicação ao retomar e recuperar foco. O gesto da borda revela as
+barras temporariamente. Android 8–10 usa os flags imersivos correspondentes.
+Os metadados SDL mantêm as duas orientações paisagem, inclusive quando a
+janela nativa solicita ser redimensionável.
+
+Essa mudança é Java/manifesto: basta executar
+`bash compilar-mario-snx-runtime-termux.sh` no worktree existente, sem
+executar o build de RomFS/ScarletNX. O empacotador reutiliza o runtime,
+o provedor C++ registrado e o AOT existentes e mantém a auditoria do APK.
+A imagem permanece na proporção original; telas mais largas podem manter
+faixas laterais. A disposição dos controles e o overlay de desempenho do
+RedMagic não são alterados por essa correção da janela.
+
+Validação: manifesto XML, sintaxe Java e Bash, 17 regressões de ligação/
+sintaxe e 2 testes ABI 12. A apresentação visual e o retorno de Home/
+notificações com as barras novamente ocultas precisam do teste no celular.
 
 ## Comandos únicos para Termux
 
@@ -233,3 +268,5 @@ tentativa atual, acompanhado da ausência do antigo SIGSEGV em `getauxval`.
 - [Bionic: startup estático e shared globals](https://android.googlesource.com/platform/bionic/+/master/libc/bionic/libc_init_static.cpp)
 - [Bionic Android 16: relocations APS2](https://github.com/aosp-mirror/platform_bionic/blob/android-16.0.0_r1/linker/linker_reloc_iterators.h)
 - [NDK: precedência dos diretórios por API e import libraries](https://android.googlesource.com/platform/ndk/+/master/docs/BuildSystemMaintainers.md)
+- [SDL 3.4.18: Activity e comandos de janela](https://github.com/libsdl-org/SDL/blob/release-3.4.18/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java)
+- [Android: modo imersivo e barras transitórias](https://developer.android.com/develop/ui/views/layout/immersive)
