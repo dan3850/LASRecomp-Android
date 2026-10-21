@@ -70,6 +70,28 @@ if [[ -n "${MARIO_BATCH_ANCHOR:-}" ]]; then
     MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_BATCH_POINTS"
     echo "Reentradas selecionadas: $MARIO_BATCH_POINTS"
 fi
+# The post-Start transition has repeatedly branched into neighbouring main
+# functions through the same callsite region. Handle BOTH observed destinations
+# and their nearby owners before the generic cross-module batch can exhaust its
+# per-module quota. Keep a strict block/byte budget and reuse completed repairs.
+if [[ "${MARIO_SCENE_BATCH:-1}" == 1 ]]; then
+    echo "===== MARIO: COBERTURA LOCAL DA TRANSICAO POS-START ====="
+    python3 tests/test_mario_resume_batch.py
+    MARIO_SCENE_POINTS="$(python3 -u tools/mario_resume_batch.py \
+        --game "$MARIO_GAME" --output "$MARIO_CODE" \
+        --anchor main:0x834b2c --anchor main:0x834d7c \
+        --return-site main:0x8d2934 --return-site main:0x8d291c \
+        --limit "${MARIO_SCENE_BATCH_LIMIT:-16}" \
+        --budget-bytes "${MARIO_SCENE_BATCH_BYTES:-262144}" \
+        --radius 8192 --max-block-bytes 16384 \
+        --nearby-radius 8192 --prefer-forward 1 --allow-empty)"
+    if [[ -n "$MARIO_SCENE_POINTS" ]]; then
+        MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_SCENE_POINTS"
+        echo "Blocos da transicao: $MARIO_SCENE_POINTS"
+    else
+        echo "Regiao observada ja coberta; reutilizando cache."
+    fi
+fi
 # Automatically analyze nearby primary functions around confirmed late
 # dispatch failures, selecting up to 32 independent owners in one pass.
 # The planner only reads locally extracted NSOs and the existing dispatch map;
@@ -100,7 +122,8 @@ fi
 #   main+0x66c48c (LR main+0x66d150)
 #   main+0x669c74 (LR main+0x6698e0)
 #   main+0x834b2c (LR main+0x8d2934; Mario-Recomp-boot (7))
-for MARIO_REQUIRED_ENTRY in main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384 main:0x66a0fc main:0x8099d0 main:0x8209d0 main:0x834b2c main:0x8cfa78 main:0x95009c sdk:0x2bfbd8 sdk:0x376ac0 sdk:0x385134; do
+#   main+0x834d7c (LR main+0x8d291c; Mario-Recomp-boot (9))
+for MARIO_REQUIRED_ENTRY in main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384 main:0x66a0fc main:0x8099d0 main:0x8209d0 main:0x834b2c main:0x834d7c main:0x8cfa78 main:0x95009c sdk:0x2bfbd8 sdk:0x376ac0 sdk:0x385134; do
     if [[ " ${MARIO_RESUME_AT:-} " != *" $MARIO_REQUIRED_ENTRY "* ]]; then
         MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_REQUIRED_ENTRY"
     fi
