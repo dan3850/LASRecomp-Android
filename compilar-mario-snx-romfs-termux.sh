@@ -274,8 +274,7 @@ RUNTIME="$BUILD/src/nx/libscarletnx.so"
 [ -s "$RUNTIME" ] || RUNTIME="$(find "$BUILD" -name libscarletnx.so -type f -print -quit)"
 [ -s "$RUNTIME" ] || die "Compilacao terminou mas libscarletnx.so nao encontrada"
 
-# Check the exported dynamic symbols, not the full static symbol table.
-# In particular, libc++ must not bind its locale/IFUNC operations to ScarletNX.
+# Inspect the dynamic exports and prevent libc symbol interposition.
 SYMBOL_EXPORTS="$BASE/scarletnx-dynamic-exports.txt"
 llvm-nm -D --defined-only "$RUNTIME" > "$SYMBOL_EXPORTS" ||
   die "Falha ao inspecionar as exportacoes ELF do ScarletNX"
@@ -283,32 +282,8 @@ for required in main JNI_OnLoad; do
   grep -E "[[:space:]]${required}$" "$SYMBOL_EXPORTS" >/dev/null ||
     die "Entrada publica obrigatoria do ScarletNX ausente: $required"
 done
-if grep -E '[[:space:]](getauxval|strcmp|newlocale|memset|memcpy|memmove)
-
-grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
-  die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
-
-cp "$RUNTIME" "$OUT"
-echo "===== SCARLETNX MODIFICADO PRONTO ====="
-ls -lh "$OUT"
-echo "===== COMPILANDO APK MARIO ====="
-cd "$ROOT"
-export SCARLETNX_PATCHED_RUNTIME_SO="$OUT"
-bash compilar-mario-snx-runtime-termux.sh
- "$SYMBOL_EXPORTS" >/dev/null; then
-  grep -E '[[:space:]](getauxval|strcmp|newlocale|memset|memcpy|memmove)
-
-grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
-  die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
-
-cp "$RUNTIME" "$OUT"
-echo "===== SCARLETNX MODIFICADO PRONTO ====="
-ls -lh "$OUT"
-echo "===== COMPILANDO APK MARIO ====="
-cd "$ROOT"
-export SCARLETNX_PATCHED_RUNTIME_SO="$OUT"
-bash compilar-mario-snx-runtime-termux.sh
- "$SYMBOL_EXPORTS" >&2
+if grep -E '[[:space:]](getauxval|strcmp|newlocale|memset|memcpy|memmove)$' "$SYMBOL_EXPORTS" >/dev/null; then
+  grep -E '[[:space:]](getauxval|strcmp|newlocale|memset|memcpy|memmove)$' "$SYMBOL_EXPORTS" >&2
   die "Simbolos libc ainda exportados pelo ScarletNX; interrompendo APK"
 fi
 echo "SCARLETNX_LIBC_INTERPOSITION_GUARD: OK"
