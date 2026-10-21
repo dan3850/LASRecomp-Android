@@ -95,7 +95,7 @@ def _writes_table_register(ins, reg):
     try:
         _, written = ins.regs_access()
         names = {ins.reg_name(r).lower() for r in written}
-    except (AttributeError, ValueError):
+    except Exception:
         # No instruction register detail: cannot prove the distant base survives.
         return True
     return f"x{reg}" in names or f"w{reg}" in names
@@ -282,6 +282,8 @@ def main():
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--module", choices=("main", "sdk"), default="main")
     ap.add_argument("--anchor", type=lambda x: int(x, 0))
+    ap.add_argument("--allow-empty", action="store_true",
+                    help="success with no output when a verified table is fully registered")
     ap.add_argument("--all-verified", action="store_true",
                     help="select whole verified jump tables without a crash address")
     ap.add_argument("--max-blocks", type=int, default=16)
@@ -341,7 +343,7 @@ def main():
               f"bytes={block['bytes']} targets={len(block['targets'])}",
               file=sys.stderr)
     if not chosen:
-        if args.all_verified:
+        if args.all_verified or args.allow_empty:
             print("[mario-static-switch] no pending verified owners", file=sys.stderr)
             return
         raise ValueError("recognized switch has no missing entries: no rebuild needed")
