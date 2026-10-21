@@ -90,6 +90,32 @@ def recognize(window, nso, base):
     }
 
 
+
+def recognize_guarded_mov_tail(window, nso, base):
+    """Recognize an ordinary guarded byte-switch with a neutral MOV before BR.
+
+    Observed in Mario main+0x9bb5d8..0x9bb5f8: the encoded byte table
+    and branch register are otherwise identical to recognize(), but
+    MOV X19,X0 preserves the computed target in X10 between ADD and BR.
+    Check the original read-only table, guard, exact register dataflow,
+    and contiguous sequence, just as recognize() does.
+    """
+    if len(window) < 9:
+        return None
+    tail = window[-9:]
+    if any(a.address + 4 != b.address for a, b in zip(tail, tail[1:])):
+        return None
+    mov = fields(tail[-2], "mov", rf"x{REG},x{REG}")
+    branch = fields(tail[-1], "br", rf"x{REG}")
+    if not mov or not branch or mov[0] == branch[0]:
+        return None
+    result = recognize(tail[:7] + [tail[-1]], nso, base)
+    if result is None:
+        return None
+    result["layout"] = "guarded-neutral-mov-before-br"
+    return result
+
+
 def _writes_table_register(ins, reg):
     """Conservatively reject a distant ADRP/ADD if its table base is clobbered."""
     try:
@@ -293,6 +319,8 @@ def scan_switches(nso, base):
             extended = list(disasm.disasm(
                 bytes(image[beginning:offset + 4]), base + beginning))
             result = recognize_spaced(extended, nso, base)
+            if result is None:
+                result = recognize_guarded_mov_tail(extended, nso, base)
             if result is None:
                 result = recognize_masked_guarded(extended, nso, base)
         if result:
