@@ -83,10 +83,10 @@ signer sign --ks "$KEYSTORE" --ks-key-alias androiddebugkey \
 signer verify "$SIGNED"
 mv -f "$SIGNED" "$APK"
 
-mkdir -p "$HOME/storage/downloads/MarioRecomp"
-cp "$APK" "$HOME/storage/downloads/MarioRecomp/Mario-SNX-Lib-Test.apk"
+mkdir -p "/storage/emulated/0/Download/MarioRecomp"
+cp "$APK" "/storage/emulated/0/Download/MarioRecomp/Mario-SNX-Lib-Test.apk"
 echo "===== PRONTO ====="
-echo "APK: $HOME/storage/downloads/MarioRecomp/Mario-SNX-Lib-Test.apk"
+echo "APK: /storage/emulated/0/Download/MarioRecomp/Mario-SNX-Lib-Test.apk"
 echo "INSTALAR E ABRIR: Mario ScarletNX TESTE"
 echo "BOTAO: Testar biblioteca ScarletNX (sem iniciar o jogo)"
 echo "Resultado: exibido na tela e salvo em mario-snx-probe.txt, via Salvar log"
