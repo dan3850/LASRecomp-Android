@@ -220,7 +220,7 @@ SYMBOL_MAP="$BASE/scarletnx-android-symbols.map"
 cat > "$SYMBOL_MAP" <<'MAP'
 {
   global: *;
-  local: getauxval;
+  local: getauxval; memset; memcpy; memmove;
 };
 MAP
 SNX_CMAKE="$SRC/src/nx/CMakeLists.txt"
@@ -266,10 +266,20 @@ RUNTIME="$BUILD/src/nx/libscarletnx.so"
 # Verify the actual ELF dynamic exports. The local implementation of
 # getauxval may remain in the full symbol table, but must not interpose
 # Android libc's getauxval used by libffi.
-if llvm-nm -D --defined-only "$RUNTIME" | grep -E '[[:space:]]getauxval$' >/dev/null; then
-  die "getauxval continua exportado pelo ScarletNX: nao empacotar runtime com interposicao"
+if llvm-nm -D --defined-only "$RUNTIME" | grep -E '[[:space:]](getauxval|memset|memcpy|memmove)
+grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
+  die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
+cp "$RUNTIME" "$OUT"
+echo "===== SCARLETNX MODIFICADO PRONTO ====="
+ls -lh "$OUT"
+echo "===== COMPILANDO APK MARIO ====="
+cd "$ROOT"
+export SCARLETNX_PATCHED_RUNTIME_SO="$OUT"
+bash compilar-mario-snx-runtime-termux.sh
+ >/dev/null; then
+  die "Simbolos libc indevidamente exportados pelo ScarletNX (getauxval/memset/memcpy/memmove)"
 fi
-echo "SCARLETNX_GETAUXVAL_NOT_EXPORTED: OK"
+echo "SCARLETNX_LIBC_INTERPOSITION_GUARD: OK"
 grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
   die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
 cp "$RUNTIME" "$OUT"
