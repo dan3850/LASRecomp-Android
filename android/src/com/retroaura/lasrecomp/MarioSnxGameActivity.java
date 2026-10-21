@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets;
 import org.libsdl.app.SDLActivity;
 
 /**
- * A different Android process runs the unmodified GPLv3 ScarletNX runtime.
+ * A different Android process runs the pinned GPLv3 ScarletNX runtime.
  * Its own SDL3/CPU/Horizon/Vulkan startup is required for ABI-12 game code.
  * No LASRecomp Cpu* or Vulkan contexts are passed across engines.
  */
@@ -59,6 +59,8 @@ public final class MarioSnxGameActivity extends SDLActivity {
         try {
             SDLActivity.nativeSetenv("HOME", home.getAbsolutePath());
             SDLActivity.nativeSetenv("XDG_DATA_HOME", data.getAbsolutePath());
+            SDLActivity.nativeSetenv("SNX_BOOT_TRACE",
+                    new File(getFilesDir(), "mario-snx-native.log").getAbsolutePath());
             stage("SDL_ENV_READY: HOME=" + home.getAbsolutePath() +
                     " XDG_DATA_HOME=" + data.getAbsolutePath());
         } catch (Throwable error) {

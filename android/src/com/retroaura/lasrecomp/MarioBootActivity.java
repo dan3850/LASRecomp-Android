@@ -335,6 +335,7 @@ public final class MarioBootActivity extends Activity {
             return;
         }
         new File(getFilesDir(), "mario-snx-launch.log").delete();
+        new File(getFilesDir(), "mario-snx-native.log").delete();
         snxStage("BUTTON_CLICK: preparing ScarletNX guest execution");
         android.widget.Toast.makeText(this, "Preparando o Mario ScarletNX…", android.widget.Toast.LENGTH_SHORT).show();
         checking = true;
@@ -610,7 +611,7 @@ public final class MarioBootActivity extends Activity {
         StringBuilder text = new StringBuilder();
         boolean scarletAttempt = new File(getFilesDir(), "mario-snx-launch.log").isFile();
         String[] logs = scarletAttempt ?
-                new String[]{"mario-snx-launch.log", "mario-snx-probe.txt", "mario-exit.log"} :
+                new String[]{"mario-snx-launch.log", "mario-snx-native.log", "mario-snx-probe.txt", "mario-exit.log"} :
                 new String[]{"mario-exit.log", "neo_touch_crash.txt", "mario-threads.log",
                              "mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"};
         for (String name : logs) {

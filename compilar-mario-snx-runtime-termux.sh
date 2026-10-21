@@ -15,7 +15,7 @@ done
 SNX_CODE="$(printenv MARIO_SNX_CODE_SO || true)"
 [ -n "$SNX_CODE" ] || SNX_CODE=/storage/emulated/0/Download/010028600EBDA000/010028600EBDA000_code.so
 [ -s "$SNX_CODE" ] || die "Modulo recompilado ausente: $SNX_CODE"
-llvm-nm -D --defined-only "$SNX_CODE" | grep -Eq '[[:space:]]snx_module$' ||
+llvm-nm -D --defined-only "$SNX_CODE" | grep -E '[[:space:]]snx_module$' >/dev/null ||
   die "Modulo sem snx_module"
 ABI_FILE=/storage/emulated/0/Download/010028600EBDA000/010028600EBDA000.abi
 [ ! -s "$ABI_FILE" ] || [ "$(cat "$ABI_FILE")" = 12 ] ||
@@ -86,6 +86,24 @@ MAINLIB="$BASE/stage/lib/arm64-v8a"
 SNX_PATCHED_RUNTIME="${SCARLETNX_PATCHED_RUNTIME_SO:-$HOME/scarletnx-romfs-build/libscarletnx.so}"
 [ -s "$SNX_PATCHED_RUNTIME" ] ||
   die "Runtime ScarletNX com suporte RomFS ainda nao compilado: $SNX_PATCHED_RUNTIME. Veja tools/patch_scarletnx_romfs.py."
+python3 "$ROOT/tools/scarletnx_elf_audit.py" "$SNX_PATCHED_RUNTIME" \
+  --require-main --require-trace --output "$CACHE/runtime-input-elf.json"
+[ -s "$SNX_PATCHED_RUNTIME.link.json" ] ||
+  die "Proveniencia libc/C++ ausente. Execute compilar-mario-snx-romfs-termux.sh."
+SNX_CXX="$(python3 - "$SNX_PATCHED_RUNTIME" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+runtime = Path(sys.argv[1])
+metadata = json.loads(Path(str(runtime) + '.link.json').read_text())
+for path, expected in [(runtime, metadata['runtime_sha256']),
+                       (Path(metadata['cxx']), metadata['cxx_sha256'])]:
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise SystemExit('Runtime/C++ mudou desde o link; reexecute o build incremental: ' + str(path))
+print(metadata['cxx'])
+PY
+)"
 cp -L "$SNX_PATCHED_RUNTIME" "$SNLIB/libscarletnx.so"
 grep -aF 'SNX_EXTERNAL_ROMFS' "$SNLIB/libscarletnx.so" >/dev/null ||
   die "Runtime sem patch SNX_EXTERNAL_ROMFS; compilacao interrompida para evitar FS_TREE_INVALID"
@@ -111,13 +129,18 @@ grep -E '[[:space:]]main(@[^[:space:]]*)?$' "$RUNTIME_SYMBOLS" | head -1
 # Import original native dependencies and namespace any ELF SONAME collision
 # with LASRecomp's own JNI/runtime libraries. Different game processes isolate SDL.
 MAP="$CACHE/library-name-map.txt"
-: > "$MAP"
+printf '%s\n' 'libc++_shared.so libsnx_c++_shared.so' > "$MAP"
 COPIED="$CACHE/packaged-scarlet-libraries.txt"
 printf '%s\n' "$SNLIB/libscarletnx.so" > "$COPIED"
+# Use precisely the C++ file used by this build and shared LLVM. Renaming the
+# original APK's older C++ and importing a second one for LLVM splits the ABI.
+cp -L "$SNX_CXX" "$SNLIB/libsnx_c++_shared.so"
+patchelf --set-soname libsnx_c++_shared.so "$SNLIB/libsnx_c++_shared.so"
+printf '%s\n' "$SNLIB/libsnx_c++_shared.so" >> "$COPIED"
 while IFS= read -r member; do
   name="$(basename "$member")"
   case "$name" in
-    libscarletnx.so|libmain.so|libscarletnx-run.so) continue;;
+    libscarletnx.so|libmain.so|libscarletnx-run.so|libc++_shared.so) continue;;
   esac
   temp="$CACHE/original-$name"
   unzip -p "$SNX_APK" "$member" > "$temp"
@@ -138,7 +161,7 @@ done < <(unzip -Z1 "$SNX_APK" | grep -E '^lib/arm64-v8a/lib[^/]+\.so$' | sort -u
 while IFS= read -r elf; do
   while read -r original replacement; do
     [ -n "$original" ] || continue
-    if llvm-readelf -d "$elf" | grep -Fq "Shared library: [$original]"; then
+    if llvm-readelf -d "$elf" | grep -F "Shared library: [$original]" >/dev/null; then
       patchelf --replace-needed "$original" "$replacement" "$elf"
     fi
   done < "$MAP"
@@ -185,6 +208,10 @@ while :; do
   elf="$(sed -n "${index}p" "$COPIED")"
   while IFS= read -r dep; do
     [ -n "$dep" ] || continue
+    if [ "$dep" = libc++_shared.so ]; then
+      patchelf --replace-needed libc++_shared.so libsnx_c++_shared.so "$elf"
+      continue
+    fi
     if [ "$dep" = libz.so.1 ]; then
       patchelf --replace-needed libz.so.1 libz.so "$elf"
       echo "SNX Android zlib: $(basename "$elf") libz.so.1 -> libz.so"
@@ -233,6 +260,11 @@ while IFS= read -r elf; do
   done < <(llvm-readelf -d "$elf" | sed -n 's/.*(NEEDED).*Shared library: \[\([^]]*\)\].*/\1/p')
 done < "$COPIED"
 
+# patchelf must not reintroduce private libc or change the selected C++ closure.
+python3 "$ROOT/tools/scarletnx_elf_audit.py" "$SNLIB/libscarletnx.so" \
+  --require-main --require-trace --cxx-dir "$SNLIB" \
+  --output "$CACHE/runtime-staged-elf.json"
+
 # Add all native libraries to the normal Android app's JNI staging BEFORE
 # the APK is assembled and signed, not to an already-built ZIP. Android's
 # package manager will see these as normal nativeLibraryDir entries.
@@ -270,14 +302,33 @@ APK="$OUT/Mario-SNX-Runtime-BOOT.apk"
 
 # The main build script already verified and signed the completed archive;
 # this second verification ensures the file delivered to Downloads is correct.
-python3 - "$APK" <<'PY'
-import sys, zipfile
+python3 - "$APK" "$SNX_CODE" "$CACHE" <<'PY'
+import hashlib
+import sys
+import zipfile
+from pathlib import Path
+sys.path.insert(0, str(Path('tools').resolve()))
+from scarletnx_elf_audit import audit
 with zipfile.ZipFile(sys.argv[1]) as z:
     for n in ["lib/arm64-v8a/libscarletnx.so", "lib/arm64-v8a/libmario_snx.so"]:
         f = z.getinfo(n)
         print("BIBLIOTECA INSTALAVEL:", n, f.file_size, "bytes")
         if f.file_size < 100000:
             raise SystemExit("ERRO: arquivo nativo pequeno ou ausente: " + n)
+    # Inspect the actual signed APK member, rather than assuming staging and
+    # packaging used the same native runtime. Never alter the private AOT module.
+    packaged = Path(sys.argv[3]) / 'signed-apk-libscarletnx.so'
+    packaged.write_bytes(z.read('lib/arm64-v8a/libscarletnx.so'))
+    report = audit(packaged, require_main=True, require_trace=True)
+    if report['problems']:
+        raise SystemExit('ELF final recusado: ' + '; '.join(report['problems']))
+    with z.open('lib/arm64-v8a/libmario_snx.so') as stream:
+        aot_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    with open(sys.argv[2], 'rb') as stream:
+        source_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    if aot_digest != source_digest:
+        raise SystemExit('ERRO: AOT Mario foi alterado durante o empacotamento')
+    print('SIGNED_APK_ELF_AUDIT: OK; AOT_SHA256_UNCHANGED:', aot_digest)
 PY
 mkdir -p /storage/emulated/0/Download/MarioRecomp
 cp -f "$APK" /storage/emulated/0/Download/MarioRecomp/Mario-SNX-Runtime-BOOT.apk
@@ -285,4 +336,5 @@ echo "===== APK SNX PRONTO ====="
 echo "APK: /storage/emulated/0/Download/MarioRecomp/Mario-SNX-Runtime-BOOT.apk"
 echo "Tela: Mario SNX Runtime — diagnóstico 3"
 echo "Botao: INICIAR MARIO — CPU ScarletNX"
-echo "Se nao abrir, use Salvar log. O log identifica a biblioteca ausente."
+echo "Teste real: o log deve conter SCARLETNX_MAIN_ENTERED. Sem esse marcador, main() nao foi comprovado."
+echo "Se nao abrir, use Salvar log para capturar a tentativa atual."

@@ -1,0 +1,31 @@
+name: ScarletNX native linkage regressions
+
+on:
+  push:
+    branches: [android/mario-snx-runtime-boot]
+    paths:
+      - '.github/workflows/scarletnx-native-link.yml'
+      - 'compilar-mario-snx-*-termux.sh'
+      - 'tools/scarletnx_*.py'
+      - 'tools/patch_scarletnx_*.py'
+      - 'tests/test_scarletnx_android_link.py'
+      - 'android/src/com/retroaura/lasrecomp/Mario*Activity.java'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  elf-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools for small synthetic ELF fixtures
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: Check complete scripts, AArch64 ELF linkage, and native dlopen regression
+        run: |
+          set -euo pipefail
+          python3 tests/test_scarletnx_android_link.py
+          python3 tests/test_mario_snx_probe.py
+          python3 -m py_compile tools/scarletnx_elf_audit.py tools/scarletnx_link_probe.py tools/patch_scarletnx_android_link.py tools/patch_scarletnx_romfs.py
