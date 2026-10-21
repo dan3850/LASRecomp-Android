@@ -257,13 +257,18 @@ public final class MarioBootActivity extends Activity {
         save.setOnClickListener(v -> startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT)
             .addCategory(Intent.CATEGORY_OPENABLE).setType("text/plain")
             .putExtra(Intent.EXTRA_TITLE, "Mario-Recomp-boot.txt"), SAVE_LOG));
-        layout.addView(save);
+        // Keep log export near the top even on short landscape screens.
+        layout.addView(save, 2);
         status = new TextView(this);
         status.setTextIsSelectable(true);
+        status.setMinHeight((int)(140 * getResources().getDisplayMetrics().density));
+        layout.addView(status, new LinearLayout.LayoutParams(-1, -2));
+        // Previously only the status text scrolled; action buttons could go
+        // offscreen permanently in landscape. Scroll the entire interface.
         ScrollView scroll = new ScrollView(this);
-        scroll.addView(status);
-        layout.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        setContentView(layout);
+        scroll.setFillViewport(true);
+        scroll.addView(layout, new ScrollView.LayoutParams(-1, -2));
+        setContentView(scroll);
         String saved = getSharedPreferences("mario_boot", MODE_PRIVATE).getString("game_tree", null);
         if (saved != null) validateFolder(Uri.parse(saved));
         else status.setText("Aguardando a pasta do jogo. O primeiro boot ainda está em teste.");
