@@ -45,6 +45,26 @@ public final class MarioSnxGameActivity extends SDLActivity {
     @Override protected String getMainFunction() { return "main"; }
 
     @Override protected String[] getArguments() {
+        // Called on the SDL entry thread after the native SDL JNI is loaded,
+        // immediately before libscarletnx.so's main(). ScarletNX uses HOME
+        // (or XDG_DATA_HOME) to find its persistent console users folder.
+        // Unlike the official ScarletNX app, this launcher has no HOME set.
+        File home = new File(getFilesDir(), "snx-home");
+        File data = new File(home, ".local/share");
+        if ((!home.isDirectory() && !home.mkdirs()) ||
+                (!data.isDirectory() && !data.mkdirs())) {
+            stage("SDL_HOME_FAILED: cannot create " + data);
+            return new String[]{"--settings"};
+        }
+        try {
+            SDLActivity.nativeSetenv("HOME", home.getAbsolutePath());
+            SDLActivity.nativeSetenv("XDG_DATA_HOME", data.getAbsolutePath());
+            stage("SDL_ENV_READY: HOME=" + home.getAbsolutePath() +
+                    " XDG_DATA_HOME=" + data.getAbsolutePath());
+        } catch (Throwable error) {
+            stage("SDL_ENV_FAILED: " + error);
+            return new String[]{"--settings"};
+        }
         String base = getIntent().getStringExtra("snx_game_base");
         if (base == null || base.isEmpty()) {
             stage("SDL_GET_ARGUMENTS: missing game path, refusing to run");
