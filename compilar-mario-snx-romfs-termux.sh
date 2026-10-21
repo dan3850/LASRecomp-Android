@@ -211,6 +211,37 @@ fi
 echo "CXX_PROBE_OK: link nativo Android arm64 concluido"
 
 
+# ScarletNX statically includes a getauxval() implementation that must
+# remain callable internally, but exporting it can interpose libc's
+# getauxval used by dynamically linked Termux libffi during constructors.
+# Hide just that symbol in the shared runtime's .dynsym; keep all existing
+# game/SDL entry points exported. Do not alter system libraries.
+SYMBOL_MAP="$BASE/scarletnx-android-symbols.map"
+cat > "$SYMBOL_MAP" <<'MAP'
+{
+  global: *;
+  local: getauxval;
+};
+MAP
+SNX_CMAKE="$SRC/src/nx/CMakeLists.txt"
+python3 - "$SNX_CMAKE" "$SYMBOL_MAP" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+script = Path(sys.argv[2])
+s = p.read_text()
+old = '    target_link_options(scarletnx PRIVATE -Wl,-Bsymbolic)'
+new = old + '\\n    target_link_options(scarletnx PRIVATE "-Wl,--version-script=' + str(script) + '")'
+new = new.replace('\\n', '\n')
+if new in s:
+    print("ScarletNX getauxval symbol visibility patch already applied")
+elif s.count(old) == 1:
+    p.write_text(s.replace(old, new, 1))
+    print("ScarletNX getauxval export isolation enabled")
+else:
+    raise SystemExit("ScarletNX Android link options changed; refusing blind patch")
+PY
+
 echo "Configurando ScarletNX ARM64 com RomFS externa..."
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
@@ -232,6 +263,21 @@ cmake --build "$BUILD" --target scarletnx --parallel "$JOBS"
 RUNTIME="$BUILD/src/nx/libscarletnx.so"
 [ -s "$RUNTIME" ] || RUNTIME="$(find "$BUILD" -name libscarletnx.so -type f -print -quit)"
 [ -s "$RUNTIME" ] || die "Compilacao terminou mas libscarletnx.so nao encontrada"
+# Verify the fix on the actual runtime dynamic symbol table, not the
+# unstripped symtab (which may still contain a LOCAL implementation).
+if llvm-nm -D --defined-only "$RUNTIME" | grep -E '[[:space:]]getauxval
+  die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
+cp "$RUNTIME" "$OUT"
+echo "===== SCARLETNX MODIFICADO PRONTO ====="
+ls -lh "$OUT"
+echo "===== COMPILANDO APK MARIO ====="
+cd "$ROOT"
+export SCARLETNX_PATCHED_RUNTIME_SO="$OUT"
+bash compilar-mario-snx-runtime-termux.sh
+ >/dev/null; then
+  die "getauxval continua exportado pelo ScarletNX: nao empacotar runtime com interposicao"
+fi
+echo "SCARLETNX_GETAUXVAL_NOT_EXPORTED: OK"
 grep -aF 'SNX_EXTERNAL_ROMFS' "$RUNTIME" >/dev/null ||
   die "Build sem suporte ao graft. Bibliotecas originais nao serao substituidas."
 cp "$RUNTIME" "$OUT"
