@@ -406,7 +406,23 @@ public final class MarioBootActivity extends Activity {
                 }
                 File romfsSource = selectedRomfsPath(tree);
                 snxStage("ROMFS_SOURCE_VALIDATED: " + romfsSource.getAbsolutePath());
-                mountExternalRomfs(new File(data, "romfs"), romfsSource);
+                // fs_tree_init rejects directory symlinks with FS_TREE_INVALID.
+                // Remove only the stale symlink from previous test APKs. The
+                // patched ScarletNX runtime grafts this external directory.
+                File obsoleteRomfsLink = new File(data, "romfs");
+                try {
+                    String linkTarget = android.system.Os.readlink(obsoleteRomfsLink.getAbsolutePath());
+                    if (!obsoleteRomfsLink.delete())
+                        throw new IOException("Nao foi possivel remover link anterior da RomFS");
+                    snxStage("ROMFS_STALE_SYMLINK_REMOVED: " + linkTarget);
+                } catch (android.system.ErrnoException err) {
+                    if (err.errno != android.system.OsConstants.ENOENT &&
+                            err.errno != android.system.OsConstants.EINVAL)
+                        throw err;
+                    if (err.errno == android.system.OsConstants.EINVAL)
+                        throw new IOException("Existe uma RomFS real no diretorio do jogo; nao vou altera-la.");
+                }
+                snxStage("ROMFS_GRAFT_SOURCE_READY: " + romfsSource.getAbsolutePath());
                 // Force an app-readable location for the ScarletNX logs and
                 // settings, instead of relying on the SDL HOME/XDG defaults.
                 File snxState = new File(gameRoot, "state");
@@ -431,6 +447,7 @@ public final class MarioBootActivity extends Activity {
                 Intent intent = new Intent(this, MarioSnxGameActivity.class);
                 intent.putExtra("snx_game_base",
                         new File(gameRoot, SNX_GAME_ID).getAbsolutePath());
+                intent.putExtra("snx_romfs_source", romfsSource.getAbsolutePath());
                 runOnUiThread(() -> {
                     checking = false;
                     snxRunButton.setEnabled(true);
