@@ -126,7 +126,7 @@ PY
 # verified ARM64 compiler with its target/sysroot and Termux unwind path.
 OPENSSL_CC_BIN="$BASE/openssl-cc-bin"
 mkdir -p "$OPENSSL_CC_BIN"
-printf '#!/data/data/com.termux/files/usr/bin/sh\\nexec "%s" --target=aarch64-none-linux-android26 --sysroot="%s" -L"%s" "$@"\\n' \
+printf '#!/data/data/com.termux/files/usr/bin/sh\nexec "%s" --target=aarch64-none-linux-android26 --sysroot="%s" -L"%s" "$@"\n' \
   "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/bin/clang" \
   "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/sysroot" "$PREFIX/lib" \
   > "$OPENSSL_CC_BIN/aarch64-linux-android26-clang"
