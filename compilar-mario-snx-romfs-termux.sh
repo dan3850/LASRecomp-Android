@@ -119,6 +119,38 @@ else:
     raise SystemExit("Unexpected FFmpeg source structure; refusing patch")
 PY
 
+# OpenSSL's Android Configure chooses <triple><API>-clang by name,
+# unlike CMake/FFmpeg, which use the NDK clang wrapper directly.
+# Native Termux installations of the NDK expose only clang. Provide
+# precisely the expected alias in a private PATH, forwarding to the same
+# verified ARM64 compiler with its target/sysroot and Termux unwind path.
+OPENSSL_CC_BIN="$BASE/openssl-cc-bin"
+mkdir -p "$OPENSSL_CC_BIN"
+printf '#!/data/data/com.termux/files/usr/bin/sh\\nexec "%s" --target=aarch64-none-linux-android26 --sysroot="%s" -L"%s" "$@"\\n' \
+  "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/bin/clang" \
+  "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/sysroot" "$PREFIX/lib" \
+  > "$OPENSSL_CC_BIN/aarch64-linux-android26-clang"
+chmod 755 "$OPENSSL_CC_BIN/aarch64-linux-android26-clang"
+export SNX_TERMUX_OPENSSL_BIN="$OPENSSL_CC_BIN"
+echo "OPENSSL_CC_READY: $OPENSSL_CC_BIN/aarch64-linux-android26-clang"
+OPENSSL_CMAKE="$SRC/cmake/openssl.cmake"
+python3 - "$OPENSSL_CMAKE" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+old = '"PATH=${ANDROID_TOOLCHAIN_ROOT}/bin:$ENV{PATH}"'
+new = '"PATH=$ENV{SNX_TERMUX_OPENSSL_BIN}:${ANDROID_TOOLCHAIN_ROOT}/bin:$ENV{PATH}"'
+if s.count(new) == 1:
+    print("OpenSSL Termux compiler PATH patch already applied")
+elif s.count(old) == 1:
+    s = s.replace(old, new, 1)
+    p.write_text(s)
+    print("Patched OpenSSL Android compiler PATH")
+else:
+    raise SystemExit("Unexpected OpenSSL CMake source; refusing patch")
+PY
+
 LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
 [ -x "$LLVM_CONFIG" ] || die "llvm-config do Termux nao encontrado em $LLVM_CONFIG"
 if ! LLVM_LIBS="$("$LLVM_CONFIG" --link-shared --libs core orcjit native 2>&1)"; then
