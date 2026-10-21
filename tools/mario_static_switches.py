@@ -428,6 +428,19 @@ def select_global_census(tables, planned, base, max_blocks, byte_budget, max_blo
     return [planned[owner] for owner in sorted(selected)]
 
 
+def missing_census_targets(tables, planned, base, registered, selected):
+    """Addresses left out after *whole-owner* selection, never partial tables.
+
+    Only count already validated static destinations. No speculative guest
+    addresses can enter this result. The caller may abort before recompiling
+    if the requested exhaustive budget is insufficient.
+    """
+    missing = {base + target for table in tables for target in table["targets"]} - set(registered)
+    covered = {pc for block in selected
+               for pc in planned[block["owner"]]["targets"]}
+    return missing - covered
+
+
 def valid_selection_mode(all_verified, anchor):
     """Exactly one mode: global verified-table scan or explicit target."""
     return bool(all_verified) != (anchor is not None)
@@ -443,10 +456,15 @@ def main():
                     help="success with no output when a verified table is fully registered")
     ap.add_argument("--all-verified", action="store_true",
                     help="select whole verified jump tables without a crash address")
+    ap.add_argument("--require-complete", action="store_true",
+                    help="abort before emitting targets if any verified-table "
+                         "destination exceeds the selected safe budgets")
     ap.add_argument("--max-blocks", type=int, default=16)
     ap.add_argument("--budget-bytes", type=int, default=131072)
     ap.add_argument("--max-block-bytes", type=int, default=16384)
     args = ap.parse_args()
+    if args.require_complete and not args.all_verified:
+        ap.error("--require-complete requires --all-verified")
     if not (1 <= args.max_blocks <= 256 and 128 <= args.budget_bytes <= 1048576
             and 16 <= args.max_block_bytes <= 262144
             and (args.anchor is None or (args.anchor >= 0 and args.anchor % 4 == 0))
@@ -498,16 +516,27 @@ def main():
         selected_targets = {pc for owner in selected_owners
                             for pc in blocks[owner]["targets"]}
         missing_targets = set(base + x for x in all_targets) - set(entries)
+        uncovered = missing_census_targets(tables, blocks, base, entries, chosen)
         print(f"[mario-static-switch] verified-global selected_owners={len(chosen)} "
               f"selected_bytes={selected_bytes} "
               f"selected_case_targets={len(selected_targets)} "
               f"pending_case_targets={len(missing_targets)} "
-              f"unselected_case_targets={len(missing_targets - selected_targets)}",
+              f"unselected_case_targets={len(uncovered)}",
               file=sys.stderr)
-        if missing_targets - selected_targets:
+        if uncovered:
             print("[mario-static-switch] WARNING: some verified-table targets "
                   "exceed the requested block/byte budget; do not treat this "
                   "as complete jump-table coverage", file=sys.stderr)
+            if args.require_complete:
+                largest = sorted((b["bytes"], b["owner"])
+                                 for b in blocks.values()
+                                 if any(pc in uncovered for pc in b["targets"]))
+                examples = ", ".join(f"0x{pc - base:x}" for pc in sorted(uncovered)[:8])
+                raise ValueError(
+                    f"{len(uncovered)} validated jump destinations remain unregistered "
+                    f"and unplanned (examples: {examples}); "
+                    f"largest_unplanned_owner_bytes={largest[-1][0] if largest else 0}. "
+                    f"Increase bounded limits or keep current library unchanged.")
     for block in chosen:
         print(f"[mario-static-switch] patch_owner=0x{block['owner']:x} "
               f"bytes={block['bytes']} targets={len(block['targets'])}",
