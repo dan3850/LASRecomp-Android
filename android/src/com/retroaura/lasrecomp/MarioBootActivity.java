@@ -53,6 +53,9 @@ public final class MarioBootActivity extends Activity {
         if (status == null || checking) return;
         File stageFile = new File(getFilesDir(), "mario-snx-launch.log");
         if (!stageFile.isFile()) return;
+        // A crashed child process may not recreate this launcher Activity.
+        // Refresh Android's retained tombstone information on return.
+        savePreviousProcessExits();
         try (RandomAccessFile input = new RandomAccessFile(stageFile, "r")) {
             long first = Math.max(0, input.length() - 5000);
             input.seek(first);
@@ -226,7 +229,7 @@ public final class MarioBootActivity extends Activity {
         snxStage("BUTTON_CLICK: preparing ScarletNX guest execution");
         checking = true;
         snxRunButton.setEnabled(false);
-        status.setText("ScarletNX: preparando ExeFS para iniciar a CPU. Acompanhe as etapas na tela.");
+        status.setText("ScarletNX: iniciando preparação. Os executáveis podem demorar para copiar; não feche o aplicativo.");
         new Thread(() -> {
             try {
                 snxStage("PREPARE: checking packaged runtime and AOT module");
@@ -433,7 +436,12 @@ public final class MarioBootActivity extends Activity {
 
     private String readLogs() {
         StringBuilder text = new StringBuilder();
-        for (String name : new String[]{"mario-snx-launch.log", "mario-snx-probe.txt", "mario-exit.log", "neo_touch_crash.txt", "mario-threads.log", "mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"}) {
+        boolean scarletAttempt = new File(getFilesDir(), "mario-snx-launch.log").isFile();
+        String[] logs = scarletAttempt ?
+                new String[]{"mario-snx-launch.log", "mario-snx-probe.txt", "mario-exit.log"} :
+                new String[]{"mario-exit.log", "neo_touch_crash.txt", "mario-threads.log",
+                             "mario-grafico.log", "mario-esperas.log", "lasrecomp_boot.txt", "lasrecomp.log"};
+        for (String name : logs) {
             text.append("\n=== ").append(name).append(" ===\n");
             try (RandomAccessFile input = new RandomAccessFile(new File(getFilesDir(), name), "r")) {
                 long start = (name.equals("mario-exit.log") || name.equals("neo_touch_crash.txt") || name.equals("mario-threads.log") || name.equals("mario-grafico.log") || name.equals("mario-esperas.log")) ? 0 : Math.max(0, input.length() - 160000);
