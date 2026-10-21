@@ -1015,11 +1015,50 @@ static void stable60_mod_pace(void) {
         reported=now; paced_frames=waits_ns=0;
     }
 }
+// Mario does not use Zelda's Stable60 mod. MAILBOX does not limit the
+// number of presented game frames; bound Mario to a real host-side 60 Hz.
+// Preserve guest clocks, VI, and GPU counter semantics.
+#ifdef LASRECOMP_MARIO_TEST
+static void mario_android_pace(void) {
+    static int enabled = -1;
+    static LasMod60Pacer pacer;
+    static uint64_t since_ns, frames, waited_ns;
+    if (enabled < 0) {
+        const char *env = getenv("LARECOMP_MARIO_PACE");
+        enabled = !env || atoi(env) != 0;
+        LOG("[mario-pace] host 60Hz cap %s (LARECOMP_MARIO_PACE=%s)\n",
+            enabled ? "enabled" : "disabled", env ? env : "unset");
+    }
+    uint64_t now = plat_now_ns();
+    uint64_t deadline = las_mod60_deadline(&pacer, enabled != 0, now);
+    if (!enabled) return;
+    if (deadline) {
+        plat_sleep_until_ns(deadline);
+        uint64_t awake = plat_now_ns();
+        if (awake > now) waited_ns += awake - now;
+        now = awake;
+    }
+    las_mod60_complete(&pacer, now);
+    if (!since_ns) since_ns = now;
+    ++frames;
+    if (now - since_ns >= 2000000000ull) {
+        LOG("[mario-pace] frames=%llu elapsed=%.2fs waited=%.1fms\n",
+            (unsigned long long)frames, (now - since_ns) / 1e9,
+            waited_ns / 1e6);
+        since_ns = now;
+        frames = waited_ns = 0;
+    }
+}
+#endif
 #endif
 
 void backend_present(NvnTexture *t) {
 #ifdef __ANDROID__
+#ifdef LASRECOMP_MARIO_TEST
+    mario_android_pace();
+#else
     stable60_mod_pace();
+#endif
 #endif
 #ifdef LASRECOMP_MARIO_TEST
     {
