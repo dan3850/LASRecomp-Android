@@ -111,6 +111,24 @@ if [[ "${MARIO_NEXT_BATCH:-1}" == 1 ]]; then
         echo "Nova regiao ja coberta; reutilizando cache."
     fi
 fi
+# Observed crash 11: main+0x8c6500 reached with LR main+0x8c2844,
+# target was in x11. Repair its owner and a bounded nearby cohort.
+if [[ "${MARIO_THIRD_BATCH:-1}" == 1 ]]; then
+    echo "===== MARIO: COBERTURA DA REGIAO 0x8C6500 ====="
+    MARIO_THIRD_POINTS="$(python3 -u tools/mario_resume_batch.py \
+        --game "$MARIO_GAME" --output "$MARIO_CODE" \
+        --anchor main:0x8c6500 --return-site main:0x8c2844 \
+        --limit "${MARIO_THIRD_BATCH_LIMIT:-12}" \
+        --budget-bytes "${MARIO_THIRD_BATCH_BYTES:-131072}" \
+        --radius 4096 --max-block-bytes 16384 \
+        --nearby-radius 4096 --prefer-forward 1 --allow-empty)"
+    if [[ -n "$MARIO_THIRD_POINTS" ]]; then
+        MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_THIRD_POINTS"
+        echo "Blocos selecionados: $MARIO_THIRD_POINTS"
+    else
+        echo "Regiao ja coberta; reutilizando cache."
+    fi
+fi
 # Automatically analyze nearby primary functions around confirmed late
 # dispatch failures, selecting up to 32 independent owners in one pass.
 # The planner only reads locally extracted NSOs and the existing dispatch map;
@@ -143,7 +161,8 @@ fi
 #   main+0x834b2c (LR main+0x8d2934; Mario-Recomp-boot (7))
 #   main+0x834d7c (LR main+0x8d291c; Mario-Recomp-boot (9))
 #   main+0x76d870 (LR main+0x76d638; Mario-Recomp-boot (10))
-for MARIO_REQUIRED_ENTRY in main:0x76d870 main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384 main:0x66a0fc main:0x8099d0 main:0x8209d0 main:0x834b2c main:0x834d7c main:0x8cfa78 main:0x95009c sdk:0x2bfbd8 sdk:0x376ac0 sdk:0x385134; do
+#   main+0x8c6500 (LR main+0x8c2844; Mario-Recomp-boot (11))
+for MARIO_REQUIRED_ENTRY in main:0x8c6500 main:0x76d870 main:0x791a18 main:0x66c48c main:0x669c74 main:0x3e6384 main:0x66a0fc main:0x8099d0 main:0x8209d0 main:0x834b2c main:0x834d7c main:0x8cfa78 main:0x95009c sdk:0x2bfbd8 sdk:0x376ac0 sdk:0x385134; do
     if [[ " ${MARIO_RESUME_AT:-} " != *" $MARIO_REQUIRED_ENTRY "* ]]; then
         MARIO_RESUME_AT="${MARIO_RESUME_AT:+$MARIO_RESUME_AT }$MARIO_REQUIRED_ENTRY"
     fi
