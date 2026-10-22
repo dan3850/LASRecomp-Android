@@ -25,6 +25,13 @@ class LiveProbePatchTest(unittest.TestCase):
     def source(self):
         return (
             '#include "nx/gpu/vk/internal_spv.h"\n'
+            'void pf_start_load(void) {\\n'
+            '    if (getenv("SNX_SHADER_CORPUS")) {\\n'
+            '        LOG("vulkan: SNX_SHADER_CORPUS is set, so every shader is translated and none is kept for the next run\\\\n");\\n'
+            '        return;\\n'
+            '    }\\n'
+            '    g_pf.on = 1;\\n'
+            '}\\n'
             "void fake_fragment_pipeline(void) {\n"
             "        if (spv) {\n"
             "            VkShaderModuleCreateInfo mi = {\n"
@@ -40,6 +47,8 @@ class LiveProbePatchTest(unittest.TestCase):
         self.assertIn("if (!spv && stage == ST_FS)", updated)
         self.assertIn("s->si = candidate;", updated)
         self.assertIn("vk_spirv_unavailable(adapted, cnw)", updated)
+        self.assertIn("persistent shader cache bypassed for this session", updated)
+        self.assertIn("existing files untouched", updated)
         self.assertIn("if (spv) {", updated)
         self.assertEqual(PATCH.transform(updated), updated)
         self.assertEqual(PATCH.transform(updated, revert=True), source)
