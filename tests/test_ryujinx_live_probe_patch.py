@@ -28,6 +28,7 @@ class LiveProbePatchTest(unittest.TestCase):
             "void pf_start_load(void) {\n"
             + PATCH.CACHE_OLD + "\n}\n"
             + "void fake_fragment_pipeline(void) {\n"
+            + PATCH.FIRST_OLD + "\n"
             "        if (spv) {\n"
             "            VkShaderModuleCreateInfo mi = {\n"
             "                .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};\n"
@@ -43,6 +44,7 @@ class LiveProbePatchTest(unittest.TestCase):
         self.assertIn("s->si = candidate;", updated)
         self.assertIn("vk_spirv_unavailable(adapted, cnw)", updated)
         self.assertIn("persistent shader cache bypassed for this session", updated)
+        self.assertIn("Ryujinx-first fragment selected for Vulkan", updated)
         self.assertIn("existing files untouched", updated)
         self.assertIn("if (spv) {", updated)
         self.assertEqual(PATCH.transform(updated), updated)
