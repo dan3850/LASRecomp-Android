@@ -761,7 +761,11 @@ else
  echo "APK: $APK"
 fi
 echo "LOG: $OUT/compilacao.log"
-[[ -n "${LASRECOMP_GAME_SO:-}" ]] || echo "AVISO: sem liblasgame.so privada, o APK nao inicia o jogo."
+if [[ -n "${LASRECOMP_SNX_STAGE_LIB_DIR:-}" ]]; then
+ echo "MODO SCARLETNX: modulo AOT privado empacotado sem LASRECOMP_GAME_SO."
+elif [[ -z "${LASRECOMP_GAME_SO:-}" ]]; then
+ echo "AVISO: sem liblasgame.so privada, o APK LASRecomp nao inicia o jogo."
+fi
 if [[ "$NEO_ENABLE" == 1 ]]; then
  echo "NEO RADIALGAMEPAD: ATIVADO (APK montado, teste visual no aparelho pendente)."
 else
