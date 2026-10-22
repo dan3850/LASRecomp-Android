@@ -195,6 +195,7 @@ static class ScarletSpirvAdapter
         // An unused support buffer needs no synthesized float constant.
 
         var chains = new Dictionary<uint, uint>();
+        var aliases = new HashSet<uint>();
         var loads = new HashSet<uint>();
         foreach (var ins in instructions)
         {
@@ -204,16 +205,49 @@ static class ScarletSpirvAdapter
             {
                 if (!consts.TryGetValue(a[3], out var indexValue) || indexValue.Value != 5)
                     throw new InvalidDataException("Ryujinx support_buffer reads unexpected field");
-                chains.Add(a[1], a[0]);
-            }
-            if (ins.Opcode == OpLoad && a.Length >= 3 && chains.ContainsKey(a[2]))
-            {
-                if (a.Length != 3 || a[0] != floatOneType)
-                    throw new InvalidDataException("Ryujinx render scale load is not float32");
-                loads.Add(a[2]);
+                if (!chains.TryAdd(a[1], a[0]))
+                    throw new InvalidDataException("duplicate render scale pointer id");
             }
         }
-        if (!chains.Keys.ToHashSet().SetEquals(loads))
+        // Some Ryujinx shaders copy the access-chain pointer before loading.
+        // Resolve only simple SSA pointer copies, never arbitrary pointer operations.
+        var pointers = chains.Keys.ToHashSet();
+        bool changed;
+        do
+        {
+            changed = false;
+            foreach (var ins in instructions)
+            {
+                var a = ins.A;
+                if (ins.Opcode == OpCopyObject && a.Length == 3 && pointers.Contains(a[2]))
+                {
+                    if (pointers.Add(a[1]))
+                    {
+                        aliases.Add(a[1]);
+                        changed = true;
+                    }
+                }
+            }
+        } while (changed);
+        var usedPointers = new HashSet<uint>();
+        foreach (var ins in instructions)
+        {
+            var a = ins.A;
+            if (ins.Opcode == OpLoad && a.Length >= 3 && pointers.Contains(a[2]))
+            {
+                if (a.Length != 3 || !fp32.Contains(a[0]))
+                    throw new InvalidDataException("Ryujinx render scale load is not float32");
+                if (floatOneType != 0 && a[0] != floatOneType)
+                    throw new InvalidDataException("Ryujinx render scale float type mismatch");
+                floatOneType = a[0];
+                loads.Add(a[2]);
+                usedPointers.Add(a[2]);
+            }
+        }
+        if (pointers.Count != 0 && !pointers.All(id => usedPointers.Contains(id) ||
+            (chains.ContainsKey(id) && aliases.Count != 0) ||
+            aliases.Contains(id) && instructions.Any(ins => ins.Opcode == OpCopyObject &&
+                ins.A.Length == 3 && ins.A[1] == id)))
             throw new InvalidDataException("unsupported render scale pointer usage");
         // Ryujinx does not always emit a literal 1.0.  A render-scale
         // read can still be safely replaced with 1.0 at native resolution;
@@ -237,10 +271,12 @@ static class ScarletSpirvAdapter
             bool knownChain = (ins.Opcode == OpAccessChain || ins.Opcode == OpInBoundsAccessChain) &&
                               a.Length >= 4 && a[2] == support;
             bool knownLoad = ins.Opcode == OpLoad && a.Length >= 3 && loads.Contains(a[2]);
-            if (knownName || knownVar || knownChain || knownLoad ||
+            bool knownAlias = ins.Opcode == OpCopyObject && a.Length == 3 &&
+                              aliases.Contains(a[1]) && pointers.Contains(a[2]);
+            if (knownName || knownVar || knownChain || knownLoad || knownAlias ||
                 ins.Opcode == OpConstant || ins.Opcode == OpDecorate || ins.Opcode == 12)
                 continue;
-            if (a.Contains(support) || a.Any(x => chains.ContainsKey(x)))
+            if (a.Contains(support) || a.Any(x => pointers.Contains(x)))
                 throw new InvalidDataException("unsupported support_buffer SSA reference");
         }
 
@@ -280,6 +316,8 @@ static class ScarletSpirvAdapter
                 continue;
             if ((op == OpAccessChain || op == OpInBoundsAccessChain) &&
                 a.Length >= 4 && a[2] == support)
+                continue;
+            if (op == OpCopyObject && a.Length == 3 && aliases.Contains(a[1]) && pointers.Contains(a[2]))
                 continue;
             if (op == OpLoad && a.Length >= 3 && loads.Contains(a[2]))
             {
