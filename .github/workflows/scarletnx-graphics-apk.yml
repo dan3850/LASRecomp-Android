@@ -17,8 +17,8 @@ jobs:
     timeout-minutes: 30
     env:
       NX: ${{ github.workspace }}/nxnative
-      RYU_STAGE: ${{ runner.temp }}/ryu-stage
-      RYU_OUTPUT: ${{ runner.temp }}/ryu-android
+      RYU_STAGE: ${{ github.workspace }}/.ci/ryu-stage
+      RYU_OUTPUT: ${{ github.workspace }}/.ci/ryu-android
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ryujinx-v2-${{ github.sha }}
-          path: ${{ runner.temp }}/ryu-android/
+          path: ${{ github.workspace }}/.ci/ryu-android/
           if-no-files-found: error
   apk:
     needs: nativeaot
@@ -93,8 +93,8 @@ jobs:
       SCARLETNX_SRC: ${{ github.workspace }}/ScarletNX
       ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/28.2.13676358
       LLVM_PREFIX: ${{ github.workspace }}/android-llvm/arm64-v8a
-      RYU_STAGE: ${{ runner.temp }}/ryu-stage
-      RYU_OUTPUT: ${{ runner.temp }}/ryu-android
+      RYU_STAGE: ${{ github.workspace }}/.ci/ryu-stage
+      RYU_OUTPUT: ${{ github.workspace }}/.ci/ryu-android
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
@@ -105,7 +105,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: ryujinx-v2-${{ github.sha }}
-          path: ${{ runner.temp }}/ryu-android
+          path: ${{ github.workspace }}/.ci/ryu-android
       - name: Install pinned toolchain
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;28.2.13676358' 'platforms;android-35' 'build-tools;35.0.0'
