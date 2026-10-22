@@ -12,11 +12,41 @@ cd "$ROOT"
   exit 1
 }
 LIB="$HOME/ryujinx-nativeaot/libRyujinxShaderNative.so"
-[ -s "$LIB" ] || {
-  echo "ERRO: a biblioteca real Ryujinx NativeAOT sumiu: $LIB" >&2
-  echo "Rode antes: bash testar-ryujinx-nativo-termux.sh" >&2
-  exit 1
+# The original native library successfully translated 5/5 but has no Vulkan
+# descriptor adapter export. Upgrade ONLY after verifying the newer archive.
+is_vulkan_adapter() {
+  [ -s "$1" ] &&
+  llvm-readelf -W --dyn-syms "$1" 2>/dev/null |
+    grep -F 'snx_ryu_translate_scarlet_v1' >/dev/null
 }
+if ! is_vulkan_adapter "$LIB"; then
+  echo "Ryujinx antigo: procurando biblioteca NativeAOT com adaptador Vulkan em Download..."
+  ARTIFACT=""
+  for candidate in /storage/emulated/0/Download/ryujinx-android-arm64-nativeaot*.zip; do
+    if [ -s "$candidate" ] && { [ -z "$ARTIFACT" ] || [ "$candidate" -nt "$ARTIFACT" ]; }; then
+      ARTIFACT="$candidate"
+    fi
+  done
+  if [ -n "$ARTIFACT" ]; then
+    TEMP_SO="$HOME/ryujinx-nativeaot/libRyujinxShaderNative-NEW.so"
+    python3 "$ROOT/tools/ryujinx-nativeaot/extract_artifact.py" "$ARTIFACT" \
+      --out "$TEMP_SO"
+    if is_vulkan_adapter "$TEMP_SO"; then
+      mv -f "$TEMP_SO" "$LIB"
+      echo "NOVA biblioteca Ryujinx Vulkan verificada e instalada no cache."
+    else
+      echo "O ZIP em Download e da versão ANTIGA, sem adaptador Vulkan."
+      rm -f "$TEMP_SO"
+    fi
+  fi
+fi
+if ! is_vulkan_adapter "$LIB"; then
+  echo "ERRO: biblioteca com snx_ryu_translate_scarlet_v1 ainda nao disponivel." >&2
+  echo "Baixe o artefato NOVO do workflow no GitHub, salve ZIP em Download." >&2
+  echo "https://github.com/dan3850/LASRecomp-Android/actions/workflows/ryujinx-nativeaot-android.yml" >&2
+  echo "O Castlevania anterior continua intacto. Nenhuma compilacao iniciada." >&2
+  exit 1
+fi
 python3 "$ROOT/tools/ryujinx-nativeaot/check_native_elf.py" "$LIB"
 python3 -m unittest discover -s tests -p 'test_ryujinx_live_probe_patch.py'
 python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_artifact.py'
@@ -39,6 +69,13 @@ python3 "$ROOT/tools/ryujinx-nativeaot/test_native.py" "$LIB" "$CAPTURE" \
   echo "ERRO: prova do Ryujinx falhou; nenhuma APK sera recompilada." >&2
   exit 1
 }
+echo "===== PROVA: ADAPTADOR VULKAN REAL == PYTHON OFFLINE ====="
+python3 "$ROOT/tools/ryujinx-nativeaot/test_scarlet_adapter_native.py" \
+  "$LIB" "$CAPTURE" --out "$HOME/ryujinx-nativeaot/vulkan-adapter-test" || {
+  echo "ERRO: tradutor dinamico NAO corresponde ao SPIR-V validado." >&2
+  echo "Nenhuma APK sera recompilada enquanto isso nao for corrigido." >&2
+  exit 1
+}
 
 FOLDER="/storage/emulated/0/Download/CastlevaniaRecomp"
 OLD="$FOLDER/Castlevania-SNX-Runtime-TESTE.apk"
@@ -56,7 +93,7 @@ unset SCARLETNX_RYUJINX_BRIDGE
 echo "==========================================="
 echo "RYUJINX REAL NO PROCESSO DO CASTLEVANIA"
 echo "NativeAOT Android ARM64: C# original, sem packs"
-echo "Modo: SHADOW DIAGNOSTIC, Vulkan original mantido"
+echo "Modo: VULKAN REAL - Ryujinx adaptado, fallback ScarletNX"
 echo "AOT do jogo: REUTILIZADO; sem clean"
 echo "Biblioteca: $LIB"
 echo "==========================================="
@@ -70,5 +107,5 @@ cp -p "$OLD" "$SEPARATE"
 echo "===== APK DE TESTE NATIVO ====="
 echo "$SEPARATE"
 echo "Back-up anterior: $BACKUP"
-echo "No launcher, ligue 'Tradutor Ryujinx NativeAOT (diagnostico)'"
-echo "Esta rodada verifica tradutor real DENTRO do jogo; nao substitui ainda a renderizacao."
+echo "No launcher, ligue 'Ryujinx Vulkan automatico (experimental)'"
+echo "Esta rodada usa de verdade o SPIR-V adaptado no Vulkan para shaders que o ScarletNX rejeitar."
