@@ -9,7 +9,7 @@ cd "$ROOT"
   exit 1
 }
 ID=0100BA4026E94000
-export CASTLEVANIA_SNX_CODE_SO="${CASTLEVANIA_SNX_CODE_SO:-/storage/emulated/0/Download/$ID/${ID}_code.so}"
+export CASTLEVANIA_SNX_CODE_SO="${CASTLEVANIA_SNX_CODE_SO:-/storage/emulated/0/Download/Castlevania-Atualizado/$ID/${ID}_code.so}"
 [ -s "$CASTLEVANIA_SNX_CODE_SO" ] || {
   echo "ERRO: modulo recompilado nao encontrado: $CASTLEVANIA_SNX_CODE_SO" >&2
   echo "Exporte o _code.so do ScarletNX para Download, ou defina CASTLEVANIA_SNX_CODE_SO." >&2
