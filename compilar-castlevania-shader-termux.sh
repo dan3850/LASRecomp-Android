@@ -16,12 +16,23 @@ restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
   if [ -s "$SRC/src/nx/gpu/shader/spirv_translate.c" ]; then
-    if ! python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC" --revert >/dev/null; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC"
+if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ]; then
+  python3 "$ROOT/tools/patch_scarletnx_ryujinx_runtime.py" "$SRC"
+  echo "Castlevania: runtime Ryujinx privado e opt-in integrado ao Vulkan"
+fi --revert >/dev/null; then
       echo "AVISO: nao foi possivel restaurar o diagnostico bindless no cache." >&2
       restore_failed=1
     fi
     if ! python3 "$ROOT/tools/patch_scarletnx_fswzadd.py" "$SRC" --revert >/dev/null; then
       echo "AVISO: nao foi possivel restaurar o patch FSWZADD no cache." >&2
+      restore_failed=1
+    fi
+  fi
+  if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ] &&
+     [ -s "$SRC/src/nx/gpu/vk/pipeline.c" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_ryujinx_runtime.py" "$SRC" --revert; then
+      echo "AVISO: falha restaurando pipeline Vulkan Ryujinx experimental" >&2
       restore_failed=1
     fi
   fi
@@ -36,6 +47,10 @@ restore_source() {
 trap 'restore_source "$?"' EXIT
 python3 tests/test_castlevania_shader_patch.py
 python3 tests/test_castlevania_bindless_diag.py
+if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ]; then
+  python3 tests/test_castlevania_ryujinx_runtime_patch.py
+  python3 -m unittest discover -s tests -p 'test_ryujinx_spirv_bridge.py'
+fi
 # Keep the known booting but graphically incomplete test APK for comparison.
 OLD_APK="/storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-TESTE.apk"
 BACKUP="/storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-ANTES-FSWZADD.apk"
