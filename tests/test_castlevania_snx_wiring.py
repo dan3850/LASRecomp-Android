@@ -36,5 +36,24 @@ class CastlevaniaWiring(unittest.TestCase):
         self.assertIn('com.retroaura.castlevania.snxruntime', manifest)
         self.assertIn('CastlevaniaSnxBootActivity', manifest)
 
+    def test_graphics_diagnostics_are_not_tail_only(self):
+        log_report = (ROOT / "android/src/com/retroaura/lasrecomp/ScarletNxLogReport.java").read_text()
+        launcher = (ROOT / "android/src/com/retroaura/lasrecomp/CastlevaniaSnxBootActivity.java").read_text()
+        self.assertIn("BufferedReader", log_report)
+        self.assertIn('low.contains("not translated")', log_report)
+        self.assertIn('low.contains("fswzadd")', log_report)
+        self.assertIn("ScarletNxLogReport.build(getFilesDir(), ID)", launcher)
+        self.assertIn('"snx-log-export"', launcher)
+
+    def test_shader_runtime_isolated_and_source_reverted(self):
+        shader = (ROOT / "compilar-castlevania-shader-termux.sh").read_text()
+        compiler = (ROOT / "compilar-mario-snx-romfs-termux.sh").read_text()
+        self.assertIn("scarletnx-castlevania-shader-build/libscarletnx.so", shader)
+        self.assertIn("Castlevania-SNX-Runtime-ANTES-FSWZADD.apk", shader)
+        self.assertIn("trap restore_source EXIT", shader)
+        self.assertIn("SCARLETNX_RUNTIME_OUT", compiler)
+        self.assertIn("SCARLETNX_CASTLEVANIA_FSWZADD", compiler)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
