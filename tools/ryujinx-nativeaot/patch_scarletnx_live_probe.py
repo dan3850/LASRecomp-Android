@@ -175,6 +175,9 @@ CACHE_NEW = '''    /* Experimental Ryujinx fallback must see the Maxwell source,
 
 INCLUDE_OLD = '#include "nx/gpu/vk/internal_spv.h"'
 INCLUDE_NEW = INCLUDE_OLD + '\n#include "nx/gpu/vk/snx_ryujinx_native_live_probe.h"'
+FIRST_OLD = "        u32* spv = vk_translate_spirv(code, 0x10000, stage, &s->si, &nw, sh_cb_read, &s->cbr);"
+FIRST_NEW = "        /* Ryujinx-first fragment experiment; native translator remains fallback. */\n        u32* spv = NULL;\n        if (stage == ST_FS && getenv(\"SNX_RYUJINX_NATIVE_PROBE\") &&\n            !strcmp(getenv(\"SNX_RYUJINX_NATIVE_PROBE\"), \"1\")) {\n            ShaderInfo candidate = s->si;\n            size_t cnw = 0;\n            u32* adapted = snx_rn_live_try_vulkan(code, mlen, stage, &candidate, &cnw);\n            if (adapted) {\n                const char* why = vk_spirv_unavailable(adapted, cnw);\n                if (!why) {\n                    s->si = candidate;\n                    nw = cnw;\n                    spv = adapted;\n                    WARN(\"vulkan: RYUJINX_NATIVE_VULKAN: Ryujinx-first fragment selected for Vulkan\\n\");\n                } else {\n                    WARN(\"vulkan: RYUJINX_NATIVE_VULKAN: Ryujinx-first rejected: %s\\n\", why);\n                    free(adapted);\n                }\n            }\n        }\n        if (!spv)\n            spv = vk_translate_spirv(code, 0x10000, stage, &s->si, &nw, sh_cb_read, &s->cbr);"
+
 CALL_OLD = '''        if (spv) {
             VkShaderModuleCreateInfo mi = {'''
 CALL_NEW = '''        /* Real, opt-in Ryujinx-to-ScarletNX Vulkan fallback. Only a validated
@@ -203,14 +206,14 @@ def transform(source: str, revert=False):
     if revert:
         if source.count(INCLUDE_OLD) == 1 and source.count(CALL_OLD) == 1 and INCLUDE_NEW not in source:
             return source
-        if source.count(INCLUDE_NEW) != 1 or source.count(CALL_NEW) != 1 or source.count(CACHE_NEW) != 1:
+        if source.count(INCLUDE_NEW) != 1 or source.count(CALL_NEW) != 1 or source.count(CACHE_NEW) != 1 or source.count(FIRST_NEW) != 1:
             raise ValueError("live Ryujinx probe patch not found or malformed")
-        return source.replace(CALL_NEW, CALL_OLD, 1).replace(INCLUDE_NEW, INCLUDE_OLD, 1).replace(CACHE_NEW, CACHE_OLD, 1)
-    if source.count(INCLUDE_NEW) == 1 and source.count(CALL_NEW) == 1 and source.count(CACHE_NEW) == 1:
+        return source.replace(CALL_NEW, CALL_OLD, 1).replace(INCLUDE_NEW, INCLUDE_OLD, 1).replace(CACHE_NEW, CACHE_OLD, 1).replace(FIRST_NEW, FIRST_OLD, 1)
+    if source.count(INCLUDE_NEW) == 1 and source.count(CALL_NEW) == 1 and source.count(CACHE_NEW) == 1 and source.count(FIRST_NEW) == 1:
         return source
-    if INCLUDE_NEW in source or CACHE_NEW in source or source.count(INCLUDE_OLD) != 1 or source.count(CALL_OLD) != 1 or source.count(CACHE_OLD) != 1:
+    if INCLUDE_NEW in source or CACHE_NEW in source or source.count(INCLUDE_OLD) != 1 or source.count(CALL_OLD) != 1 or source.count(CACHE_OLD) != 1 or source.count(FIRST_OLD) != 1:
         raise ValueError("pinned ScarletNX Vulkan pipeline changed; refuse patch")
-    return source.replace(INCLUDE_OLD, INCLUDE_NEW, 1).replace(CALL_OLD, CALL_NEW, 1).replace(CACHE_OLD, CACHE_NEW, 1)
+    return source.replace(INCLUDE_OLD, INCLUDE_NEW, 1).replace(CALL_OLD, CALL_NEW, 1).replace(CACHE_OLD, CACHE_NEW, 1).replace(FIRST_OLD, FIRST_NEW, 1)
 
 
 def apply(root: Path, revert=False):
