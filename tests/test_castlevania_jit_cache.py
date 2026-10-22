@@ -34,7 +34,7 @@ class JitCachePolicy(unittest.TestCase):
             PATCH.transform(source.replace('hints = hints_copy(&hint_count);', 'hints = other();'))
 
     @unittest.skipUnless(shutil.which('cc'), 'C compiler required')
-    def test_actual_jit_init_is_cold_only_for_opted_in_castlevania(self):
+    def test_actual_jit_init_is_always_cold_for_castlevania(self):
         source = PATCH.transform(pinned_source())
         init = 'void jit_init(void)' + source.split('void jit_init(void)', 1)[1].split('\nGuestFn jit_resolve', 1)[0]
         harness = r'''
@@ -112,12 +112,12 @@ static void session(int expect_cold) {
 int main(void) {
     setenv("SNX_RYUJINX_NATIVE_PROBE", "1", 1);
     for (int i = 0; i < 3; i++) session(1);
-    setenv("SNX_RYUJINX_NATIVE_PROBE", "0", 1); session(0);
-    unsetenv("SNX_RYUJINX_NATIVE_PROBE"); session(0);
-    setenv("SNX_RYUJINX_NATIVE_PROBE", "invalid", 1); session(0);
+    setenv("SNX_RYUJINX_NATIVE_PROBE", "0", 1); session(1);
+    unsetenv("SNX_RYUJINX_NATIVE_PROBE"); session(1);
+    setenv("SNX_RYUJINX_NATIVE_PROBE", "invalid", 1); session(1);
     setenv("SNX_RYUJINX_NATIVE_PROBE", "1", 1);
     g_exename = "another-game"; session(0);
-    puts("JIT_COLD_POLICY_OK: 3 cold sessions, original policy for disabled opt-in and other games");
+    puts("JIT_COLD_POLICY_OK: Castlevania cold with every environment value; other games unchanged");
 }
 '''
         with tempfile.TemporaryDirectory() as directory:
