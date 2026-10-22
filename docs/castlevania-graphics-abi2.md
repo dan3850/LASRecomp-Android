@@ -83,3 +83,35 @@ Early-Z fragments continue to the native translator with explicit diagnostics.
 Passing CI proves the tested translation, ABI, packaging and build behavior; it
 cannot establish that the black scenery, purple triangles or corrupted polygons
 have disappeared. No screenshots were attached in this request, only the log.
+
+## Executed results (2026-10-22)
+
+NativeAOT CI job: https://github.com/dan3850/LASRecomp-Android/actions/runs/39802490581
+`nativeaot` succeeded: two preparation tests, two ABI-2 tests (including the
+compiled C callback/staging suite), seven managed adapter cases and four actual
+NativeAOT cases. Every emitted test module passed `spirv-val`. The Android ARM64
+library was published successfully (9,659,568 bytes).
+
+Host library CI: https://github.com/dan3850/LASRecomp-Android/actions/runs/39803358134
+This builds the same identity `ac57e9d7e5ac10804711ba2ce58bef8cbe1e91357bef3a2b6fdff52ddb8248ed`
+for private offline regression. It uploaded no user capture. Only the binaries
+compiled in Actions were executed locally; no local compilation was performed.
+
+The user's five previous Maxwell captures all passed actual ABI-2 translation,
+reflection-to-metadata checks, descriptor-set/binding checks and SPIR-V validation:
+
+| Capture prefix | Maxwell bytes | Adapted SPIR-V bytes | Textures | CBUFs |
+|---|---:|---:|---:|---:|
+| 214b89d4 | 6,912 | 94,384 | 8 | 5 |
+| 41e4dbaf | 7,816 | 104,332 | 9 | 5 |
+| 642ea78b | 5,968 | 78,692 | 9 | 5 |
+| 7e305789 | 6,056 | 80,472 | 8 | 4 |
+| fc2b7c81 | 16,968 | 182,760 | 12 | 4 |
+
+These offline calls retain the earlier corpus assumptions: 2D textures,
+normalized coordinates and disabled alpha test. They contain no CB1 data;
+CB1 queries were configured to fail, and none of these five requested one.
+Therefore this proves adaptation/translation for those inputs, not the live
+TIC values, the missing sixth capture, every shader in the later log, or
+correct device rendering. No captured shader bytes or generated game SPIR-V
+were committed or uploaded to GitHub.
