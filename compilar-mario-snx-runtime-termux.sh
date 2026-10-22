@@ -52,26 +52,19 @@ fi
 unzip -Z1 "$SNX_APK" | grep -Fx 'lib/arm64-v8a/libscarletnx.so' >/dev/null ||
   die "APK ScarletNX sem runtime arm64"
 
-CODE="$ROOT/build/private-mario-full-test"
+# The Castlevania AOT is already emitted by ScarletNX (snx_module ABI 12).
+# LASRecomp's old private Mario library and boot profile are a separate engine
+# and MUST NOT be prerequisites or accidentally packaged into this test APK.
 OUT="$ROOT/build/castlevania-snx-runtime-boot"
-BASE="$ROOT/build/mario-android-boot"
-[ -s "$CODE/libmario_test.so" ] ||
-  die "O jogo original LASRecomp nao existe; nao vamos recompilar blocos."
-[ -s "$CODE/build-report.json" ] || die "build-report.json ausente"
-GAME="$(printenv MARIO_GAME || true)"
-[ -n "$GAME" ] || GAME=/storage/emulated/0/SwitchRoms/Super-extraido
-PROFILE="$BASE/profile/mario_profile_config.h"
-if [ ! -s "$PROFILE" ] || [ ! -s "$BASE/profile/mario_boot_profile.json" ]; then
-  python3 tools/mario_boot_profile.py --report "$CODE/build-report.json" \
-    --game "$GAME" --output "$BASE/profile"
-fi
-python3 tests/test_mario_snx_probe.py
+unset LASRECOMP_MARIO_PROFILE LASRECOMP_GAME_SO
 export LASRECOMP_BUILD_OUT="$OUT"
-export LASRECOMP_MARIO_PROFILE="$PROFILE"
 export LASRECOMP_MANIFEST="$ROOT/android/castlevania/AndroidManifest.xml"
 export LASRECOMP_APK_FILENAME=Castlevania-SNX-Runtime-TESTE.apk
 export LASRECOMP_DOWNLOAD_FOLDER=CastlevaniaRecomp
-export LASRECOMP_GAME_SO="$CODE/libmario_test.so"
+# This APK launches ScarletNX directly; the LASRecomp-only RadialGamePad
+# frontend would bring extra dependencies without controlling ScarletNX.
+export LASRECOMP_NEO_CONTROLS=0
+python3 tests/test_mario_snx_probe.py
 echo "===== PREPARANDO BIBLIOTECAS SCARLETNX ANTES DO APK ====="
 EXTRA="$OUT/snx-stage"
 rm -rf "$EXTRA"
@@ -79,7 +72,9 @@ mkdir -p "$EXTRA/lib/arm64-v8a" "$EXTRA/assets/licenses"
 SNLIB="$EXTRA/lib/arm64-v8a"
 # Cross-check against the previous LASRecomp test's native library names.
 # That stage is NOT modified; the freshly compiled stage is made afterwards.
-MAINLIB="$BASE/stage/lib/arm64-v8a"
+# The general Android builder will produce its own libraries; no Mario stage.
+# Use staged copies only if this experimental APK was already built.
+MAINLIB="$OUT/stage/lib/arm64-v8a"
 # The original APK runtime cannot graft an external RomFS directory.
 # Explicitly require a rebuilt ScarletNX with tools/patch_scarletnx_romfs.py;
 # fail instead of delivering another APK with the known FS_TREE_INVALID error.
