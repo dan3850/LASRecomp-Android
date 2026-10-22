@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Experimental on-device Ryujinx translator: exports a C ABI, NOT an APK yet.
+       Generated source is an unmodified nxnative Program.cs except for the
+       'partial' keyword; all translation code remains Ryujinx's real C# path. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <NativeLib>Shared</NativeLib>
+    <PublishAot>true</PublishAot>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>RyujinxShaderNative</AssemblyName>
+    <RyuSrc Condition="'$(RyuSrc)' == ''">$(MSBuildThisFileDirectory)../../../third_party/ryujinx</RyuSrc>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
+    <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Common/Ryujinx.Common.csproj" />
+    <Compile Include="BridgeExports.cs" />
+    <Compile Include="Program.Native.cs" />
+  </ItemGroup>
+</Project>
