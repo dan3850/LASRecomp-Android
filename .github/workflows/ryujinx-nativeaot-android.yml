@@ -1,0 +1,100 @@
+name: Ryujinx NativeAOT Android ARM64
+
+on:
+  push:
+    branches:
+      - experimental/ryujinx-runtime-nativeaot
+    paths:
+      - '.github/workflows/ryujinx-nativeaot-android.yml'
+      - 'tools/ryujinx-nativeaot/**'
+      - 'tests/test_ryujinx_nativeaot_prepare.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android-arm64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout experimental source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install .NET SDK 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.112
+
+      - name: Restore native compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ryujinx-nativeaot-nuget-10.0.112-${{ runner.os }}-${{ hashFiles('tools/ryujinx-nativeaot/RyujinxShaderNative.csproj') }}
+          restore-keys: |
+            ryujinx-nativeaot-nuget-10.0.112-${{ runner.os }}-
+
+      - name: Test source preparation
+        run: python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_prepare.py'
+
+      - name: Clone pinned Ryujinx source from nxnative
+        shell: bash
+        run: |
+          set -euo pipefail
+          NX="$RUNNER_TEMP/nxnative"
+          git clone --quiet --depth 1 --filter=blob:none --sparse https://github.com/seedds/nxnative "$NX"
+          git -C "$NX" sparse-checkout set dm/gfx/tools/dmsh_xlate dm/third_party/ryujinx
+          # Pin the actual C# translator source audited for this experiment.
+          git -C "$NX" fetch --quiet --depth 1 origin 1eaaab88caffcc17ada94b6dbdbe4f3b02fbb480
+          git -C "$NX" checkout --quiet --detach 1eaaab88caffcc17ada94b6dbdbe4f3b02fbb480
+          test -s "$NX/dm/gfx/tools/dmsh_xlate/Program.cs"
+          test -s "$NX/dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj"
+          echo "Pinned nxnative revision: $(git -C "$NX" rev-parse HEAD)"
+
+      - name: Stage real C# translator and build Android native library
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends zlib1g-dev
+          NDK="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}"
+          test -d "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          echo "NDK: $NDK"
+          clang --version | head -n 1
+          NX="$RUNNER_TEMP/nxnative"
+          STAGE="$RUNNER_TEMP/ryujinx-aot-source"
+          OUTPUT="$RUNNER_TEMP/ryujinx-android-arm64"
+          python3 tools/ryujinx-nativeaot/prepare_source.py --nxnative "$NX" --out "$STAGE"
+          dotnet publish "$STAGE/RyujinxShaderNative.csproj" \
+            -c Release -r linux-bionic-arm64 \
+            -p:RyuSrc="$NX/dm/third_party/ryujinx" \
+            -p:PublishAot=true -p:NativeLib=Shared \
+            -p:DisableUnsupportedError=true -p:PublishAotUsingRuntimePack=true \
+            -p:StripSymbols=false --nologo -o "$OUTPUT"
+          SO="$OUTPUT/libRyujinxShaderNative.so"
+          test -s "$SO"
+          file "$SO"
+          readelf -h "$SO" | grep -E 'Class:|Machine:|Type:'
+          readelf -h "$SO" | grep -q 'AArch64'
+          readelf -Ws "$SO" | grep -q 'snx_ryu_translate_v1'
+          readelf -Ws "$SO" | grep -q 'snx_ryu_api_version'
+          cp tools/ryujinx-nativeaot/snx_ryujinx_native_abi.h "$OUTPUT/"
+          printf '%s\n' \
+            'Ryujinx NativeAOT ARM64 experimental C# shader translator' \
+            'ABI version: 1' \
+            'Target: Android Bionic arm64-v8a' \
+            'Upstream: seedds/nxnative@1eaaab88caffcc17ada94b6dbdbe4f3b02fbb480' \
+            'Not an APK, not yet wired into ScarletNX.' \
+            > "$OUTPUT/README.txt"
+          sha256sum "$SO" > "$OUTPUT/SHA256SUMS"
+
+      - name: Upload Android native library for on-device testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ryujinx-android-arm64-nativeaot
+          path: ${{ runner.temp }}/ryujinx-android-arm64/
+          if-no-files-found: error
+          retention-days: 14
