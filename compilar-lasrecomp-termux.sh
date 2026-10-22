@@ -650,8 +650,11 @@ if [[ -n "${LASRECOMP_SNX_STAGE_LIB_DIR:-}" ]]; then
   cp -L "$snx_so" "$dest"
   is_arm64_so "$dest" || fail "Modulo SNX nao e ELF ARM64: $dest"
  done
- [[ -s "$LIBDIR/libscarletnx.so" && -s "$LIBDIR/libmario_snx.so" ]] ||
-  fail "Faltam runtime ou modulo Mario SNX no staging"
+ SNX_MODULE_NAME="${LASRECOMP_SNX_MODULE_NAME:-libmario_snx.so}"
+ [[ "$SNX_MODULE_NAME" =~ ^lib[a-zA-Z0-9_]+\.so$ ]] ||
+  fail "Nome do modulo ScarletNX invalido"
+ [[ -s "$LIBDIR/libscarletnx.so" && -s "$LIBDIR/$SNX_MODULE_NAME" ]] ||
+  fail "Faltam runtime ou modulo ScarletNX no staging"
  # Normalize native Termux LLVM's Linux zlib SONAME to Android's
  # platform libz.so, just like the base runtime earlier in this script.
  for snx_so in "$LASRECOMP_SNX_STAGE_LIB_DIR"/*.so; do
