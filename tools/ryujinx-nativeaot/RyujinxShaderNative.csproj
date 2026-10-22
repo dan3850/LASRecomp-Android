@@ -19,6 +19,7 @@
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Common/Ryujinx.Common.csproj" />
     <Compile Include="BridgeExports.cs" />
+    <Compile Include="ScarletAdapter.cs" />
     <Compile Include="Program.Native.cs" />
   </ItemGroup>
 </Project>
