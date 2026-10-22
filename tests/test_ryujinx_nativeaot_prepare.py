@@ -24,6 +24,7 @@ class PrepareTest(unittest.TestCase):
         bridge = root / "bridge"
         bridge.mkdir()
         (bridge / "BridgeExports.cs").write_text("// native wrapper")
+        (bridge / "ScarletAdapter.cs").write_text("// dynamic Vulkan adapter")
         (bridge / "RyujinxShaderNative.csproj").write_text("<Project/>")
         return upstream, bridge, code
 
