@@ -108,8 +108,8 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             getPreferences(MODE_PRIVATE).edit()
                     .putBoolean("ryujinx_native_probe", enabled).apply();
             nativeProbe.setText(nativeProbeLabel());
-            message(enabled ? "Ryujinx NativeAOT: diagnostico de shaders AO VIVO ligado. Renderizador original preservado."
-                    : "Ryujinx NativeAOT: diagnostico desligado.");
+            message(enabled ? "Ryujinx Vulkan: tradutor automatico ligado para shaders rejeitados pelo ScarletNX; fallback seguro."
+                    : "Ryujinx Vulkan desligado. Renderizador ScarletNX original.");
         });
         content.addView(nativeProbe);
 
@@ -228,7 +228,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     }
 
     private String nativeProbeLabel() {
-        return "Tradutor Ryujinx NativeAOT (diagnostico): " +
+        return "Ryujinx Vulkan automatico (experimental): " +
                (getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", false)
                 ? "LIGADO" : "DESLIGADO");
     }
