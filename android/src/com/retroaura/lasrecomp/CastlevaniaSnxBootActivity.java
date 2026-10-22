@@ -37,6 +37,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     private static final int PICK_KEYS = 302;
     private static final int EXPORT_LOG = 303;
     private static final int EXPORT_SHADERS = 304;
+    private static final int IMPORT_RYUJINX_BRIDGE = 305;
     private TextView status;
     private Uri selectedXci;
 
@@ -96,6 +97,22 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             startActivityForResult(i, EXPORT_SHADERS);
         });
         content.addView(exportShaders);
+
+        Button importBridge = new Button(this);
+        importBridge.setText("Importar ponte Ryujinx privada (.snxrbr)");
+        importBridge.setOnClickListener(v -> pick(IMPORT_RYUJINX_BRIDGE));
+        content.addView(importBridge);
+
+        Button enableBridge = new Button(this);
+        enableBridge.setText(ryujinxBridgeLabel());
+        enableBridge.setOnClickListener(v -> {
+            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean("ryujinx_bridge", false);
+            getPreferences(MODE_PRIVATE).edit().putBoolean("ryujinx_bridge", enabled).apply();
+            enableBridge.setText(ryujinxBridgeLabel());
+            message(enabled ? "Ryujinx EXPERIMENTAL habilitado apenas para o Castlevania; desligue se houver falha."
+                    : "Ryujinx desativado. O tradutor original permanece ativo.");
+        });
+        content.addView(enableBridge);
 
         Button launch = new Button(this);
         launch.setText("4. Iniciar Castlevania pelo ScarletNX");
@@ -171,6 +188,17 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 if (pending.length() < 100 || (!pending.renameTo(dest)))
                     throw new IOException("Chaves invalidas ou nao foi possivel guardar no diretorio privado");
                 message("prod.keys guardado somente no armazenamento privado do app. Nao sera incluido nos logs.");
+            } else if (request == IMPORT_RYUJINX_BRIDGE) {
+                final Uri input = uri;
+                message("Importando pack local Ryujinx para a pasta privada do Castlevania...");
+                new Thread(() -> {
+                    try {
+                        importRyujinxBridge(input);
+                        runOnUiThread(() -> message("Ponte Ryujinx importada. Ative o modo experimental para testar."));
+                    } catch (Exception error) {
+                        runOnUiThread(() -> message("Falha importando ponte Ryujinx: " + error.getMessage()));
+                    }
+                }, "snx-ryujinx-import").start();
             } else if (request == EXPORT_SHADERS) {
                 final Uri output = uri;
                 message("Exportando apenas shaders de fragmento; sem XCI ou chaves...");
@@ -197,6 +225,54 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             }
         } catch (Exception error) {
             message("Falha: " + error.getMessage());
+        }
+    }
+
+    private String ryujinxBridgeLabel() {
+        return "Ryujinx (EXPERIMENTAL): " +
+            (getPreferences(MODE_PRIVATE).getBoolean("ryujinx_bridge", false) ? "LIGADO" : "DESLIGADO");
+    }
+
+    private void importRyujinxBridge(Uri source) throws IOException {
+        File directory = new File(getFilesDir(), "snx-games/" + ID);
+        makeDir(directory);
+        File dest = new File(directory, "ryujinx-bridge.snxrbr");
+        File pending = new File(directory, "ryujinx-bridge.partial");
+        byte[] magic = new byte[8];
+        int count = 0;
+        long size = 0;
+        try (InputStream in = getContentResolver().openInputStream(source);
+             OutputStream out = new FileOutputStream(pending)) {
+            if (in == null) throw new IOException("Arquivo nao disponivel");
+            byte[] data = new byte[32768];
+            int n;
+            while ((n = in.read(data)) != -1) {
+                if (n == 0) continue;
+                size += n;
+                if (size > 4 * 1024 * 1024) throw new IOException("Arquivo excede 4 MB");
+                out.write(data, 0, n);
+            }
+        } catch (Exception error) {
+            pending.delete();
+            if (error instanceof IOException) throw (IOException)error;
+            throw new IOException(error);
+        }
+        try (InputStream in = new java.io.FileInputStream(pending)) {
+            if (in.read(magic) != 8 ||
+                    !java.util.Arrays.equals(magic, new byte[]{'S','N','X','R','B','0','0','1'}))
+                throw new IOException("Nao e um pack Ryujinx valido");
+            byte[] number = new byte[4];
+            if (in.read(number) != 4) throw new IOException("Pack truncado");
+            count = ((number[0] & 255) | ((number[1] & 255) << 8)
+                    | ((number[2] & 255) << 16) | ((number[3] & 255) << 24));
+        }
+        if (count != 5 || size < 1024) {
+            pending.delete();
+            throw new IOException("Pack incompleto ou numero de shaders incorreto");
+        }
+        if (!pending.renameTo(dest)) {
+            pending.delete();
+            throw new IOException("Nao salvou o pack na pasta privada");
         }
     }
 
@@ -331,6 +407,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_game_base", new File(folder, ID).getAbsolutePath());
             intent.putExtra("snx_source_dump", xci.getAbsolutePath());
             intent.putExtra("snx_shader_captures", getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false));
+            intent.putExtra("snx_ryujinx_bridge", getPreferences(MODE_PRIVATE).getBoolean("ryujinx_bridge", false));
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);
