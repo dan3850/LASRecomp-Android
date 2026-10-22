@@ -18,6 +18,7 @@ final class ScarletNxLogReport {
     private static final int START_BYTES = 8192;
     private static final int TAIL_BYTES = 14000;
     private static final int MAX_SHADER_LINES = 150;
+    private static final int MAX_RYU_LINES = 100;
     private static final int MAX_STATS_LINES = 90;
 
     private ScarletNxLogReport() { }
@@ -65,8 +66,9 @@ final class ScarletNxLogReport {
         window(out, log, START_BYTES, false);
 
         StringBuilder shaders = new StringBuilder();
+        StringBuilder nativeRyujinx = new StringBuilder();
         StringBuilder stats = new StringBuilder();
-        int shaderWarnings = 0, fswzadd = 0, untracked = 0, statsCount = 0;
+        int shaderWarnings = 0, fswzadd = 0, untracked = 0, statsCount = 0, ryujinxCount = 0;
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(new FileInputStream(log), StandardCharsets.UTF_8), 65536)) {
             String line;
@@ -78,7 +80,12 @@ final class ScarletNxLogReport {
                     low.contains("fatal");
                 if (low.contains("fswzadd")) fswzadd++;
                 if (low.contains("untracked texture handle")) untracked++;
-                if (warning) {
+                if (low.contains("ryujinx_native_probe")) {
+                    ryujinxCount++;
+                    if (ryujinxCount <= MAX_RYU_LINES) {
+                        nativeRyujinx.append(line, 0, Math.min(line.length(), 1000)).append('\n');
+                    }
+                } else if (warning) {
                     shaderWarnings++;
                     if (shaderWarnings <= MAX_SHADER_LINES) {
                         shaders.append(line, 0, Math.min(line.length(), 1000)).append('\n');
@@ -100,6 +107,12 @@ final class ScarletNxLogReport {
         out.append(shaders);
         if (shaderWarnings > MAX_SHADER_LINES)
             out.append("... mais ").append(shaderWarnings - MAX_SHADER_LINES).append(" avisos omitidos\n");
+        out.append("\n=== TRADUTOR RYUJINX NATIVO AO VIVO (")
+           .append(ryujinxCount).append(" linhas) ===\n");
+        out.append(nativeRyujinx);
+        if (ryujinxCount > MAX_RYU_LINES)
+            out.append("... mais ").append(ryujinxCount - MAX_RYU_LINES)
+               .append(" diagnosticos NativeAOT omitidos\n");
         out.append("\n=== ESTATISTICAS VULKAN (").append(statsCount).append(" linhas) ===\n");
         out.append(stats);
         if (statsCount > MAX_STATS_LINES)
