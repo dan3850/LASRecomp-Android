@@ -1,0 +1,85 @@
+# Castlevania Vulkan / NativeAOT ABI 2 investigation
+
+Branch: `experimental/ryujinx-runtime-nativeaot`. Baseline: `a1f8486`.
+Evidence: the supplied `Castlevania-SNX-boot (11).txt` and exact sources
+ScarletNX `34853eeae5af132e320adbb0193f13344085bf89`, nxnative
+`1eaaab88caffcc17ada94b6dbdbe4f3b02fbb480`. No game binaries or shaders committed.
+
+## Confirmed failures and corrections
+
+* The supplied excerpt reports repeated `unsupported render scale pointer usage`,
+  missing float32 1.0 constants, and a rejected texture descriptor. An ABI/version
+  export cannot establish which C# revision produced the library. The log's older
+  errors are consistent with an older adapter, but do not prove a stale library.
+* The ABI 1 adapter removes `support_buffer` and rewrites its SSA pointer graph.
+  Nested access chains, unused pointers and shader forms without a float-one
+  literal fall outside that reconstruction. ABI 2 preserves all these instructions,
+  binds the original UBO at fragment set 1 / binding 106 (`SNX_VKB_RS`), and writes
+  the pinned Ryujinx std140 structure (1392 bytes, scales at offset 192).
+  The native translator continues using its original 16-byte UBO at that binding;
+  the selected module determines which buffer is written. No descriptor pool or
+  pipeline-layout expansion is required.
+* Render scale is supplied per draw: framebuffer scale and each sampled surface's
+  host/guest width ratio. A submission-scoped staging allocation is reused only
+  for equal contents and the same submit; no mapped pointer survives ring reuse.
+* ABI 1 accepts only separate packed sampler handles and 2D textures. ABI 2
+  supports combined, separate packed, separate sampler ID and constant sampler ID
+  sources, with the Ryujinx-defined OR/shift operations. The metadata carries real
+  2D/3D/cube, array and shadow view information. Buffer/1D/MS/descriptor arrays,
+  storage buffers and storage images remain explicit native fallbacks.
+* The old bridge sends empty GPU answer tables. ABI 2 queries bound CB1 data,
+  actual TIC type and TIC word5 bit31 coordinate normalization synchronously on
+  the GPU thread. Unknown queries fail instead of becoming invented 2D/zero data.
+  Alpha-test function/reference are also queried. Every answer participates in
+  cache validation, including negative answers, at both shader lookup sites.
+  A changed descriptor, CB1 jump word or alpha state causes a new translation.
+* Every NativeAOT build contains an exported ASCII SHA-256 identity of the staged
+  accessor, adapter files and project. The runtime embeds that expected identity
+  and its repository commit, and refuses a mismatch before rendering. CI builds
+  both libraries afresh, checks their identities, and hashes each library again
+  inside the signed APK. Only LLVM, dependency sources and compiler caches are
+  reused. No previous runtime or APK is a build input.
+* Persistent translated shader prewarm is bypassed only for enabled ABI 2
+  sessions; existing files are preserved. The driver pipeline cache remains valid:
+  Vulkan keys it using the actual shader modules and pipeline state.
+
+## Other renderer areas inspected
+
+Reviewed `pipeline.c`, `render.c`, `texture.c`, `surface.c`, shader metadata,
+TIC/TSC resolution, framebuffer feedback copies, CB ranges, submit/staging
+lifetime and the Adreno capability gate. The supplied run has zero skipped draws,
+zero compute dispatches and no reported Vulkan validation errors. This does not
+prove geometry, texture uploads, render-target aliasing or synchronization are
+correct, and does not justify unrelated barrier/driver toggles. Existing Host1x
+relocation, external RomFS and FSWZADD patches are retained in the CI runtime.
+The ABI 1 exports and legacy manual native-library workflow remain available.
+
+## CI and APK
+
+`ScarletNX Castlevania Graphics ARM64 APK` builds and tests actual C#/NativeAOT on
+Linux, validates SPIR-V with `spirv-val`, publishes Android Bionic ARM64, builds the
+pinned full ScarletNX runtime with NDK r28c/LLVM 23.1.3, and packages the existing
+Java launcher with the exact native SDL Java API. The new package ID ends in
+`.graphics`, preserving the previous installation and its data.
+
+CI has no private 603 MB Castlevania AOT module. The launcher therefore adds an
+import button for the user's existing `0100BA4026E94000_code.so`. It copies to
+private read-only storage with atomic replacement, validates ELF64/LE/AArch64
+ET_DYN, and lets ScarletNX verify the module ABI. XCI, keys, captures, controls,
+logs, the old packaged-module route and the previous mode switch remain.
+No Termux compilation is needed. The APK does not include game data or keys.
+
+## Validation and limits
+
+CI gates: source identity mutation test; actual C descriptor/CB1 invalidation,
+handle modes and staging lifetime tests; actual managed descriptor rewrites for
+all four handle modes; preservation of non-decoration instructions; real native
+synthetic Maxwell translation; SPIR-V validation; ARM64 ELF/export checks; signed
+APK byte-for-byte library checks. Synthetic shaders are authored test inputs,
+not captures or per-game shader replacements.
+
+No RedMagic/Adreno execution is available in CI. Integer/unfed-varying/forced
+Early-Z fragments continue to the native translator with explicit diagnostics.
+Passing CI proves the tested translation, ABI, packaging and build behavior; it
+cannot establish that the black scenery, purple triangles or corrupted polygons
+have disappeared. No screenshots were attached in this request, only the log.

@@ -17,6 +17,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -38,6 +39,8 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     private static final int EXPORT_LOG = 303;
     private static final int EXPORT_SHADERS = 304;
     private static final int IMPORT_RYUJINX_BRIDGE = 305;
+    private static final int IMPORT_GAME_MODULE = 306;
+    private volatile boolean importingModule;
     private TextView status;
     private Uri selectedXci;
 
@@ -58,7 +61,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         title.setTextSize(22);
         content.addView(title);
         TextView info = new TextView(this);
-        info.setText("Usa o mesmo runtime do Mario. Seleciona o XCI original, le ExeFS/RomFS via source= e nao extrai 3,7 GB. Apenas modulo AOT previamente recompilado e empacotado no APK.");
+        info.setText("Selecione seu XCI e suas chaves. Se o modulo do jogo nao estiver no aplicativo, importe o arquivo 0100BA4026E94000_code.so que voce ja possui.");
         content.addView(info);
 
         Button chooseXci = new Button(this);
@@ -75,6 +78,11 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         permission.setText("3. Autorizar leitura direta de arquivos");
         permission.setOnClickListener(v -> requestFilePermission());
         content.addView(permission);
+
+        Button module = new Button(this);
+        module.setText("Importar modulo do jogo (.so)");
+        module.setOnClickListener(v -> pick(IMPORT_GAME_MODULE));
+        content.addView(module);
 
         Button capture = new Button(this);
         capture.setText(shaderCaptureLabel());
@@ -104,7 +112,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         Button nativeProbe = new Button(this);
         nativeProbe.setText(nativeProbeLabel());
         nativeProbe.setOnClickListener(v -> {
-            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", false);
+            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", getPackageName().endsWith(".graphics"));
             getPreferences(MODE_PRIVATE).edit()
                     .putBoolean("ryujinx_native_probe", enabled).apply();
             nativeProbe.setText(nativeProbeLabel());
@@ -187,6 +195,18 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 if (pending.length() < 100 || (!pending.renameTo(dest)))
                     throw new IOException("Chaves invalidas ou nao foi possivel guardar no diretorio privado");
                 message("prod.keys guardado somente no armazenamento privado do app. Nao sera incluido nos logs.");
+            } else if (request == IMPORT_GAME_MODULE) {
+                if (importingModule) return;
+                importingModule = true;
+                message("Importando modulo do jogo...");
+                new Thread(() -> {
+                    try {
+                        importGameModule(uri);
+                        runOnUiThread(() -> message("Modulo do jogo importado. Pronto para iniciar."));
+                    } catch (Exception error) {
+                        runOnUiThread(() -> message("Falha importando modulo: " + error.getMessage()));
+                    } finally { importingModule = false; }
+                }, "snx-module-import").start();
             } else if (request == IMPORT_RYUJINX_BRIDGE) {
                 final Uri input = uri;
                 message("Importando pack local Ryujinx para a pasta privada do Castlevania...");
@@ -229,7 +249,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
 
     private String nativeProbeLabel() {
         return "Ryujinx Vulkan automatico (experimental): " +
-               (getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", false)
+               (getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", getPackageName().endsWith(".graphics"))
                 ? "LIGADO" : "DESLIGADO");
     }
 
@@ -356,6 +376,45 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("Falha criando: " + dir);
     }
 
+    private File importedGameModule() {
+        return new File(getFilesDir(), "snx-modules/" + ID + "_code.so");
+    }
+
+    private void importGameModule(Uri source) throws Exception {
+        File destination = importedGameModule();
+        makeDir(destination.getParentFile());
+        File pending = new File(destination.getPath() + ".partial");
+        if (pending.exists() && !pending.delete()) throw new IOException("Importacao anterior ocupada");
+        try {
+            try (InputStream in = getContentResolver().openInputStream(source);
+                 FileOutputStream out = new FileOutputStream(pending)) {
+                if (in == null) throw new IOException("Documento inacessivel");
+                // Android 14+: mark the file read-only BEFORE writing through
+                // the already-open descriptor; never execute from shared storage.
+                Os.chmod(pending.getAbsolutePath(), 0444);
+                byte[] bytes = new byte[1024 * 1024];
+                long total = 0;
+                int count;
+                while ((count = in.read(bytes)) != -1) {
+                    total += count;
+                    if (total > 2L * 1024 * 1024 * 1024) throw new IOException("Modulo grande demais");
+                    out.write(bytes, 0, count);
+                }
+                out.getFD().sync();
+            }
+            byte[] header = new byte[64];
+            try (FileInputStream in = new FileInputStream(pending)) {
+                int got = 0, count;
+                while (got < header.length && (count = in.read(header, got, header.length - got)) > 0) got += count;
+                if (got != 64 || header[0] != 0x7f || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
+                    header[4] != 2 || header[5] != 1 || header[16] != 3 || header[17] != 0 ||
+                    (header[18] & 255) != 183 || header[19] != 0)
+                    throw new IOException("Selecione o _code.so ARM64 recompilado do Castlevania");
+            }
+            Os.rename(pending.getAbsolutePath(), destination.getAbsolutePath());
+        } finally { if (pending.exists()) pending.delete(); }
+    }
+
     private static void linkLibrary(File link, File library) throws Exception {
         String previous = null;
         try { previous = Os.readlink(link.getAbsolutePath()); }
@@ -373,15 +432,17 @@ public final class CastlevaniaSnxBootActivity extends Activity {
 
     private void startGame() {
         try {
+            if (importingModule) throw new IOException("Aguarde a importacao do modulo");
             File xci = directXciPath();
             File keys = new File(getFilesDir(), "snx-home/.switch/prod.keys");
             if (!keys.isFile() || keys.length() < 100)
                 throw new IOException("Importe primeiro seu prod.keys.");
             File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
             File module = new File(nativeDir, "libcastlevania_snx.so");
+            if (!module.isFile()) module = importedGameModule();
             File runtime = new File(nativeDir, "libscarletnx.so");
             if (!runtime.isFile() || !module.isFile())
-                throw new IOException("Runtime ou modulo AOT nao foi empacotado no APK.");
+                throw new IOException("Importe o modulo do jogo (_code.so) antes de iniciar.");
             File folder = new File(new File(getFilesDir(), "snx-games"), ID);
             File data = new File(folder, ID + "_data");
             makeDir(folder);
@@ -407,7 +468,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_game_base", new File(folder, ID).getAbsolutePath());
             intent.putExtra("snx_source_dump", xci.getAbsolutePath());
             intent.putExtra("snx_shader_captures", getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false));
-            intent.putExtra("snx_ryujinx_native_probe", getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", false));
+            intent.putExtra("snx_ryujinx_native_probe", getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", getPackageName().endsWith(".graphics")));
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);

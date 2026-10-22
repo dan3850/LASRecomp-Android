@@ -1,0 +1,155 @@
+name: ScarletNX Castlevania Graphics ARM64 APK
+on:
+  push:
+    branches: [experimental/ryujinx-runtime-nativeaot]
+    paths:
+      - '.github/workflows/scarletnx-graphics-apk.yml'
+      - 'tools/ryujinx-nativeaot/**'
+      - 'android/src/com/retroaura/lasrecomp/CastlevaniaSnxBootActivity.java'
+      - 'android/src/com/retroaura/lasrecomp/MarioSnxGameActivity.java'
+      - 'tests/test_ryujinx_v2.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  nativeaot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NX: ${{ github.workspace }}/nxnative
+      RYU_STAGE: ${{ runner.temp }}/ryu-stage
+      RYU_OUTPUT: ${{ runner.temp }}/ryu-android
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-dotnet@v4
+        with: {dotnet-version: 10.0.112}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ryu-v2-nuget-10.0.112-${{ hashFiles('tools/ryujinx-nativeaot/RyujinxShaderNative.csproj') }}
+          restore-keys: ryu-v2-nuget-10.0.112-
+      - name: Clone pinned actual translator
+        run: |
+          git clone --quiet --filter=blob:none --no-checkout https://github.com/seedds/nxnative "$NX"
+          git -C "$NX" sparse-checkout set dm/gfx/tools/dmsh_xlate dm/third_party/ryujinx
+          git -C "$NX" checkout --quiet --detach 1eaaab88caffcc17ada94b6dbdbe4f3b02fbb480
+          python3 tools/ryujinx-nativeaot/prepare_source.py --nxnative "$NX" --out "$RYU_STAGE"
+      - name: Test preparation and pinned patch invariants
+        env: {SCARLETNX_CI_COMPILE: '1'}
+        run: |
+          python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_prepare.py'
+          python3 -m unittest discover -s tests -p 'test_ryujinx_v2.py'
+          bash -n tools/ryujinx-nativeaot/build_graphics_apk.sh
+      - name: Execute actual adapter and validate generated SPIR-V on Linux
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends zlib1g-dev spirv-tools glslang-tools
+          cat > "$RUNNER_TEMP/fixture.frag" <<'GLSL'
+          #version 450
+          layout(set=0,binding=0,std140) uniform Support {
+            uint alpha_test; uint is_bgra[8]; vec4 viewport_inverse; vec4 viewport_size;
+            int frag_scale_count; float render_scale[73]; ivec4 tfe_offset; int tfe_vertex_count;
+          } support_buffer;
+          layout(set=0,binding=1) uniform sampler2D tex;
+          layout(location=0) out vec4 color;
+          void main() { color = texelFetch(tex, ivec2(gl_FragCoord.xy / support_buffer.render_scale[0]), 0); }
+          GLSL
+          glslangValidator -V --target-env vulkan1.1 -Od "$RUNNER_TEMP/fixture.frag" -o "$RUNNER_TEMP/fixture.spv"
+          mkdir -p "$RUNNER_TEMP/adapter-tests"
+          dotnet run --project "$RYU_STAGE/RyujinxShaderNative.csproj" \
+            -p:RyuSrc="$NX/dm/third_party/ryujinx" -p:PublishAot=false \
+            -p:AdapterRegression=true -p:AdapterRegressionSource="$GITHUB_WORKSPACE/tools/ryujinx-nativeaot/AdapterV2Regression.cs" \
+            -- "$RUNNER_TEMP/fixture.spv" "$RUNNER_TEMP/adapter-tests"
+          for file in "$RUNNER_TEMP"/adapter-tests/*.spv; do spirv-val --target-env vulkan1.3 "$file"; done
+          dotnet publish "$RYU_STAGE/RyujinxShaderNative.csproj" -c Release -r linux-x64 \
+            -p:RyuSrc="$NX/dm/third_party/ryujinx" -p:PublishAot=true -p:NativeLib=Shared \
+            --nologo -o "$RUNNER_TEMP/ryu-linux"
+          python3 tools/ryujinx-nativeaot/test_v2_native.py "$RUNNER_TEMP/ryu-linux/RyujinxShaderNative.so" \
+            "$RYU_STAGE/build-identity.json" --out "$RUNNER_TEMP/adapter-tests"
+      - name: Publish fresh Android ARM64 NativeAOT library
+        run: |
+          NDK="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}"
+          test -d "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          dotnet publish "$RYU_STAGE/RyujinxShaderNative.csproj" -c Release -r linux-bionic-arm64 \
+            -p:RyuSrc="$NX/dm/third_party/ryujinx" -p:PublishAot=true -p:NativeLib=Shared \
+            -p:DisableUnsupportedError=true -p:PublishAotUsingRuntimePack=true \
+            -p:StripSymbols=false --nologo -o "$RYU_OUTPUT"
+          mv "$RYU_OUTPUT/RyujinxShaderNative.so" "$RYU_OUTPUT/libRyujinxShaderNative.so"
+          python3 tools/ryujinx-nativeaot/check_native_elf.py "$RYU_OUTPUT/libRyujinxShaderNative.so"
+          cp "$RYU_STAGE/build-identity.json" "$RYU_OUTPUT/"
+          (cd "$RYU_OUTPUT" && sha256sum libRyujinxShaderNative.so > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ryujinx-v2-${{ github.sha }}
+          path: ${{ runner.temp }}/ryu-android/
+          if-no-files-found: error
+  apk:
+    needs: nativeaot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      SCARLETNX_SRC: ${{ github.workspace }}/ScarletNX
+      ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/28.2.13676358
+      LLVM_PREFIX: ${{ github.workspace }}/android-llvm/arm64-v8a
+      RYU_STAGE: ${{ runner.temp }}/ryu-stage
+      RYU_OUTPUT: ${{ runner.temp }}/ryu-android
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: gradle/actions/setup-gradle@v4
+        with: {gradle-version: '8.13'}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ryujinx-v2-${{ github.sha }}
+          path: ${{ runner.temp }}/ryu-android
+      - name: Install pinned toolchain
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;28.2.13676358' 'platforms;android-35' 'build-tools;35.0.0'
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ccache ninja-build nasm glslang-tools spirv-tools
+          mkdir -p "$RYU_STAGE"
+          cp "$RYU_OUTPUT/build-identity.json" "$RYU_STAGE/"
+          (cd "$RYU_OUTPUT" && sha256sum -c SHA256SUMS)
+      - name: Clone exact ScarletNX source
+        run: |
+          git clone --quiet --filter=blob:none --no-checkout https://github.com/scarletnx/ScarletNX.git "$SCARLETNX_SRC"
+          git -C "$SCARLETNX_SRC" checkout --quiet --detach 34853eeae5af132e320adbb0193f13344085bf89
+      - uses: actions/cache@v4
+        id: llvm
+        with:
+          path: android-llvm/arm64-v8a
+          key: graphics-llvm-arm64-23.1.3-ndk28.2-api26-v1
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ScarletNX/.cache/cpm
+            ~/.cache/ccache
+            ~/.android/debug.keystore
+          key: graphics-deps-34853ee-${{ github.run_id }}
+          restore-keys: graphics-deps-34853ee-
+      - name: Build pinned Android LLVM dependency
+        if: steps.llvm.outputs.cache-hit != 'true'
+        env: {ANDROID_API: '26', LLVM_VERSION: '23.1.3'}
+        run: |
+          # Keep memory bounded on the four-core runner, including upstream's scripts.
+          mkdir -p "$RUNNER_TEMP/ci-bin"
+          printf '#!/bin/sh\nif [ "$1" = _NPROCESSORS_ONLN ]; then echo 4; else exec /usr/bin/getconf "$@"; fi\n' > "$RUNNER_TEMP/ci-bin/getconf"
+          chmod +x "$RUNNER_TEMP/ci-bin/getconf"
+          PATH="$RUNNER_TEMP/ci-bin:$PATH" "$SCARLETNX_SRC/scripts/android-llvm.sh" arm64-v8a "$LLVM_PREFIX"
+      - name: Build and sign ARM64 APK; verify every packaged library
+        run: bash tools/ryujinx-nativeaot/build_graphics_apk.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ScarletNX-Castlevania-ARM64-APK-${{ github.sha }}
+          path: |
+            build/scarletnx-graphics/*.apk
+            build/scarletnx-graphics/APK-SHA256SUMS
+            build/scarletnx-graphics/graphics-build.json
+            build/scarletnx-graphics/*source.*
+            build/scarletnx-graphics/scarletnx-changes.patch
+          if-no-files-found: error
+          retention-days: 14
