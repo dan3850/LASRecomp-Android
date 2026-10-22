@@ -12,6 +12,7 @@ SRC="$HOME/.cache/lasrecomp-scarletnx-romfs/ScarletNX"
 OUT="$HOME/scarletnx-castlevania-shader-build/libscarletnx.so"
 restore_source() {
   if [ -s "$SRC/src/nx/gpu/shader/spirv_translate.c" ]; then
+    python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC" --revert || true
     python3 "$ROOT/tools/patch_scarletnx_fswzadd.py" "$SRC" --revert ||
       echo "AVISO: falha ao restaurar apenas o shader do cache ScarletNX" >&2
   fi
@@ -25,12 +26,18 @@ if [ -s "$OLD_APK" ] && [ ! -e "$BACKUP" ]; then
   cp -p "$OLD_APK" "$BACKUP"
   echo "APK experimental anterior preservado em: $BACKUP"
 fi
+if [ ! -s "$SRC/src/nx/gpu/shader/spirv_translate.c" ]; then
+  echo "ERRO: fonte ScarletNX nao encontrado no cache; rode primeiro o build normal." >&2
+  exit 1
+fi
+python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC"
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"
 echo "============================================="
 echo "CASTLEVANIA: shader FSWZADD 0xD7 experimental"
 echo "Mario runtime estavel: NAO sera sobrescrito"
 echo "AOT 603 MB reutilizado; nao recompilar blocos"
+echo "Diagnostico bindless ativo: op, pc, reg, def, producer"
 echo "============================================="
 bash "$ROOT/compilar-mario-snx-romfs-termux.sh"
 echo "===== VERSAO EXPERIMENTAL GERADA ====="
