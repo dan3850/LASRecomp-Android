@@ -119,6 +119,20 @@ public final class MarioSnxGameActivity extends SDLActivity {
             stage("SDL_GET_ARGUMENTS: missing game path, refusing to run");
             return new String[]{"--settings"};
         }
+        // Castlevania-only: never affect Mario and never read shader modules
+        // from public Downloads; they must be explicitly imported to app-private storage.
+        boolean ryujinx = getIntent().getBooleanExtra("snx_ryujinx_bridge", false);
+        if (ryujinx && new File(base).getName().equals("0100BA4026E94000")) {
+            File pack = new File(getFilesDir(),
+                    "snx-games/0100BA4026E94000/ryujinx-bridge.snxrbr");
+            if (pack.isFile() && pack.canRead() && pack.length() >= 1024
+                    && pack.length() <= 4 * 1024 * 1024) {
+                SDLActivity.nativeSetenv("SNX_RYUJINX_BRIDGE", pack.getAbsolutePath());
+                stage("SDL_RYUJINX_BRIDGE_OPTIN: private pack ready, native fallback retained");
+            } else {
+                stage("SDL_RYUJINX_BRIDGE_MISSING: continuing with native translator");
+            }
+        }
         // Castlevania-only, explicit opt-in; other APKs keep their CLI unchanged.
         boolean shaderCaptures = getIntent().getBooleanExtra("snx_shader_captures", false);
         if (shaderCaptures) stage("SDL_SHADER_CAPTURE_ON: recording Maxwell .snxs files");
