@@ -20,6 +20,25 @@ LIB="$HOME/ryujinx-nativeaot/libRyujinxShaderNative.so"
 python3 "$ROOT/tools/ryujinx-nativeaot/check_native_elf.py" "$LIB"
 python3 -m unittest discover -s tests -p 'test_ryujinx_live_probe_patch.py'
 python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_artifact.py'
+python3 -m unittest discover -s tests -p 'test_ryujinx_native_job_parity.py'
+
+# A cheap, REAL C ABI check must pass with the exact live JSON/options before
+# rebuilding ScarletNX. This catches regressions like debug:false immediately.
+CAPTURE=""
+for candidate in /storage/emulated/0/Download/Castlevania-shaders-SNXS*.zip; do
+  if [ -s "$candidate" ]; then CAPTURE="$candidate"; break; fi
+done
+[ -n "$CAPTURE" ] || {
+  echo "ERRO: ZIP antigo com shaders Maxwell para teste de regressao nao localizado." >&2
+  echo "Ele NAO sera embutido na APK; apenas valida o tradutor antes do build." >&2
+  exit 1
+}
+echo "===== REGRESSAO RYUJINX REAL: MESMAS OPCOES DO JOGO ====="
+python3 "$ROOT/tools/ryujinx-nativeaot/test_native.py" "$LIB" "$CAPTURE" \
+  --out "$HOME/ryujinx-nativeaot/live-parity-test" || {
+  echo "ERRO: prova do Ryujinx falhou; nenhuma APK sera recompilada." >&2
+  exit 1
+}
 
 FOLDER="/storage/emulated/0/Download/CastlevaniaRecomp"
 OLD="$FOLDER/Castlevania-SNX-Runtime-TESTE.apk"
