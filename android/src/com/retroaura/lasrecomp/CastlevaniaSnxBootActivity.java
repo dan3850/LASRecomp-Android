@@ -266,7 +266,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             count = ((number[0] & 255) | ((number[1] & 255) << 8)
                     | ((number[2] & 255) << 16) | ((number[3] & 255) << 24));
         }
-        if (count != 5 || size < 1024) {
+        if (count < 5 || count > 32 || size < 1024) {
             pending.delete();
             throw new IOException("Pack incompleto ou numero de shaders incorreto");
         }
