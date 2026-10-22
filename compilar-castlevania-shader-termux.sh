@@ -4,8 +4,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
-if [ "$(git branch --show-current)" != experimental/castlevania-belmonts-curse ]; then
-  echo "ERRO: execute na branch experimental/castlevania-belmonts-curse" >&2
+BRANCH="$(git branch --show-current)"
+if [ "$BRANCH" != experimental/castlevania-belmonts-curse ] &&
+   [ "$BRANCH" != experimental/ryujinx-runtime-nativeaot ]; then
+  echo "ERRO: branch experimental do Castlevania ou Ryujinx NativeAOT necessaria" >&2
   exit 1
 fi
 SRC="$HOME/.cache/lasrecomp-scarletnx-romfs/ScarletNX"
@@ -32,6 +34,13 @@ restore_source() {
       restore_failed=1
     fi
   fi
+  if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ] &&
+     [ -s "$SRC/src/nx/gpu/vk/pipeline.c" ]; then
+    if ! python3 "$ROOT/tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py" "$SRC" --revert; then
+      echo "AVISO: falha restaurando Ryujinx NativeAOT live probe no cache" >&2
+      restore_failed=1
+    fi
+  fi
   if [ "$rc" -ne 0 ]; then
     echo "ERRO: compilacao experimental falhou (codigo $rc). Veja a primeira mensagem ERRO acima." >&2
   elif [ "$restore_failed" -ne 0 ]; then
@@ -43,6 +52,9 @@ restore_source() {
 trap 'restore_source "$?"' EXIT
 python3 tests/test_castlevania_shader_patch.py
 python3 tests/test_castlevania_bindless_diag.py
+if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
+  python3 -m unittest discover -s tests -p 'test_ryujinx_live_probe_patch.py'
+fi
 if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ]; then
   python3 tests/test_castlevania_ryujinx_runtime_patch.py
   python3 -m unittest discover -s tests -p 'test_ryujinx_spirv_bridge.py'
@@ -62,6 +74,12 @@ python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC"
 if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_ryujinx_runtime.py" "$SRC"
   echo "Castlevania: runtime Ryujinx privado e opt-in integrado ao Vulkan"
+fi
+if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
+  [ "$BRANCH" = experimental/ryujinx-runtime-nativeaot ] ||
+    { echo "NativeAOT LIVE probe requires its dedicated experimental branch" >&2; exit 1; }
+  python3 "$ROOT/tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py" "$SRC"
+  echo "NativeAOT: tradutor Ryujinx ao vivo, somente DIAGNOSTICO, GPU original preservada"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"
