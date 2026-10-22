@@ -61,24 +61,23 @@ MODULE_NEW = '''            if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL,
 
 
 def transform(source, revert=False):
-    patterns = ((INCLUDE_NEW, INCLUDE_OLD),
-                (CALL_NEW, CALL_OLD),
-                (MODULE_NEW, MODULE_OLD)) if revert else (
-                (INCLUDE_OLD, INCLUDE_NEW),
-                (CALL_OLD, CALL_NEW),
-                (MODULE_OLD, MODULE_NEW))
-    old_count = sum(source.count(old) == 1 for old, _ in patterns)
-    opposite = (INCLUDE_OLD, CALL_OLD, MODULE_OLD) if revert else (
-        INCLUDE_NEW, CALL_NEW, MODULE_NEW)
-    new_count = sum(x in source for x in opposite)
-    if old_count == 0 and new_count == 3:
-        return source
-    if old_count != 3:
-        raise ValueError(f"unexpected pinned ScarletNX code or mixed patch: {old_count}/3")
-    for old, new in patterns:
-        source = source.replace(old, new, 1)
+    originals = (INCLUDE_OLD, CALL_OLD, MODULE_OLD)
+    modified = (INCLUDE_NEW, CALL_NEW, MODULE_NEW)
+    if revert:
+        if all(source.count(p) == 1 for p in originals) and INCLUDE_NEW not in source:
+            return source  # idempotent: already restored
+        if not all(source.count(p) == 1 for p in modified):
+            raise ValueError("unexpected pinned ScarletNX code or mixed Ryujinx patch")
+        for old, new in zip(modified, originals):
+            source = source.replace(old, new, 1)
+    else:
+        if all(source.count(p) == 1 for p in modified):
+            return source  # idempotent: already patched
+        if INCLUDE_NEW in source or not all(source.count(p) == 1 for p in originals):
+            raise ValueError("unexpected pinned ScarletNX code or mixed Ryujinx patch")
+        for old, new in zip(originals, modified):
+            source = source.replace(old, new, 1)
     return source
-
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -89,16 +88,15 @@ def main():
     header = args.source / "src/nx/gpu/vk/snx_castlevania_ryujinx_bridge.h"
     original = target.read_text()
     result = transform(original, args.revert)
+    # Preflight the generated header before changing pipeline.c.
+    if header.exists() and header.read_text() != HEADER:
+        raise ValueError("generated header differs; refusing to modify source")
     if result != original:
         target.write_text(result)
     if args.revert:
         if header.is_file():
-            if header.read_text() != HEADER:
-                raise ValueError("generated header changed; refusing to delete")
             header.unlink()
     else:
-        if header.exists() and header.read_text() != HEADER:
-            raise ValueError("existing different header; refusing to overwrite")
         header.write_text(HEADER)
     print(("Reverted" if args.revert else "Enabled") + " optional Ryujinx Vulkan bridge")
 
