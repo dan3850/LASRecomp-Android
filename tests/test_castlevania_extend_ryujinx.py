@@ -38,7 +38,25 @@ class ExtendCaptureTest(unittest.TestCase):
             with zipfile.ZipFile(a, "w") as z:
                 z.writestr("shaders/ace294a500000001_4.snxs", capture(handle_reg=22))
             corpus = index_captures([a])
-            with self.assertRaisesRegex(ValueError, "expected exactly 1"):
+            with self.assertRaisesRegex(ValueError, "sexto shader: 0 correspondencias exatas"):
+                failure_candidate(corpus)
+
+    def test_old_export_reports_missing_prefix_not_random_match(self):
+        with tempfile.TemporaryDirectory() as root:
+            a = Path(root) / "old-five-only.zip"
+            with zipfile.ZipFile(a, "w") as z:
+                z.writestr("shaders/214b89d400000001_4.snxs", capture())
+            corpus = index_captures([a])
+            with self.assertRaisesRegex(ValueError, "NAO esta presente nos ZIPs"):
+                failure_candidate(corpus)
+
+    def test_prefix_present_but_bad_texb_reports_opcode_mismatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            a = Path(root) / "wrong-shader.zip"
+            with zipfile.ZipFile(a, "w") as z:
+                z.writestr("shaders/ace294a500000001_4.snxs", capture(handle_reg=22))
+            corpus = index_captures([a])
+            with self.assertRaisesRegex(ValueError, "codigo nao bate"):
                 failure_candidate(corpus)
 
     def test_reject_ambiguous_target(self):
@@ -47,7 +65,7 @@ class ExtendCaptureTest(unittest.TestCase):
             with zipfile.ZipFile(a, "w") as z:
                 for suffix in (1, 2):
                     z.writestr(f"shaders/ace294a5{suffix:08x}_4.snxs", capture())
-            with self.assertRaisesRegex(ValueError, "found 2"):
+            with self.assertRaisesRegex(ValueError, "sexto shader: 2 correspondencias exatas"):
                 failure_candidate(index_captures([a]))
 
 
