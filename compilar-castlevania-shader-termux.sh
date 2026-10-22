@@ -18,6 +18,13 @@ restore_source() {
 }
 trap restore_source EXIT
 python3 tests/test_castlevania_shader_patch.py
+# Keep the known booting but graphically incomplete test APK for comparison.
+OLD_APK="/storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-TESTE.apk"
+BACKUP="/storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-ANTES-FSWZADD.apk"
+if [ -s "$OLD_APK" ] && [ ! -e "$BACKUP" ]; then
+  cp -p "$OLD_APK" "$BACKUP"
+  echo "APK experimental anterior preservado em: $BACKUP"
+fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"
 echo "============================================="
