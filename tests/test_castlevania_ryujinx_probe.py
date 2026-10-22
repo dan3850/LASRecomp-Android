@@ -43,9 +43,11 @@ class RyujinxProbeTest(unittest.TestCase):
     def test_default_only_prepares_fragment_stage(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
+            capture = root / "captures"
+            capture.mkdir()
             for stage in (0, 4, 5):
-                corpus(root / f"aaaaaaaaaaaaaaaa_{stage}.snxs", stage=stage)
-            jobs, errors = probe.prepare(root, root.parent / ("ryu-out-" + root.name))
+                corpus(capture / f"aaaaaaaaaaaaaaaa_{stage}.snxs", stage=stage)
+            jobs, errors = probe.prepare(capture, root / "out")
             self.assertEqual(errors, [])
             self.assertEqual([x["stage"] for x in jobs], ["ps"])
 
