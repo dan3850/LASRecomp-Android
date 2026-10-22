@@ -264,7 +264,7 @@ def main():
                                str(Path(a.out) / x["file"])], check=False).returncode:
                 print("Vulkan validation failed:", x["key"], file=sys.stderr)
                 return 2
-        print("spirv-val: all five passed (Vulkan 1.3)")
+        print(f"spirv-val: all {len(manifest['shaders'])} passed (Vulkan 1.3)")
     else:
         print("spirv-val unavailable; validation not yet complete")
     print("DO NOT INJECT these modules into ScarletNX until runtime adapter is ready.")
