@@ -95,3 +95,42 @@ Ainda não existe menu único multi-jogos nesta branch: o APK isolado
 permite validar a integração sem afetar o Mario funcional. Tampouco
 há prova de boot do Castlevania até executar no dispositivo. ScarletNX
 e suas bibliotecas GPL exigem cumprimento das licenças se distribuídos.
+
+## Primeira rodada de correção gráfica: FSWZADD 0xD7
+
+A cena de gameplay do Castlevania mostra HUD e cenário, mas fragmentos
+pretos e geometrias ausentes. O primeiro log exportado contém 19 avisos
+"shader not translated": 14 com FSWZADD cuja máscara é 0xD7,
+5 com "untracked texture handle". Em 600 quadros:
+52.349 draws, 27.182 ignorados. Não há prova de que todos esses
+draws sejam de shaders FSWZADD.
+
+Na revisão 34853ee do ScarletNX, o tradutor só aceita quatro máscaras
+de FSWZADD. O patch experimental em
+tools/patch_scarletnx_fswzadd.py aceita especificamente 0xD7 e gera
+SPIR-V para seus dois resultados por lane: y nas lanes 0 e 3 e y-x
+nas lanes 1 e 2. A interpretação usa SubgroupLocalInvocationId & 3.
+Ela é coerente com a tabela de FSWZADD conhecida no Ryujinx, mas a
+ordenação de fragment quads na Adreno ainda requer teste visual.
+
+Para executar a rodada **sem sobrescrever o runtime usado no Mario**:
+
+```bash
+cd "$HOME/LASRecomp-Android"
+git pull --ff-only origin experimental/castlevania-belmonts-curse
+bash compilar-castlevania-shader-termux.sh
+```
+
+O wrapper usa o Ninja cache do runtime existente, cria
+$HOME/scarletnx-castlevania-shader-build/libscarletnx.so e instala
+o AOT Castlevania inalterado no APK experimental. O runtime estável
+$HOME/scarletnx-romfs-build/libscarletnx.so permanece inalterado.
+Antes da build, o APK anterior é salvo como
+Castlevania-SNX-Runtime-ANTES-FSWZADD.apk na pasta CastlevaniaRecomp.
+A alteração transitória do fonte cache é revertida ao final.
+
+Comparar uma captura da **mesma cena**, procurando melhora em fragmentos
+que antes não eram desenhados. No log novo, conferir se os avisos
+FSWZADD desapareceram e se a contagem de draws ignorados diminuiu.
+Se o jogo não abrir, enviar o novo log da compilação ou runtime.
+Os 5 casos de "untracked texture handle" não são corrigidos nesta rodada.
