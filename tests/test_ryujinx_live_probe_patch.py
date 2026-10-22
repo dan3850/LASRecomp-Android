@@ -11,6 +11,8 @@ from pathlib import Path
 import importlib.util
 import tempfile
 import sys
+import shutil
+import subprocess
 
 SOURCE = Path(__file__).resolve().parents[1] / "tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py"
 SPEC = importlib.util.spec_from_file_location("ryujinx_live_probe_patch", SOURCE)
@@ -63,6 +65,26 @@ class LiveProbePatchTest(unittest.TestCase):
             PATCH.apply(root, revert=True)
             self.assertEqual(pipeline.read_text(), source)
             self.assertFalse(header.exists())
+
+    def test_generated_c_compiles_standalone(self):
+        compiler = shutil.which("cc")
+        if not compiler:
+            self.skipTest("C compiler unavailable")
+        with tempfile.TemporaryDirectory() as d:
+            header = Path(d) / "snx_ryujinx_native_live_probe.h"
+            header.write_text(PATCH.HEADER)
+            test = Path(d) / "probe.c"
+            test.write_text(
+                '#include <stdio.h>\n'
+                '#define ST_FS 4\n'
+                '#define WARN(...) fprintf(stderr, __VA_ARGS__)\n'
+                '#include "snx_ryujinx_native_live_probe.h"\n'
+                'void invoke_probe(const unsigned char* code, unsigned n) { '
+                'snx_rn_live_probe(code, n, ST_FS); }\n'
+            )
+            subprocess.run([compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+                            "-c", str(test), "-o", str(Path(d) / "probe.o")],
+                           check=True, capture_output=True, text=True)
 
     def test_probe_has_no_hardcoded_game_or_shader_key(self):
         self.assertNotIn(".snxrbr", PATCH.HEADER)
