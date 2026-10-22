@@ -35,6 +35,13 @@ restore_source() {
     fi
   fi
   if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ] &&
+     [ -s "$SRC/src/nx/gpu/video/host1x.c" ]; then
+    if ! python3 "$ROOT/tools/ryujinx-nativeaot/patch_host1x_relocations.py" "$SRC" --revert; then
+      echo "AVISO: falha restaurando Host1x no cache" >&2
+      restore_failed=1
+    fi
+  fi
+  if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ] &&
      [ -s "$SRC/src/nx/gpu/vk/pipeline.c" ]; then
     if ! python3 "$ROOT/tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py" "$SRC" --revert; then
       echo "AVISO: falha restaurando Ryujinx NativeAOT live probe no cache" >&2
@@ -79,6 +86,7 @@ if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
   [ "$BRANCH" = experimental/ryujinx-runtime-nativeaot ] ||
     { echo "NativeAOT LIVE probe requires its dedicated experimental branch" >&2; exit 1; }
   python3 "$ROOT/tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py" "$SRC"
+  python3 "$ROOT/tools/ryujinx-nativeaot/patch_host1x_relocations.py" "$SRC"
   echo "NativeAOT: tradutor Ryujinx ao vivo, somente DIAGNOSTICO, GPU original preservada"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
