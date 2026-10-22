@@ -335,6 +335,7 @@ APK="$OUT/Castlevania-SNX-Runtime-TESTE.apk"
 # this second verification ensures the file delivered to Downloads is correct.
 python3 - "$APK" "$SNX_CODE" "$CACHE" <<'PY'
 import hashlib
+import os
 import sys
 import zipfile
 from pathlib import Path
@@ -346,6 +347,17 @@ with zipfile.ZipFile(sys.argv[1]) as z:
         print("BIBLIOTECA INSTALAVEL:", n, f.file_size, "bytes")
         if f.file_size < 100000:
             raise SystemExit("ERRO: arquivo nativo pequeno ou ausente: " + n)
+    # Additional integrity gate for the NativeAOT-only experimental build.
+    # The .so is a general shader translator, never a bundle of private shaders.
+    if os.environ.get('SCARLETNX_RYU_NATIVE_PROBE_BUILD') == '1':
+        name = 'lib/arm64-v8a/libRyujinxShaderNative.so'
+        packaged = z.read(name)
+        native_source = Path(os.environ['SCARLETNX_RYU_NATIVE_SO'])
+        if len(packaged) < 1024 * 1024:
+            raise SystemExit('ERRO: tradutor nativo no APK esta vazio')
+        if hashlib.sha256(packaged).digest() != hashlib.sha256(native_source.read_bytes()).digest():
+            raise SystemExit('ERRO: NativeAOT mudou durante o empacotamento')
+        print('SIGNED_APK_RYUJINX_NATIVE_ELF: OK,', len(packaged), 'bytes, shader packs: NENHUM')
     # Inspect the actual signed APK member, rather than assuming staging and
     # packaging used the same native runtime. Never alter the private AOT module.
     packaged = Path(sys.argv[3]) / 'signed-apk-libscarletnx.so'
