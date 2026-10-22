@@ -6,7 +6,6 @@ Upstream C# sources stay in nxnative; no extracted game assets are committed.
 """
 import argparse
 from pathlib import Path
-import shutil
 import sys
 
 
@@ -22,9 +21,14 @@ def prepare(nxnative: Path, srcdir: Path, outdir: Path):
         raise ValueError("upstream Ryujinx launcher changed: inspect source before adapting")
     code = code.replace(marker, "static partial class SwshXlate", 1)
     outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / "Program.Native.cs").write_text(code, encoding="utf-8")
+    destination = outdir / "Program.Native.cs"
+    if not destination.exists() or destination.read_text(encoding="utf-8") != code:
+        destination.write_text(code, encoding="utf-8")
     for filename in ("BridgeExports.cs", "RyujinxShaderNative.csproj"):
-        shutil.copyfile(srcdir / filename, outdir / filename)
+        source = (srcdir / filename).read_bytes()
+        target = outdir / filename
+        if not target.exists() or target.read_bytes() != source:
+            target.write_bytes(source)
     print("NativeAOT source staged in", outdir)
     print("Ryujinx source:", ryu)
     print("No game-derived shader data, APK, or AOT changed.")
