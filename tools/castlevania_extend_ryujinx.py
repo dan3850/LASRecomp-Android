@@ -39,8 +39,12 @@ def index_captures(archives):
                 if stage != 4:
                     continue
                 key = name[:-5]
-                if key in items and items[key] != raw:
-                    raise ValueError("conflicting captures of " + key)
+                if key in items:
+                    # SNXS metadata can legitimately differ across captures of
+                    # the same Maxwell shader. Runtime matching uses code only.
+                    if read_corpus_bytes(items[key])[1] != code:
+                        raise ValueError("different Maxwell code under the same key: " + key)
+                    continue
                 items[key] = raw
     return items
 
@@ -90,12 +94,6 @@ def run(archives, bridge_dir, nxnative, out_dir, pack_output):
     jobs, errors = prepare_jobs(inputzip, jobsdir)
     if errors or len(jobs) != 6:
         raise ValueError("shader capture validation failed: " + ", ".join(errors))
-    if not any(item["key"] == sixth and item["known_failure"]["matches_log_position"]
-               for item in json.loads((jobsdir / "report.json").read_text())
-               if "known_failure" in item):
-        # The default list does not include the sixth shader; it was checked
-        # separately by failure_candidate above.
-        pass
     project = nxnative / "dm/gfx/tools/dmsh_xlate/dmsh_xlate.csproj"
     if not project.is_file():
         raise ValueError("Ryujinx .NET translator checkout missing: " + str(project))
