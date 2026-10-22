@@ -21,7 +21,7 @@ echo "SCARLETNX_LINK_EVIDENCE: $AUDIT"
 # Termux already packages usable ARM64 LLVM libraries and their CMake config.
 # Do not cross-build another LLVM using the NDK compiler wrapper.
 LLVM_PREFIX="${SCARLETNX_LLVM_PREFIX:-$PREFIX}"
-OUT="$HOME/scarletnx-romfs-build/libscarletnx.so"
+OUT="${SCARLETNX_RUNTIME_OUT:-$HOME/scarletnx-romfs-build/libscarletnx.so}"
 COMMIT=34853eeae5af132e320adbb0193f13344085bf89
 # Android may kill Termux when independent ExternalProject jobs fan out.
 # Propagate a conservative limit to OpenSSL, FFmpeg and Ninja alike.
@@ -89,6 +89,14 @@ if [ "$(git rev-parse HEAD)" != "$COMMIT" ]; then
 fi
 
 python3 "$ROOT/tools/patch_scarletnx_romfs.py" "$SRC"
+if [ "${SCARLETNX_CASTLEVANIA_FSWZADD:-0}" = 1 ]; then
+  echo "FSWZADD: applying limited 0xD7 experiment to Castlevania runtime source"
+  python3 "$ROOT/tools/patch_scarletnx_fswzadd.py" "$SRC"
+else
+  # Do not accidentally ship the Castlevania shader experiment in a later
+  # standard Mario runtime build that reuses this local ScarletNX checkout.
+  python3 "$ROOT/tools/patch_scarletnx_fswzadd.py" "$SRC" --revert
+fi
 # Termux's LLVM21 ships llvm-config plus shared LLVM, while its CMake
 # LLVMExports may name static .a components not installed on the phone.
 # Native Termux builds can query llvm-config; cross builds cannot.
