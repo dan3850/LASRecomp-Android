@@ -227,15 +227,10 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         }
     }
 
-        private String nativeProbeLabel() {
+    private String nativeProbeLabel() {
         return "Tradutor Ryujinx NativeAOT (diagnostico): " +
                (getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", false)
                 ? "LIGADO" : "DESLIGADO");
-    }
-
-private String ryujinxBridgeLabel() {
-        return "Ryujinx (EXPERIMENTAL): " +
-            (getPreferences(MODE_PRIVATE).getBoolean("ryujinx_bridge", false) ? "LIGADO" : "DESLIGADO");
     }
 
     private void importRyujinxBridge(Uri source) throws IOException {
