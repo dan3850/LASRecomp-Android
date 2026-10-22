@@ -10,6 +10,7 @@ on:
       - 'tests/test_ryujinx_nativeaot_prepare.py'
       - 'tests/test_ryujinx_nativeaot_artifact.py'
       - 'tests/test_ryujinx_live_probe_patch.py'
+      - 'tests/test_ryujinx_native_job_parity.py'
       - 'compilar-castlevania-ryujinx-nativo-termux.sh'
   workflow_dispatch:
 
@@ -46,6 +47,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_prepare.py'
           python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_artifact.py'
           python3 -m unittest discover -s tests -p 'test_ryujinx_live_probe_patch.py'
+          python3 -m unittest discover -s tests -p 'test_ryujinx_native_job_parity.py'
           bash -n compilar-castlevania-ryujinx-nativo-termux.sh
           bash -n compilar-castlevania-shader-termux.sh
           bash -n compilar-mario-snx-runtime-termux.sh
