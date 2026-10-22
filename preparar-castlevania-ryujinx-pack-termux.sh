@@ -15,6 +15,7 @@ if [ -z "$CAPTURE" ]; then
   echo "ERRO: capture ZIP nao encontrado em Downloads. Use o ZIP original com cinco .snxs." >&2
   exit 1
 fi
+python3 -m unittest discover -s tests -p 'test_castlevania_ryujinx_pack.py'
 BRIDGE="$HOME/castlevania-ryujinx-bridge"
 test -s "$BRIDGE/bridge-manifest.json" || {
   echo "ERRO: valide primeiro com bash validar-castlevania-ryujinx-bridge-termux.sh" >&2
