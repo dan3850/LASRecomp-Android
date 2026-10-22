@@ -24,7 +24,7 @@ def prepare(nxnative: Path, srcdir: Path, outdir: Path):
     destination = outdir / "Program.Native.cs"
     if not destination.exists() or destination.read_text(encoding="utf-8") != code:
         destination.write_text(code, encoding="utf-8")
-    for filename in ("BridgeExports.cs", "RyujinxShaderNative.csproj"):
+    for filename in ("BridgeExports.cs", "ScarletAdapter.cs", "RyujinxShaderNative.csproj"):
         source = (srcdir / filename).read_bytes()
         target = outdir / filename
         if not target.exists() or target.read_bytes() != source:
