@@ -142,9 +142,9 @@ public final class MarioSnxGameActivity extends SDLActivity {
                     "libRyujinxShaderNative.so");
             if (nativeLib.isFile() && nativeLib.canRead()) {
                 SDLActivity.nativeSetenv("SNX_RYUJINX_NATIVE_PROBE", "1");
-                stage("SDL_RYUJINX_NATIVE_PROBE_ON: .NET NativeAOT library packaged, GPU fallback preserved");
+                stage("SDL_RYUJINX_NATIVE_VULKAN_ON: Ryujinx NativeAOT auto shader bridge enabled, ScarletNX fallback available");
             } else {
-                stage("SDL_RYUJINX_NATIVE_PROBE_MISSING: packaged .so absent; native fallback");
+                stage("SDL_RYUJINX_NATIVE_VULKAN_MISSING: packaged .so absent; ScarletNX native fallback");
             }
         }
         // Castlevania-only, explicit opt-in; other APKs keep their CLI unchanged.
