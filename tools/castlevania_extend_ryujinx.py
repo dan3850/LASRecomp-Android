@@ -50,20 +50,54 @@ def index_captures(archives):
 
 
 def failure_candidate(captures, prefix=PREFIX):
-    matching = []
-    for key, raw in captures.items():
-        if not key.startswith(prefix):
+    """Find the specific Maxwell shader safely; diagnose stale ZIP exports.
+
+    The runtime shader key and SNXS file key may differ in the lower 32 bits,
+    but shader_corpus_save writes h ^ mix with a 32-bit mix, so their upper
+    32-bit prefix agrees for this pinned ScarletNX version.
+    """
+    matching, prefix_hits, opcode_hits = [], [], []
+    for key, raw in sorted(captures.items()):
+        if not key.endswith("_4"):
             continue
         _, code = read_corpus_bytes(raw)
         if len(code) < 8 * (FAILURE_PC + 1):
+            if key.startswith(prefix):
+                prefix_hits.append((key, "shader too short for PC " + str(FAILURE_PC)))
             continue
         word = struct.unpack_from("<Q", code, FAILURE_PC * 8)[0]
+        is_tex = ((word >> 48) & 0xffc0) == 0xde80
         handle_register = (word >> 20) & 255
-        if ((word >> 48) & 0xffc0) == 0xde80 and handle_register == FAILURE_REG:
-            matching.append(key)
-    if len(matching) != 1:
-        raise ValueError(f"expected exactly 1 verified {prefix} shader (TEX.B PC={FAILURE_PC}, R{FAILURE_REG}); found {len(matching)}. Export the latest shader captures from the app.")
-    return matching[0]
+        if is_tex and handle_register == FAILURE_REG:
+            opcode_hits.append(key)
+        if key.startswith(prefix):
+            prefix_hits.append((key, "TEX.B=" + str(is_tex) +
+                                ", R=" + str(handle_register) +
+                                ", word=" + f"{word:016x}"))
+            if is_tex and handle_register == FAILURE_REG:
+                matching.append(key)
+    if len(matching) == 1:
+        print("SEXTO SHADER CONFIRMADO:", matching[0],
+              "(TEX.B PC", FAILURE_PC, "R", FAILURE_REG, ")", flush=True)
+        return matching[0]
+
+    found = len(captures)
+    example = ", ".join(sorted(captures)[:8]) or "(nenhum)"
+    if not prefix_hits:
+        hint = ("O shader ace294a5 NAO esta presente nos ZIPs. "
+                "Provavelmente foi usado o ZIP antigo. "
+                "No aplicativo Castlevania, toque em 'Exportar shaders de fragmento (.zip)' "
+                "e salve o NOVO ZIP em Download; depois execute este mesmo script.")
+        if opcode_hits:
+            hint += " Outros arquivos com TEX.B PC651 R8: " + ", ".join(opcode_hits[:8])
+    else:
+        hint = ("Existe chave com prefixo ace294a5, mas o codigo nao bate com "
+                "o TEX.B PC651 R8 do log. Nao vamos trocar shaders incorretos. "
+                "Detalhes: " + "; ".join(k + " [" + why + "]" for k, why in prefix_hits))
+    raise ValueError(
+        f"sexto shader: {len(matching)} correspondencias exatas; "
+        f"{found} shaders de fragmento disponiveis. "
+        f"Primeiras chaves: {example}. {hint}")
 
 
 def run(archives, bridge_dir, nxnative, out_dir, pack_output):
@@ -76,7 +110,16 @@ def run(archives, bridge_dir, nxnative, out_dir, pack_output):
     original = [x["key"] for x in old]
     if len(set(original)) != 5 or any(not KEY.fullmatch(k) for k in original):
         raise ValueError("invalid baseline shader keys")
+    print("===== ARQUIVOS DE CAPTURA RECEBIDOS =====", flush=True)
+    for archive in archives:
+        with zipfile.ZipFile(archive) as z:
+            names = [Path(info.filename).name for info in z.infolist()
+                     if info.filename.lower().endswith(".snxs")]
+            print(f"{archive}: {len(names)} arquivos SNXS", flush=True)
+            if names:
+                print("  Primeiro:", ", ".join(sorted(names)[:10]), flush=True)
     captures = index_captures(archives)
+    print("Capturas unicas de fragmento:", len(captures), flush=True)
     if any(k not in captures for k in original):
         missing = [k for k in original if k not in captures]
         raise ValueError("missing original captured shaders: " + ", ".join(missing))
