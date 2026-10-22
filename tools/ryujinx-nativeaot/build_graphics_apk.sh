@@ -23,6 +23,7 @@ SO="$(find "$BUILD" -name libscarletnx.so -print -quit)"
 test -s "$SO"
 LIBS="$STAGE/src/main/jniLibs/arm64-v8a"
 cp "$SO" "$LIBS/libscarletnx.so"
+python3 "$ROOT/tools/scarletnx_elf_audit.py" "$LIBS/libscarletnx.so" --require-main --output "$OUT/runtime-link-audit.json"
 cp "$RYU_OUTPUT/libRyujinxShaderNative.so" "$LIBS/"
 cp "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$LIBS/"
 READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
@@ -86,7 +87,9 @@ android {
 GRADLE
 gradle --no-daemon -p "$STAGE" assembleDebug
 APK="$OUT/ScarletNX-Castlevania-ARM64-${GITHUB_SHA:0:12}.apk"
-cp "$STAGE/build/outputs/apk/debug/app-debug.apk" "$APK"
+mapfile -t GENERATED_APKS < <(find "$STAGE/build/outputs/apk/debug" -maxdepth 1 -type f -name '*.apk')
+[ "${#GENERATED_APKS[@]}" -eq 1 ] || { echo "Expected exactly one newly built debug APK" >&2; exit 1; }
+cp "${GENERATED_APKS[0]}" "$APK"
 export APK
 python3 - <<'PY'
 import hashlib, json, os, pathlib, zipfile

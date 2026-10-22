@@ -2,7 +2,12 @@ name: Ryujinx ABI 2 host regression library
 on:
   push:
     branches: [experimental/ryujinx-runtime-nativeaot]
-    paths: ['.github/workflows/ryujinx-v2-host-regression.yml']
+    paths:
+      - '.github/workflows/ryujinx-v2-host-regression.yml'
+      - 'tools/ryujinx-nativeaot/ScarletAdapterV2.cs'
+      - 'tools/ryujinx-nativeaot/scarlet_runtime_v2.h'
+      - 'tools/ryujinx-nativeaot/scarlet_support_v2.h'
+      - 'tests/vulkan_ryujinx_v2.c'
   workflow_dispatch:
 permissions: {contents: read}
 jobs:

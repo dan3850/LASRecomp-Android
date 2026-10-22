@@ -183,6 +183,9 @@ static unsafe partial class SwshXlate
                 return value;
             }
             byte[] machineCode = new ReadOnlySpan<byte>(code, (int)codeSize).ToArray();
+            // Resolving cbuf_slot=-1 freezes the current texture-buffer index in
+            // descriptor metadata. Keep that index in the live dependency key.
+            job["texture_buffer_index"] = (int)Read(5, 0, 0);
             job["alpha_func"] = (int)Read(3, 0, 0);
             job["alpha_reference"] = BitConverter.Int32BitsToSingle((int)Read(4, 0, 0));
             var accessor = new Accessor(machineCode, job);

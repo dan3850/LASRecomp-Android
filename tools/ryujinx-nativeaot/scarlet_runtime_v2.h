@@ -14,6 +14,13 @@ typedef struct { unsigned n; int failed; SnxRnFact f[4096]; } SnxRnFacts;
 typedef int (*SnxRnQueryV2)(int, int, int, u32*);
 typedef int (*SnxRnTranslateV2)(const u8*, size_t, const u8*, size_t,
                                SnxRnResultV2*, SnxRnMetaV2*, SnxRnQueryV2);
+static int snx_rn_native_scope;
+int vk_shader_native_scope(int enabled) {
+    int old = snx_rn_native_scope; snx_rn_native_scope = enabled != 0; return old;
+}
+static u32 snx_rn_backend_key(u32 early_z) {
+    return (early_z & 1u) | (snx_rn_native_scope ? 0x80000000u : 0);
+}
 static SnxRnFacts* snx_rn_recording;
 static SnxRnTranslateV2 snx_rn_translate;
 static void (*snx_rn_release)(SnxRnResultV2*);
@@ -41,6 +48,7 @@ static int snx_rn_init_v2(void) {
 static int snx_rn_query_value(int kind, int handle, int slot, u32* value) {
     *value = 0;
     if (!g_sh_ch) return 0;
+    if (kind == 5) { *value = g_sh_ch->r3d[0x982] & 31; return 1; }
     if (kind == 0) return handle >= 0 && !(handle & 3) && sh_cb_read(1, (u32)handle, value);
     if (kind == 4) { *value = g_sh_ch->r3d[0x4C4]; return 1; }
     if (kind == 3) { /* alpha-test function participates in the shader cache key */
@@ -100,7 +108,7 @@ static int snx_rn_facts_hold(const VkSh* shader) {
     return 1;
 }
 static u32* snx_rn_try_v2(const u8* code, u32 len, int stage, VkSh* shader, size_t* words) {
-    if (stage != ST_FS || !snx_rn_init_v2()) return NULL;
+    if (stage != ST_FS || snx_rn_native_scope || !snx_rn_init_v2()) return NULL;
     const ShaderInfo original = shader->si;
     if (original.tex_int_mask || original.rt_int_mask || original.tex_dc_color_mask ||
         original.in_unfed_mask || original.early_fragment_tests) {

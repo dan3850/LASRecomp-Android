@@ -115,3 +115,28 @@ Therefore this proves adaptation/translation for those inputs, not the live
 TIC values, the missing sixth capture, every shader in the later log, or
 correct device rendering. No captured shader bytes or generated game SPIR-V
 were committed or uploaded to GitHub.
+
+The Vulkan pixel fixture also passed on lavapipe/llvmpipe, in run
+https://github.com/dan3850/LASRecomp-Android/actions/runs/39804528098:
+expected red/green at 1x and red/red at 2x, using the actual support writer,
+set 1 / binding 106 UBO and binding 34 texture. Khronos validation reported
+zero errors. This is an offscreen Vulkan fixture, not Adreno game validation.
+
+Final review additionally corrected two context dependencies:
+
+* `cbuf_slot=-1` resolves to the active texture-buffer index. That index now
+  participates in the runtime callback key; changing it invalidates the cached
+  metadata even if the new TIC has the same dimensional type.
+* Integer, color-depth-compare and unfed-varying fallback states must recompute
+  their resource masks from a native-translator basis. A scoped native backend
+  bit separates those cache entries, so Ryujinx texture numbering is never
+  passed as if it were the native translator's numbering. The bit is stripped
+  from the actual Early-Z state.
+
+The first full Android attempt compiled and linked the native runtime, and
+Gradle reported `BUILD SUCCESSFUL`. Collection then failed because the root
+project generates `ScarletNXGraphics-debug.apk`, rather than `app-debug.apk`.
+The collector now requires exactly one newly generated debug APK. LLVM is
+saved immediately after its successful build; source/compiler caches are saved
+independently of APK packaging success. A final consolidated run is required
+for the two context fixes and corrected collection path.

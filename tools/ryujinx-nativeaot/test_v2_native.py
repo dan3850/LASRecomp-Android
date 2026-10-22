@@ -41,8 +41,8 @@ def main():
     calls = []
     @QUERY
     def query(kind, handle, slot, result):
-        calls.append((kind, handle, slot)); result[0] = {0: 0, 1: 3, 2: 1, 3: 8}.get(kind, 0)
-        return int(kind in (0, 1, 2, 3, 4))
+        calls.append((kind, handle, slot)); result[0] = {0: 0, 1: 3, 2: 1, 3: 8, 5: 2}.get(kind, 0)
+        return int(kind in (0, 1, 2, 3, 4, 5))
     mov = lambda r, v: 0x0100000000000000 | (v << 20) | 0x71000 | r
     exit_op = 0xe30000000007000f
     cases = {

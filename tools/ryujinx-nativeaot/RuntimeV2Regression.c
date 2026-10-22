@@ -38,6 +38,13 @@ static u8* vk_stage(size_t size,u64 align,VkBuffer* b,u64* off) {
 #include "scarlet_support_v2.h"
 int main(void) {
     assert(sizeof(SnxRnMetaV2)==2072);
+    assert(snx_rn_backend_key(0)==0 && snx_rn_backend_key(1)==1);
+    assert(vk_shader_native_scope(1)==0 && snx_rn_backend_key(1)==0x80000001u);
+    setenv("SNX_RYUJINX_NATIVE_PROBE","1",1);
+    VkSh forced={0};size_t words=0;u8 code[88]={0};
+    assert(snx_rn_try_v2(code,sizeof code,ST_FS,&forced,&words)==NULL);
+    unsetenv("SNX_RYUJINX_NATIVE_PROBE");
+    assert(vk_shader_native_scope(0)==1 && snx_rn_backend_key(1)==1);
     channel.r3d[0x982] = 2; channel.r3d[0x55E] = 128;channel.r3d[0x55F] = 10;
     u32* tic = memory + (128+3*32)/4; tic[4] = 1u<<23;tic[5] = 1u<<31;
     cbuf[2][94] = 3; cbuf[2][352] = 7u<<20;
@@ -45,6 +52,10 @@ int main(void) {
     assert(snx_rn_query_value(1,handle,0x30002,&value) && value==3);
     assert(snx_rn_query_value(2,handle,0x30002,&value) && value==1);
     SnxRnFacts facts = {0}; VkSh shader = {.ryu_facts=&facts};snx_rn_recording=&facts;
+    assert(snx_rn_query_v2(5,0,0,&value) && value==2);snx_rn_recording=NULL;
+    assert(snx_rn_facts_hold(&shader));channel.r3d[0x982]=3;
+    assert(!snx_rn_facts_hold(&shader));channel.r3d[0x982]=2;
+    assert(snx_rn_facts_hold(&shader));facts=(SnxRnFacts){0};snx_rn_recording=&facts;
     assert(snx_rn_query_v2(1,handle,0x30002,&value));snx_rn_recording=NULL;
     assert(snx_rn_facts_hold(&shader)); tic[4] = 3u<<23;
     assert(!snx_rn_facts_hold(&shader));tic[4] = 1u<<23;

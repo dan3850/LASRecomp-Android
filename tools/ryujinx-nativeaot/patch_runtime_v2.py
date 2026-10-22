@@ -10,10 +10,16 @@ HERE = Path(__file__).resolve().parent
 def replacements():
     return {
         'src/nx/gpu/vk/vk.h': [
+            ('int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read);',
+             'int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read);\nint vk_shader_native_scope(int enabled); /* returns previous backend scope */'),
             ('    VkCbReads cbr;\n    ShaderInfo si;',
              '    VkCbReads cbr;\n    void* ryu_facts; /* live GPU facts used during NativeAOT translation */\n    int ryujinx; /* ABI 2 support UBO at SNX_VKB_RS */\n    ShaderInfo si;'),
         ],
         'src/nx/gpu/vk/pipeline.c': [
+            ('    if (stage == ST_FS && ch) mask[11] = ch->r3d[0x084] & 1; /* MANDATED_EARLY_Z */',
+             '    if (stage == ST_FS && ch) mask[11] = ch->r3d[0x084] & 1; /* MANDATED_EARLY_Z */\n    if (stage == ST_FS) mask[11] = snx_rn_backend_key(mask[11]);'),
+            ('            s->si.early_fragment_tests = mask[11];',
+             '            s->si.early_fragment_tests = mask[11] & 1;'),
             ('static VkCbReader g_rec_read;',
              '#include "nx/gpu/vk/snx_ryu_runtime_v2.h"\nstatic VkCbReader g_rec_read;'),
             ('if (same && vk_cb_reads_hold(&s->cbr, sh_cb_read)) return s;',
@@ -30,6 +36,15 @@ def replacements():
              '        return;\n    }\n    if (getenv("SNX_SHADER_CORPUS")) {'),
         ],
         'src/nx/gpu/vk/render.c': [
+            ('    if (!tm && !rm && !dm && !unfed) return s0;',
+             '    if (s0->ryujinx && (tm || rm || dm || unfed)) {\n'
+             '        /* Resource indices belong to a translator. Rebuild the native\n'
+             '           basis before computing native integer/depth/unfed masks. */\n'
+             '        int old = vk_shader_native_scope(1);\n'
+             '        VkSh* native = fs_get_keyed(ch, addr, res, last_out);\n'
+             '        vk_shader_native_scope(old);\n'
+             '        return native;\n    }\n'
+             '    if (!tm && !rm && !dm && !unfed) return s0;'),
             ('    if (st->bindless && st->bl2) {\n'
              '        u64 c2 = c2i < 18 ? ch->cbind[stage][c2i] : 0;\n'
              '        if (c2) h |= gmem_r32(c2 + st->bl2_off * 4);\n    }',
