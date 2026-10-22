@@ -16,19 +16,6 @@ def replacements():
              '    VkCbReads cbr;\n    void* ryu_facts; /* live GPU facts used during NativeAOT translation */\n    int ryujinx; /* ABI 2 support UBO at SNX_VKB_RS */\n    ShaderInfo si;'),
         ],
         'src/nx/gpu/vk/pipeline.c': [
-            ('static void pf_start_load(void);',
-             'static void pf_start_load(void);\nstatic int snx_rn_enabled(void);'),
-            ('    PFileMap data;\n    if (!plat_file_map(&data, g_pcache_path) && data.data) {',
-             '    /* ABI 2 currently bypasses serialized shaders. Keep the driver cache\n'
-             '       session-local too: reopening must follow the same cold path. */\n'
-             '    PFileMap data = {0};\n'
-             '    if (snx_rn_enabled())\n'
-             '        LOG("vulkan: RYUJINX_NATIVE_V2: persistent pipeline cache bypassed; files preserved\\n");\n'
-             '    if (!snx_rn_enabled() && !plat_file_map(&data, g_pcache_path) && data.data) {'),
-            ('void vk_pipeline_save(void) {\n    pm_lock(&g_psave);',
-             'void vk_pipeline_save(void) {\n'
-             '    if (snx_rn_enabled()) return; /* session-local ABI 2 driver cache */\n'
-             '    pm_lock(&g_psave);'),
             ('    if (stage == ST_FS && ch) mask[11] = ch->r3d[0x084] & 1; /* MANDATED_EARLY_Z */',
              '    if (stage == ST_FS && ch) mask[11] = ch->r3d[0x084] & 1; /* MANDATED_EARLY_Z */\n    if (stage == ST_FS) mask[11] = snx_rn_backend_key(mask[11]);'),
             ('            s->si.early_fragment_tests = mask[11];',
