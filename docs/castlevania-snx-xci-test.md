@@ -43,7 +43,7 @@ git fetch origin experimental/castlevania-belmonts-curse
 git switch experimental/castlevania-belmonts-curse
 git pull --ff-only
 # Arquivo exportado do ScarletNX para Download:
-export CASTLEVANIA_SNX_CODE_SO="/storage/emulated/0/Download/0100BA4026E94000/0100BA4026E94000_code.so"
+export CASTLEVANIA_SNX_CODE_SO="/storage/emulated/0/Download/Castlevania-Atualizado/0100BA4026E94000/0100BA4026E94000_code.so"
 bash compilar-castlevania-snx-termux.sh
 ```
 
