@@ -104,6 +104,7 @@ jobs:
           grep -q 'AArch64' "$RUNNER_TEMP/ryujinx-elf-header.txt"
           readelf -Ws "$SO" > "$RUNNER_TEMP/ryujinx-exports.txt"
           grep 'snx_ryu_translate_v1' "$RUNNER_TEMP/ryujinx-exports.txt"
+          grep 'snx_ryu_translate_scarlet_v1' "$RUNNER_TEMP/ryujinx-exports.txt"
           grep 'snx_ryu_api_version' "$RUNNER_TEMP/ryujinx-exports.txt"
           cp tools/ryujinx-nativeaot/snx_ryujinx_native_abi.h "$OUTPUT/"
           printf '%s\n' \
