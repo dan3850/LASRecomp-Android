@@ -119,6 +119,9 @@ public final class MarioSnxGameActivity extends SDLActivity {
             stage("SDL_GET_ARGUMENTS: missing game path, refusing to run");
             return new String[]{"--settings"};
         }
+        // Castlevania-only, explicit opt-in; other APKs keep their CLI unchanged.
+        boolean shaderCaptures = getIntent().getBooleanExtra("snx_shader_captures", false);
+        if (shaderCaptures) stage("SDL_SHADER_CAPTURE_ON: recording Maxwell .snxs files");
         String source = getIntent().getStringExtra("snx_source_dump");
         if (source != null) {
             File dump = new File(source);
@@ -129,10 +132,16 @@ public final class MarioSnxGameActivity extends SDLActivity {
             stage("SDL_SOURCE_READY: loading ExeFS and RomFS from selected XCI");
             // Pinned ScarletNX 34853ee accepts --source=PATH through ini_override,
             // then fs.c dump_open reads from the encrypted container in-place.
+            if (shaderCaptures) {
+                return new String[]{"--game=" + base, "--source=" + dump.getAbsolutePath(),
+                        "--log=2", "--diag=1", "--fullscreen"};
+            }
             return new String[]{"--game=" + base, "--source=" + dump.getAbsolutePath(),
                     "--log=2", "--fullscreen"};
         }
         stage("SDL_GET_ARGUMENTS: invoking ScarletNX main with game base " + base);
+        if (shaderCaptures)
+            return new String[]{"--game=" + base, "--log=2", "--diag=1", "--fullscreen"};
         return new String[]{"--game=" + base, "--log=2", "--fullscreen"};
     }
 
