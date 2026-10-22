@@ -115,7 +115,7 @@ static unsafe partial class SwshXlate
     {
         if (result == null) return -1;
         *result = default;
-        if (code == null || jobUtf8 == null || codeSize < 88 || codeSize > 1048576 ||
+        if (code == null || jobUtf8 == null || codeSize < 8 || codeSize > 1048576 ||
             codeSize % 8 != 0 || jobSize == 0 || jobSize > 262144) return -1;
         try
         {
@@ -125,6 +125,8 @@ static unsafe partial class SwshXlate
             string stage = job["stage"]?.GetValue<string>() ?? "";
             if (stage != "ps" && stage != "vs" && stage != "cs")
                 throw new ArgumentException("supported shader stages: vs, ps, cs");
+            if (stage != "cs" && program.Length < 88)
+                throw new ArgumentException("graphics shader is missing its 80-byte SPH");
 
             var accessor = new Accessor(program, job);
             var flags = (job["debug"] is JsonNode d && !d.GetValue<bool>()
