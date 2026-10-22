@@ -13,6 +13,7 @@ for tool in git python3 llvm-readelf cmake ninja clang; do
 done
 SRC="$HOME/.cache/lasrecomp-scarletnx-romfs/ScarletNX"
 [ -s "$SRC/src/nx/gpu/vk/pipeline.c" ] || die 'Cache ScarletNX ausente. Este script reutiliza a instalacao Termux e o cache dos builds anteriores.'
+python3 -m unittest discover -s tests -p test_castlevania_jit_cache.py
 CACHE="$HOME/.cache/lasrecomp-ryujinx-v2"
 NX="$CACHE/nxnative"
 STAGE="$CACHE/source"

@@ -1,5 +1,15 @@
 # Castlevania / Ryujinx ABI 2 no Termux
 
+## Teste do cache JIT na reabertura
+
+Comparacao dos logs enviados: o log 12, com defeitos visuais relatados, carrega 66 unidades do `.jitcache` (15 KiB de codigo JIT ao final, nenhuma compilacao). O log 13, com graficos corretos relatados, carrega zero unidades e compila 66 funcoes / 388 instrucoes (49 KiB, 0,24 s de compilacao). Ambos registram a mesma identidade NativeAOT `36276fc4...bc69`. Existem outras diferencas: pacote `.graphics` versus pacote Termux, revisao `95b7a977` versus `2301a16`, toolchain de runtime clang 19 versus 21, e duracao/cena da sessao. A comparacao **nao prova** que o cache JIT cause os defeitos.
+
+O novo patch Termux testa essa hipotese no pacote existente. Quando o titulo e `0100BA4026E94000` e `SNX_RYUJINX_NATIVE_PROBE=1`, usa o contrato `SnxJitConfig.cache_path=NULL`: o servico nao abre nem grava o cache de objetos compilados. Tambem nao consulta as dicas de partidas anteriores para aquecimento. O JIT continua compilando as funcoes necessarias durante a execucao; o AOT do jogo nao e recompilado. Os arquivos `.jitcache`, dicas, saves e configuracoes existentes nao sao apagados. Com Ryujinx desligado e em outros titulos, a politica original continua em vigor.
+
+O runtime imprime `SNX_JIT_COLD_START_V1: persistent units and warm hints bypassed; files preserved`. A verificacao da APK assinada agora exige esse marcador alem da revisao Git e da identidade C#. O cache de fontes e restaurado ao sair do build, incluindo `guest_jit.c`. A biblioteca NativeAOT ja baixada continua valida, pois nenhuma fonte C# foi alterada.
+
+Instale por cima da APK Termux anterior, sem limpar os dados, mantenha Ryujinx ligado e compare a mesma cena em tres aberturas completas. Um resultado com zero unidades JIT carregadas e graficos ainda ruins refuta a suficiencia desse desvio de cache. O resultado visual e as reaberturas ainda precisam de validacao no RedMagic. Nenhuma compilacao Actions e necessaria para esta alteracao.
+
 Esta entrada usa a instalacao ARM64 de Termux, NDK r28c, SDK/Java, modulo AOT ABI 12 e cache ScarletNX dos builds anteriores. Nao e um instalador do ambiente do zero. Nao usa Termux proot e nao recompila o AOT do jogo. O ScarletNX original, as dependencias nativas e o modulo do jogo continuam sendo exigidos pelos scripts existentes.
 
 O runtime Vulkan e a APK sao compilados no celular. A biblioteca C# NativeAOT Android ARM64 continua sendo publicada pelo GitHub Actions: o compilador .NET Android usado no CI nao e instalado por este script.

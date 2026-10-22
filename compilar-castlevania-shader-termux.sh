@@ -17,6 +17,13 @@ OUT="$HOME/scarletnx-castlevania-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ "${SCARLETNX_RYU_V2:-0}" = 1 ] &&
+     [ -s "$SRC/src/nx/runtime/guest_jit.c" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_jit_cache.py" "$SRC" --revert; then
+      echo "AVISO: falha restaurando a politica do cache JIT no cache de fontes" >&2
+      restore_failed=1
+    fi
+  fi
   if [ -s "$SRC/src/nx/gpu/shader/spirv_translate.c" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC" --revert >/dev/null; then
       echo "AVISO: nao foi possivel restaurar o diagnostico bindless no cache." >&2
@@ -88,6 +95,7 @@ if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
   [ "$BRANCH" = experimental/ryujinx-runtime-nativeaot ] ||
     { echo "NativeAOT LIVE probe requires its dedicated experimental branch" >&2; exit 1; }
   if [ "${SCARLETNX_RYU_V2:-0}" = 1 ]; then
+    python3 "$ROOT/tools/patch_scarletnx_jit_cache.py" "$SRC"
     python3 "$ROOT/tools/ryujinx-nativeaot/patch_runtime_v2.py" "$SRC" \
       --identity "${SCARLETNX_RYU_V2_IDENTITY:?identidade ABI 2 obrigatoria}" \
       --revision "$(git rev-parse HEAD)"

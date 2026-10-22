@@ -21,12 +21,17 @@ class SignedApkIntegrity(unittest.TestCase):
             library = root / 'lib.so'
             library.write_bytes(b'new native')
             apk = root / 'test.apk'
-            for runtime, native, valid in [
+            cases = [
                 ((identity + revision + 'RYUJINX_NATIVE_V2').encode(), b'new native', True),
                 ((identity + 'RYUJINX_NATIVE_V2').encode(), b'new native', False),
                 ((revision + 'RYUJINX_NATIVE_V2').encode(), b'new native', False),
                 ((identity + revision + 'RYUJINX_NATIVE_V2').encode(), b'old native', False),
-            ]:
+            ]
+            # A valid GPU identity alone must not accept a runtime without the CPU cache guard.
+            cases = [(runtime + b'SNX_JIT_COLD_START_V1', native, valid)
+                     for runtime, native, valid in cases] + [
+                ((identity + revision + 'RYUJINX_NATIVE_V2').encode(), b'new native', False)]
+            for runtime, native, valid in cases:
                 with zipfile.ZipFile(apk, 'w') as archive:
                     archive.writestr('lib/arm64-v8a/libscarletnx.so', runtime)
                     archive.writestr('lib/arm64-v8a/libRyujinxShaderNative.so', native)

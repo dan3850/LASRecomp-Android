@@ -57,7 +57,7 @@ def verify_apk(apk, identity, revision, library):
         native = archive.read('lib/arm64-v8a/libRyujinxShaderNative.so')
     if hashlib.sha256(native).digest() != hashlib.sha256(library.read_bytes()).digest():
         raise ValueError('signed APK contains a different NativeAOT library')
-    for marker in (expected_identity(identity), revision, 'RYUJINX_NATIVE_V2'):
+    for marker in (expected_identity(identity), revision, 'RYUJINX_NATIVE_V2', 'SNX_JIT_COLD_START_V1'):
         if marker.encode() not in runtime:
             raise ValueError('signed APK contains a stale runtime: missing ' + marker)
     print('SIGNED_APK_V2_OK:', apk)
