@@ -215,8 +215,17 @@ static class ScarletSpirvAdapter
         }
         if (!chains.Keys.ToHashSet().SetEquals(loads))
             throw new InvalidDataException("unsupported render scale pointer usage");
-        if (loads.Count != 0 && floatOneId == 0)
-            throw new InvalidDataException("float32 1.0 constant missing for support buffer removal");
+        // Ryujinx does not always emit a literal 1.0.  A render-scale
+        // read can still be safely replaced with 1.0 at native resolution;
+        // synthesize the SPIR-V constant instead of rejecting the shader.
+        bool addFloatOne = loads.Count != 0 && floatOneId == 0;
+        if (addFloatOne)
+        {
+            if (fp32.Count == 0 || header[3] == uint.MaxValue)
+                throw new InvalidDataException("render scale needs a valid float32 type and SPIR-V id");
+            floatOneType = fp32.Min();
+            floatOneId = header[3]++;
+        }
         foreach (var ins in instructions)
         {
             uint[] a = ins.A;
@@ -254,8 +263,15 @@ static class ScarletSpirvAdapter
 
         var patched = new List<uint>(spirv.Length / 4 + 8);
         patched.AddRange(header);
+        bool insertedFloatOne = false;
         foreach (var ins in instructions)
         {
+            // Constants must precede the first function in SPIR-V logical layout.
+            if (addFloatOne && !insertedFloatOne && ins.Opcode == 54) // OpFunction
+            {
+                Add(patched, OpConstant, floatOneType, floatOneId, 0x3f800000u);
+                insertedFloatOne = true;
+            }
             uint[] a = ins.A;
             uint op = ins.Opcode;
             if ((op == OpName || op == OpDecorate) && a.Length > 0 && a[0] == support)
@@ -293,6 +309,8 @@ static class ScarletSpirvAdapter
             }
             Add(patched, op, a);
         }
+        if (addFloatOne && !insertedFloatOne)
+            throw new InvalidDataException("SPIR-V missing function for render-scale replacement");
         if (patched.Count < 5 || patched.Count > 1024 * 1024)
             throw new InvalidDataException("rewritten SPIR-V size invalid");
         byte[] result = new byte[patched.Count * 4];
