@@ -57,7 +57,7 @@ several of the five shaders.
 2. **Ryujinx `support_buffer`:** every generated module includes a
    `support_buffer` at `set=0,binding=0`. ScarletNX's existing
    fixed descriptor layout does not have a matching allocation or
-   data writer. It cannot be satisfied with a null descriptor.
+   data writer. Each shader actually dereferences this resource via SPIR-V\n   access chains (3, 3, 3, 4, and 2 direct chains, respectively, in the\n   table order above), so merely ignoring the declaration is unsafe. It\n   cannot be satisfied with a null descriptor.
 3. **GPU capabilities:** all five SPIR-V files declare
    `OpCapability Float64`, but contain **no** `OpTypeFloat 64`.
    All five declare `SPV_EXT_fragment_shader_interlock` /
