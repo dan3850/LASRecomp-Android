@@ -12,67 +12,28 @@ cd "$ROOT"
   exit 1
 }
 LIB="$HOME/ryujinx-nativeaot/libRyujinxShaderNative.so"
-# The original native library successfully translated 5/5 but has no Vulkan
-# descriptor adapter export. Upgrade ONLY after verifying the newer archive.
-is_vulkan_adapter() {
-  [ -s "$1" ] &&
-  llvm-readelf -W --dyn-syms "$1" 2>/dev/null |
-    grep -F 'snx_ryu_translate_scarlet_v1' >/dev/null
-}
-# Optional argument: explicit path to the new Vulkan-adapter ZIP in Download.
-# Otherwise try every plausible ZIP, prioritizing the Vulkan-specific name.
-# Never select based only on modification date: an old ZIP can be downloaded later.
-if [ "$#" -gt 1 ]; then
-  echo "Uso: bash compilar-castlevania-ryujinx-nativo-termux.sh [novo-adaptador.zip]" >&2
+# A valid ABI does NOT prove that a cached library contains the latest C#.
+# Fail closed: require a freshly selected workflow artifact on every build.
+if [ "$#" -ne 1 ] || [ ! -s "$1" ]; then
+  echo "ERRO: informe o ZIP NativeAOT gerado pelo GitHub Actions para este commit." >&2
+  echo "Uso: bash compilar-castlevania-ryujinx-nativo-termux.sh /storage/emulated/0/Download/ryujinx-android-arm64-nativeaot.zip" >&2
+  echo "Nao reutilizaremos automaticamente a biblioteca antiga." >&2
   exit 2
 fi
-if ! is_vulkan_adapter "$LIB"; then
-  echo "Ryujinx antigo detectado (8977104 bytes e sem adaptador, na versao anterior)."
-  echo "Procurando o ZIP NOVO pelo conteudo real do ELF, nao pela data do arquivo..."
-  CANDIDATES=()
-  if [ "$#" -eq 1 ]; then
-    [ -s "$1" ] || { echo "ERRO: ZIP informado nao existe: $1" >&2; exit 2; }
-    CANDIDATES+=("$1")
-  else
-    for candidate in /storage/emulated/0/Download/ryujinx-android-arm64-vulkan-adapter*.zip \
-                     /storage/emulated/0/Download/ryujinx-android-arm64-nativeaot*.zip; do
-      if [ -s "$candidate" ]; then CANDIDATES+=("$candidate"); fi
-    done
-  fi
-  if [ "${#CANDIDATES[@]}" -eq 0 ]; then
-    echo "Nenhum ZIP Ryujinx localizado em Download."
-  fi
-  TEMP_SO="$HOME/ryujinx-nativeaot/libRyujinxShaderNative-NEW.so"
-  for ARTIFACT in "${CANDIDATES[@]}"; do
-    echo "===== VERIFICANDO: $ARTIFACT ====="
-    rm -f "$TEMP_SO"
-    if ! python3 "$ROOT/tools/ryujinx-nativeaot/extract_artifact.py" \
-          "$ARTIFACT" --out "$TEMP_SO"; then
-      echo "ZIP invalido; tentando proximo candidato."
-      continue
-    fi
-    if ! is_vulkan_adapter "$TEMP_SO"; then
-      echo "Biblioteca ANTIGA (sem snx_ryu_translate_scarlet_v1); ignorada."
-      continue
-    fi
-    if ! python3 "$ROOT/tools/ryujinx-nativeaot/check_native_elf.py" "$TEMP_SO"; then
-      echo "ELF ARM64 invalido; tentando proximo ZIP."
-      continue
-    fi
-    mv -f "$TEMP_SO" "$LIB"
-    echo "NOVO Ryujinx Vulkan selecionado: $ARTIFACT"
-    echo "Biblioteca instalada no cache: $LIB"
-    break
-  done
-  rm -f "$TEMP_SO"
-fi
-if ! is_vulkan_adapter "$LIB"; then
-  echo "ERRO: biblioteca com snx_ryu_translate_scarlet_v1 ainda nao disponivel." >&2
-  echo "Baixe ryujinx-android-arm64-vulkan-adapter.zip e salve em Download." >&2
-  echo "https://github.com/dan3850/LASRecomp-Android/actions/workflows/ryujinx-nativeaot-android.yml" >&2
-  echo "O Castlevania anterior continua intacto. Nenhuma compilacao iniciada." >&2
+ARTIFACT="$1"
+TEMP_SO="$HOME/ryujinx-nativeaot/libRyujinxShaderNative-NEW.so"
+mkdir -p "$(dirname "$LIB")"
+rm -f "$TEMP_SO"
+python3 "$ROOT/tools/ryujinx-nativeaot/extract_artifact.py" "$ARTIFACT" --out "$TEMP_SO"
+python3 "$ROOT/tools/ryujinx-nativeaot/check_native_elf.py" "$TEMP_SO"
+llvm-readelf -W --dyn-syms "$TEMP_SO" | grep -F 'snx_ryu_translate_scarlet_v1' >/dev/null || {
+  echo "ERRO: adaptador Vulkan ausente do ZIP." >&2
   exit 1
-fi
+}
+mv -f "$TEMP_SO" "$LIB"
+echo "===== IDENTIDADE DA BIBLIOTECA ====="
+sha256sum "$ARTIFACT" "$LIB"
+echo "ZIP escolhido explicitamente: $ARTIFACT"
 python3 "$ROOT/tools/ryujinx-nativeaot/check_native_elf.py" "$LIB"
 python3 -m unittest discover -s tests -p 'test_ryujinx_live_probe_patch.py'
 python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_artifact.py'
