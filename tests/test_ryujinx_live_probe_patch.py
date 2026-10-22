@@ -27,7 +27,7 @@ class LiveProbePatchTest(unittest.TestCase):
             '#include "nx/gpu/vk/internal_spv.h"\n'
             "void pf_start_load(void) {\n"
             + PATCH.CACHE_OLD + "\n}\n"
-            +             "void fake_fragment_pipeline(void) {\n"
+            + "void fake_fragment_pipeline(void) {\n"
             "        if (spv) {\n"
             "            VkShaderModuleCreateInfo mi = {\n"
             "                .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};\n"
