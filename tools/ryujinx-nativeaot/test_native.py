@@ -47,14 +47,22 @@ def validate_library(library: Path):
     return native
 
 
+def make_job(stage="ps"):
+    # The live ScarletNX C probe must send the same options as this known-good
+    # direct Android test. DebugMode changes Ryujinx's shader IR pipeline:
+    # accidentally disabling it yielded AST dictionary/cast exceptions in game.
+    # These default resource facts are test-only, NOT Vulkan descriptor state.
+    return {
+        "stage": stage, "tex": {}, "img": {}, "attr": {}, "fout": {},
+        "local": [1, 1, 1], "debug": True,
+    }
+
+
 def invoke(native, code: bytes, stage="ps"):
     # IGpuAccessor default answers are deliberately explicit: these resources
     # are NOT suitable for immediate Vulkan binding. Runtime state adaptation
     # (actual texture formats, CB1, render targets) is a separate phase.
-    job = {
-        "stage": stage, "tex": {}, "img": {}, "attr": {}, "fout": {},
-        "local": [1, 1, 1],
-    }
+    job = make_job(stage)
     encoded = json.dumps(job, separators=(",", ":")).encode()
     src = C.create_string_buffer(code)
     desc = C.create_string_buffer(encoded)
