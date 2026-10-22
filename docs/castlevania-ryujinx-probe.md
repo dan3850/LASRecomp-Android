@@ -56,14 +56,14 @@ Downloads via the system picker.
 
 ## Phase 2: translate on the same Android phone using Termux
 
-A current Termux ARM64 repository provides \`dotnet-sdk-10.0\` (confirmed
-2026-10-22). The nxnative tool targets \`net10.0\`. This experiment therefore
+A current Termux ARM64 repository provides `dotnet-sdk-10.0` (confirmed
+2026-10-22). The nxnative tool targets `net10.0`. This experiment therefore
 does **not** require a PC or a Linux emulator. It does require space for the
 SDK, restore packages and a small sparse checkout of the Ryujinx translator.
 
 From the experimental source branch:
 
-\`\`\`bash
+```bash
 cd "$HOME/LASRecomp-Android" || exit 1
 git pull --ff-only origin experimental/castlevania-belmonts-curse
 pkg install -y dotnet-sdk-10.0 git python
@@ -84,34 +84,34 @@ python3 tools/castlevania_ryujinx_probe.py \
   --out "$HOME/castlevania-ryujinx-probe" \
   --nxnative "$HOME/nxnative" \
   2>&1 | tee "$HOME/castlevania-ryujinx-probe/ryujinx-run.log"
-\`\`\`
+```
 
 Change only the ZIP filename if Android saved it with a suffix, such as
-\`Castlevania-shaders-SNXS (1).zip\`. This is **not** a rebuild of the
+`Castlevania-shaders-SNXS (1).zip`. This is **not** a rebuild of the
 603 MB Castlevania AOT or the APK.
 
 The Python step validates each SNXS v1 header (including length/size bounds),
-extracts the original Maxwell bytecode locally into \`maxwell/*.bin\`,
-and creates \`jobs.json\`, \`errors.txt\` and \`report.json\`. The report
+extracts the original Maxwell bytecode locally into `maxwell/*.bin`,
+and creates `jobs.json`, `errors.txt` and `report.json`. The report
 checks the exact TEX.B opcode and handle register at the five previously
 logged failure positions. These checks were performed against the user's
 actual ZIP: all five matched. Their **full 16-digit names differ** between
 the runtime log and the corpus; the shared initial 8 digits plus matching
 PC/instruction/register, not an equal full hash, establish correspondence.
 
-Then \`dotnet run\` builds the isolated \`dmsh_xlate\` tool from nxnative
-using its vendored Ryujinx source, and attempts to generate \`spirv/*.spv\`
-and reflection \`*.res.json\`. The build may download ordinary NuGet packages
-once; subsequent runs reuse its \`obj/bin\` and NuGet caches.
+Then `dotnet run` builds the isolated `dmsh_xlate` tool from nxnative
+using its vendored Ryujinx source, and attempts to generate `spirv/*.spv`
+and reflection `*.res.json`. The build may download ordinary NuGet packages
+once; subsequent runs reuse its `obj/bin` and NuGet caches.
 
-If the phone's \`dotnet run\` fails due to Android/Termux package
-compatibility, preserve \`ryujinx-run.log\` and **do not modify the functioning
+If the phone's `dotnet run` fails due to Android/Termux package
+compatibility, preserve `ryujinx-run.log` and **do not modify the functioning
 Castlevania runtime**. No runtime modification happens during this probe.
 
 ## Interpreting the experiment
 
-The \`job\` metadata intentionally contains empty \`tex\`, \`img\`,
-\`attr\` and \`fout\` fact tables. Missing texture dimensions, constant
+The `job` metadata intentionally contains empty `tex`, `img`,
+`attr` and `fout` fact tables. Missing texture dimensions, constant
 buffer 1 jump tables and resource states can cause translation failure
 or inaccurate SPIR-V. Translation success here is a compatibility signal,
 NOT a drop-in ScarletNX shader.
