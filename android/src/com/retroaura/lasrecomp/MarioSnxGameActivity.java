@@ -133,6 +133,20 @@ public final class MarioSnxGameActivity extends SDLActivity {
                 stage("SDL_RYUJINX_BRIDGE_MISSING: continuing with native translator");
             }
         }
+        // New port: real C# Ryujinx translator runs inside the ScarletNX GPU
+        // process, only for Castlevania and only when the user opts in.
+        // Shadow-mode keeps all original Vulkan modules and fallbacks.
+        if (getIntent().getBooleanExtra("snx_ryujinx_native_probe", false)
+                && new File(base).getName().equals("0100BA4026E94000")) {
+            File nativeLib = new File(getApplicationInfo().nativeLibraryDir,
+                    "libRyujinxShaderNative.so");
+            if (nativeLib.isFile() && nativeLib.canRead()) {
+                SDLActivity.nativeSetenv("SNX_RYUJINX_NATIVE_PROBE", "1");
+                stage("SDL_RYUJINX_NATIVE_PROBE_ON: .NET NativeAOT library packaged, GPU fallback preserved");
+            } else {
+                stage("SDL_RYUJINX_NATIVE_PROBE_MISSING: packaged .so absent; native fallback");
+            }
+        }
         // Castlevania-only, explicit opt-in; other APKs keep their CLI unchanged.
         boolean shaderCaptures = getIntent().getBooleanExtra("snx_shader_captures", false);
         if (shaderCaptures) stage("SDL_SHADER_CAPTURE_ON: recording Maxwell .snxs files");
