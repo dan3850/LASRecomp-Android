@@ -61,6 +61,20 @@ jobs:
             --nologo -o "$RUNNER_TEMP/ryu-linux"
           python3 tools/ryujinx-nativeaot/test_v2_native.py "$RUNNER_TEMP/ryu-linux/RyujinxShaderNative.so" \
             "$RYU_STAGE/build-identity.json" --out "$RUNNER_TEMP/adapter-tests"
+      - name: Render adapted support-buffer shader on Vulkan with validation
+        run: |
+          sudo apt-get install -y --no-install-recommends libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
+          cat > "$RUNNER_TEMP/quad.vert" <<'GLSL'
+          #version 450
+          void main() {
+            vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+            gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+          }
+          GLSL
+          glslangValidator -V --target-env vulkan1.1 "$RUNNER_TEMP/quad.vert" -o "$RUNNER_TEMP/quad.spv"
+          cc -std=c11 -O2 -Wall -Wextra -Itools/ryujinx-nativeaot tests/vulkan_ryujinx_v2.c -lvulkan -o "$RUNNER_TEMP/vulkan-v2"
+          export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          timeout 30 "$RUNNER_TEMP/vulkan-v2" "$RUNNER_TEMP/quad.spv" "$RUNNER_TEMP/adapter-tests/adapter-mode-0.spv"
       - name: Stage host library and exact source identity
         run: |
           mkdir -p "$RUNNER_TEMP/host-artifact"
