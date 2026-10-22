@@ -74,13 +74,24 @@ jobs:
             -p:PublishAot=true -p:NativeLib=Shared \
             -p:DisableUnsupportedError=true -p:PublishAotUsingRuntimePack=true \
             -p:StripSymbols=false --nologo -o "$OUTPUT"
+          # .NET 10 names the NativeAOT library without "lib". Normalize it
+          # for Android packaging; .NET 11 will introduce "lib" by default.
+          if [ -s "$OUTPUT/RyujinxShaderNative.so" ]; then
+            mv "$OUTPUT/RyujinxShaderNative.so" "$OUTPUT/libRyujinxShaderNative.so"
+          fi
           SO="$OUTPUT/libRyujinxShaderNative.so"
-          test -s "$SO"
+          if [ ! -s "$SO" ]; then
+            echo "NativeAOT publish directory:" >&2
+            find "$OUTPUT" -maxdepth 1 -type f -printf '%f %s bytes\\n' >&2
+            exit 1
+          fi
           file "$SO"
-          readelf -h "$SO" | grep -E 'Class:|Machine:|Type:'
-          readelf -h "$SO" | grep -q 'AArch64'
-          readelf -Ws "$SO" | grep -q 'snx_ryu_translate_v1'
-          readelf -Ws "$SO" | grep -q 'snx_ryu_api_version'
+          readelf -h "$SO" > "$RUNNER_TEMP/ryujinx-elf-header.txt"
+          grep -E 'Class:|Machine:|Type:' "$RUNNER_TEMP/ryujinx-elf-header.txt"
+          grep -q 'AArch64' "$RUNNER_TEMP/ryujinx-elf-header.txt"
+          readelf -Ws "$SO" > "$RUNNER_TEMP/ryujinx-exports.txt"
+          grep 'snx_ryu_translate_v1' "$RUNNER_TEMP/ryujinx-exports.txt"
+          grep 'snx_ryu_api_version' "$RUNNER_TEMP/ryujinx-exports.txt"
           cp tools/ryujinx-nativeaot/snx_ryujinx_native_abi.h "$OUTPUT/"
           printf '%s\n' \
             'Ryujinx NativeAOT ARM64 experimental C# shader translator' \
@@ -89,7 +100,7 @@ jobs:
             'Upstream: seedds/nxnative@1eaaab88caffcc17ada94b6dbdbe4f3b02fbb480' \
             'Not an APK, not yet wired into ScarletNX.' \
             > "$OUTPUT/README.txt"
-          sha256sum "$SO" > "$OUTPUT/SHA256SUMS"
+          (cd "$OUTPUT" && sha256sum libRyujinxShaderNative.so > SHA256SUMS)
 
       - name: Upload Android native library for on-device testing
         uses: actions/upload-artifact@v4
