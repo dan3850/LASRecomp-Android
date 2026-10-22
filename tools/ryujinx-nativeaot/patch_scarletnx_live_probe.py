@@ -78,7 +78,7 @@ static void snx_rn_live_probe(const uint8_t *code, uint32_t code_len, int stage)
     if (!snx_rn_init()) return;
     static const char job[] =
         "{\"stage\":\"ps\",\"tex\":{},\"img\":{},\"attr\":{},\"fout\":{},"
-        "\"local\":[1,1,1],\"debug\":false}";
+        "\"local\":[1,1,1],\"debug\":true}";
     snx_rn_attempts++;
     SnxRnResult out = {0};
     const int rc = snx_rn_translate(code, code_len, (const uint8_t *)job,
