@@ -98,21 +98,20 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         });
         content.addView(exportShaders);
 
-        Button importBridge = new Button(this);
-        importBridge.setText("Importar ponte Ryujinx privada (.snxrbr)");
-        importBridge.setOnClickListener(v -> pick(IMPORT_RYUJINX_BRIDGE));
-        content.addView(importBridge);
-
-        Button enableBridge = new Button(this);
-        enableBridge.setText(ryujinxBridgeLabel());
-        enableBridge.setOnClickListener(v -> {
-            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean("ryujinx_bridge", false);
-            getPreferences(MODE_PRIVATE).edit().putBoolean("ryujinx_bridge", enabled).apply();
-            enableBridge.setText(ryujinxBridgeLabel());
-            message(enabled ? "Ryujinx EXPERIMENTAL habilitado apenas para o Castlevania; desligue se houver falha."
-                    : "Ryujinx desativado. O tradutor original permanece ativo.");
+        // NativeAOT Ryujinx translates live Maxwell shaders, no .snxrbr packs.
+        // This gate only diagnoses rejected shaders. The original Vulkan output
+        // is intentionally preserved until descriptor/IO compatibility is proven.
+        Button nativeProbe = new Button(this);
+        nativeProbe.setText(nativeProbeLabel());
+        nativeProbe.setOnClickListener(v -> {
+            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", false);
+            getPreferences(MODE_PRIVATE).edit()
+                    .putBoolean("ryujinx_native_probe", enabled).apply();
+            nativeProbe.setText(nativeProbeLabel());
+            message(enabled ? "Ryujinx NativeAOT: diagnostico de shaders AO VIVO ligado. Renderizador original preservado."
+                    : "Ryujinx NativeAOT: diagnostico desligado.");
         });
-        content.addView(enableBridge);
+        content.addView(nativeProbe);
 
         Button launch = new Button(this);
         launch.setText("4. Iniciar Castlevania pelo ScarletNX");
@@ -228,7 +227,13 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         }
     }
 
-    private String ryujinxBridgeLabel() {
+        private String nativeProbeLabel() {
+        return "Tradutor Ryujinx NativeAOT (diagnostico): " +
+               (getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", false)
+                ? "LIGADO" : "DESLIGADO");
+    }
+
+private String ryujinxBridgeLabel() {
         return "Ryujinx (EXPERIMENTAL): " +
             (getPreferences(MODE_PRIVATE).getBoolean("ryujinx_bridge", false) ? "LIGADO" : "DESLIGADO");
     }
@@ -407,7 +412,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_game_base", new File(folder, ID).getAbsolutePath());
             intent.putExtra("snx_source_dump", xci.getAbsolutePath());
             intent.putExtra("snx_shader_captures", getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false));
-            intent.putExtra("snx_ryujinx_bridge", getPreferences(MODE_PRIVATE).getBoolean("ryujinx_bridge", false));
+            intent.putExtra("snx_ryujinx_native_probe", getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", false));
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);
