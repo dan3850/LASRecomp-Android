@@ -22,3 +22,30 @@ O script reutiliza o cache de compilacao e restaura as alteracoes temporarias da
 `/storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-RYUJINX-V2-TESTE.apk`
 
 Essa APK usa o pacote experimental dos scripts Termux existentes, diferente do pacote `.graphics` do CI. No launcher, ative **Ryujinx Vulkan automatico (experimental)**. A compilacao no Termux e a renderizacao final ainda precisam ser verificadas no aparelho; os testes de integridade nao comprovam que os defeitos graficos desapareceram.
+
+## Reopening regression: session-local driver pipeline cache
+
+A device report found correct graphics after clearing app data, but corruption
+when closing and reopening. ABI 2 already bypassed `.vkshaders` prewarm, while
+`vk_pipeline_init` still loaded `vk_pipelines.bin` before that bypass.
+
+The experimental ABI 2 runtime now also skips reading and writing the persistent
+Vulkan pipeline cache when `SNX_RYUJINX_NATIVE_PROBE=1`. The Vulkan cache remains
+available in memory within a session. Existing files, game saves, imported keys,
+modules and preferences are preserved. The original backend's persistence is
+unchanged. Pipeline compilation may recur on each launch. This is a targeted
+cache-isolation workaround; the device report alone does not establish the root
+cause or prove a driver defect.
+
+Local validation: the patch applies twice to pinned ScarletNX `34853ee`;
+`tests/test_ryujinx_v2_reopen.py` compiles and executes the injected guards in a
+C harness across three ABI 2 sessions with existing cache data, followed by a
+normal-backend session. No Android APK was compiled locally or in Actions for
+this change. The NativeAOT adapter inputs are unchanged: reuse the existing
+`ryujinx-v2-95b7a977ecdeddcdac1e7676f1bb1fbab85633ac.zip`.
+
+Device acceptance: update and build with the existing Termux ABI 2 script;
+keep app data intact and confirm the launcher has Ryujinx Vulkan enabled. Open
+the same scene, close the application, reopen it, and repeat twice. If corruption
+returns, save the bad-session log before clearing any data. The new diagnostic
+is `RYUJINX_NATIVE_V2: persistent pipeline cache bypassed; files preserved`.
