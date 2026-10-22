@@ -49,8 +49,8 @@ def package(source_zip, bridge_dir, destination):
     if manifest.get("status") != "OFFLINE_ONLY_DO_NOT_LOAD":
         raise BridgeError("unrecognized or changed bridge manifest")
     entries = manifest.get("shaders", [])
-    if len(entries) != 5 or len({x.get("key") for x in entries}) != 5:
-        raise BridgeError("expected the five captured shaders")
+    if not 5 <= len(entries) <= 32 or len({x.get("key") for x in entries}) != len(entries):
+        raise BridgeError("expected 5–32 distinct captured shaders")
     packed = []
     with zipfile.ZipFile(source_zip) as src:
         names = src.namelist()
