@@ -13,7 +13,7 @@ for tool in unzip zip llvm-readelf llvm-nm patchelf; do
 done
 
 SNX_CODE="${CASTLEVANIA_SNX_CODE_SO:-}"
-[ -n "$SNX_CODE" ] || SNX_CODE=/storage/emulated/0/Download/0100BA4026E94000/0100BA4026E94000_code.so
+[ -n "$SNX_CODE" ] || SNX_CODE=/storage/emulated/0/Download/Castlevania-Atualizado/0100BA4026E94000/0100BA4026E94000_code.so
 [ -s "$SNX_CODE" ] || die "Modulo recompilado ausente: $SNX_CODE"
 llvm-nm -D --defined-only "$SNX_CODE" | grep -E '[[:space:]]snx_module$' >/dev/null ||
   die "Modulo sem snx_module"
