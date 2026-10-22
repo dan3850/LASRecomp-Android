@@ -705,10 +705,10 @@ ${APKSIGNER_CMD} sign --ks "$KEYSTORE" --ks-key-alias androiddebugkey \
  --ks-pass pass:android --key-pass pass:android --out "$APK" "$OUT/aligned.apk"
 ${APKSIGNER_CMD} verify "$APK"
 if [[ -n "${LASRECOMP_SNX_STAGE_LIB_DIR:-}" ]]; then
- python3 - "$APK" <<'PY'
+ python3 - "$APK" "${LASRECOMP_SNX_MODULE_NAME:-libmario_snx.so}" <<'PY'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as apk:
-    for name in ("lib/arm64-v8a/libscarletnx.so", "lib/arm64-v8a/libmario_snx.so"):
+    for name in ("lib/arm64-v8a/libscarletnx.so", "lib/arm64-v8a/" + sys.argv[2]):
         info = apk.getinfo(name)
         assert info.file_size > 100000, f"{name}: unexpectedly small"
         print("SNX VERIFIED IN SIGNED APK:", name, "bytes=", info.file_size)
