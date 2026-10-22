@@ -80,7 +80,7 @@ final class ScarletNxLogReport {
                     low.contains("fatal");
                 if (low.contains("fswzadd")) fswzadd++;
                 if (low.contains("untracked texture handle")) untracked++;
-                if (low.contains("ryujinx_native_probe")) {
+                if (low.contains("ryujinx_native_")) {
                     ryujinxCount++;
                     if (ryujinxCount <= MAX_RYU_LINES) {
                         nativeRyujinx.append(line, 0, Math.min(line.length(), 1000)).append('\n');
@@ -107,7 +107,7 @@ final class ScarletNxLogReport {
         out.append(shaders);
         if (shaderWarnings > MAX_SHADER_LINES)
             out.append("... mais ").append(shaderWarnings - MAX_SHADER_LINES).append(" avisos omitidos\n");
-        out.append("\n=== TRADUTOR RYUJINX NATIVO AO VIVO (")
+        out.append("\n=== TRADUTOR RYUJINX NATIVO VULKAN AO VIVO (")
            .append(ryujinxCount).append(" linhas) ===\n");
         out.append(nativeRyujinx);
         if (ryujinxCount > MAX_RYU_LINES)
