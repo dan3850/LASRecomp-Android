@@ -10,14 +10,30 @@ if [ "$(git branch --show-current)" != experimental/castlevania-belmonts-curse ]
 fi
 SRC="$HOME/.cache/lasrecomp-scarletnx-romfs/ScarletNX"
 OUT="$HOME/scarletnx-castlevania-shader-build/libscarletnx.so"
+# The source cache is shared with other builds. Restore it quietly, but never
+# hide the original build failure or silently ignore a failed restoration.
 restore_source() {
+  local rc="$1" restore_failed=0
+  trap - EXIT
   if [ -s "$SRC/src/nx/gpu/shader/spirv_translate.c" ]; then
-    python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC" --revert || true
-    python3 "$ROOT/tools/patch_scarletnx_fswzadd.py" "$SRC" --revert ||
-      echo "AVISO: falha ao restaurar apenas o shader do cache ScarletNX" >&2
+    if ! python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC" --revert >/dev/null; then
+      echo "AVISO: nao foi possivel restaurar o diagnostico bindless no cache." >&2
+      restore_failed=1
+    fi
+    if ! python3 "$ROOT/tools/patch_scarletnx_fswzadd.py" "$SRC" --revert >/dev/null; then
+      echo "AVISO: nao foi possivel restaurar o patch FSWZADD no cache." >&2
+      restore_failed=1
+    fi
   fi
+  if [ "$rc" -ne 0 ]; then
+    echo "ERRO: compilacao experimental falhou (codigo $rc). Veja a primeira mensagem ERRO acima." >&2
+  elif [ "$restore_failed" -ne 0 ]; then
+    echo "AVISO: APK gerado, mas o cache ScarletNX precisa de revisao antes de outro build." >&2
+  fi
+  if [ "$rc" -eq 0 ] && [ "$restore_failed" -ne 0 ]; then rc=1; fi
+  exit "$rc"
 }
-trap restore_source EXIT
+trap 'restore_source "$?"' EXIT
 python3 tests/test_castlevania_shader_patch.py
 python3 tests/test_castlevania_bindless_diag.py
 # Keep the known booting but graphically incomplete test APK for comparison.
@@ -38,9 +54,13 @@ echo "============================================="
 echo "CASTLEVANIA: shader FSWZADD 0xD7 experimental"
 echo "Mario runtime estavel: NAO sera sobrescrito"
 echo "AOT 603 MB reutilizado; nao recompilar blocos"
-echo "Diagnostico bindless ativo: op, pc, reg, def, producer"
+echo "Diagnostico bindless ativo: op, pc, reg, def, producer, near, nearop, pred, srcA, srcB"
 echo "============================================="
 bash "$ROOT/compilar-mario-snx-romfs-termux.sh"
+if [ ! -s "$OLD_APK" ]; then
+  echo "ERRO: compilacao retornou sucesso mas APK nao foi encontrado: $OLD_APK" >&2
+  exit 1
+fi
 echo "===== VERSAO EXPERIMENTAL GERADA ====="
 echo "Runtime: $OUT"
 echo "APK: /storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-TESTE.apk"
