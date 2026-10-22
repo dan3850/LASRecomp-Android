@@ -216,7 +216,24 @@ while :; do
     [ -s "$MAINLIB/$dep" ] && continue
     case "$SYSTEM_LIBS" in *" $dep "*) continue;; esac
     candidate="$PREFIX/lib/$dep"
-    [ -s "$candidate" ] || continue
+    if [ ! -s "$candidate" ] && [ "$dep" = libffi.so ]; then
+      # Some Termux libffi packages expose only a versioned ELF (libffi.so.8).
+      # Keep the original installation untouched; copy it into the APK with
+      # the exact unversioned DT_NEEDED name required by libLLVM.so.
+      for alt in "$PREFIX"/lib/libffi.so.[0-9]*; do
+        if [ -s "$alt" ] && llvm-readelf -h "$alt" | grep -F 'AArch64' >/dev/null; then
+          candidate="$alt"
+          echo "libffi.so nao versionada ausente; usando $(basename "$alt") apenas no APK"
+          break
+        fi
+      done
+    fi
+    if [ ! -s "$candidate" ]; then
+      echo "ERRO: biblioteca necessaria ao APK ausente: $(basename "$elf") -> $dep" >&2
+      echo "Origem procurada: $PREFIX/lib/$dep" >&2
+      echo "No Termux: pkg install libffi; ls -l $PREFIX/lib/libffi.so*" >&2
+      die "Nao e seguro gerar APK com dependencia ELF faltando"
+    fi
     dest="$dep"
     case "$dep" in
       *.so.[0-9]*)
@@ -234,6 +251,9 @@ while :; do
         ;;
       *)
         cp -L "$candidate" "$SNLIB/$dest"
+        if [ "$dep" = libffi.so ] && [ "$(basename "$candidate")" != "$dep" ]; then
+          patchelf --set-soname "$dep" "$SNLIB/$dest"
+        fi
         printf '%s\n' "$SNLIB/$dest" >> "$COPIED"
         echo "Dependencia Termux empacotada: $dep"
         ;;
