@@ -36,8 +36,10 @@ class LiveProbePatchTest(unittest.TestCase):
     def test_patch_reverts_and_does_not_swap_gpu_shader(self):
         source = self.source()
         updated = PATCH.transform(source)
-        self.assertIn("snx_rn_live_probe(code, mlen, stage);", updated)
+        self.assertIn("snx_rn_live_try_vulkan(code, mlen, stage, &candidate, &cnw);", updated)
         self.assertIn("if (!spv && stage == ST_FS)", updated)
+        self.assertIn("s->si = candidate;", updated)
+        self.assertIn("vk_spirv_unavailable(adapted, cnw)", updated)
         self.assertIn("if (spv) {", updated)
         self.assertEqual(PATCH.transform(updated), updated)
         self.assertEqual(PATCH.transform(updated, revert=True), source)
@@ -59,9 +61,9 @@ class LiveProbePatchTest(unittest.TestCase):
             PATCH.apply(root)
             header = pipeline.parent / "snx_ryujinx_native_live_probe.h"
             self.assertTrue(header.is_file())
-            self.assertIn('dlsym(snx_rn_lib, "snx_ryu_translate_v1")', header.read_text())
-            self.assertIn("original ScarletNX failure retained", header.read_text())
-            self.assertIn("snx_rn_live_probe", pipeline.read_text())
+            self.assertIn('dlsym(snx_rn_lib, "snx_ryu_translate_scarlet_v1")', header.read_text())
+            self.assertIn("return NULL;", header.read_text())
+            self.assertIn("snx_rn_live_try_vulkan", pipeline.read_text())
             PATCH.apply(root, revert=True)
             self.assertEqual(pipeline.read_text(), source)
             self.assertFalse(header.exists())
@@ -75,12 +77,18 @@ class LiveProbePatchTest(unittest.TestCase):
             header.write_text(PATCH.HEADER)
             test = Path(d) / "probe.c"
             test.write_text(
-                '#include <stdio.h>\n'
-                '#define ST_FS 4\n'
+                '#include <stdio.h>\n#include <stdint.h>\n'
+                'typedef uint8_t u8; typedef uint32_t u32;\n'
+                '#define ST_FS 4\n#define SH_MAXTEX 64\n'
                 '#define WARN(...) fprintf(stderr, __VA_ARGS__)\n'
+                'typedef struct {u8 type,bindless,bl_cbuf,bl2,bl2_cbuf;u32 cbuf_off,bl2_off;} ShTex;\n'
+                'typedef struct {int stage;u32 sph[20],cbuf_mask,cbuf_max[18],in_mask,out_mask;'
+                'int ntex,nimg,ngbuf,unsupported;char first_unsupported[96];ShTex tex[64];'
+                'uint64_t tex_int_mask,tex_sint_mask,tex_dc_color_mask;'
+                'u32 rt_int_mask,rt_sint_mask,tex_dc_color_funcs,in_unfed_mask,early_fragment_tests;} ShaderInfo;\n'
                 '#include "snx_ryujinx_native_live_probe.h"\n'
-                'void invoke_probe(const unsigned char* code, unsigned n) { '
-                'snx_rn_live_probe(code, n, ST_FS); }\n'
+                'u32* invoke_probe(const unsigned char* code, unsigned n,ShaderInfo* si,size_t* words) {'
+                'return snx_rn_live_try_vulkan(code,n,ST_FS,si,words); }\n'
             )
             subprocess.run([compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
                             "-c", str(test), "-o", str(Path(d) / "probe.o")],
@@ -91,9 +99,9 @@ class LiveProbePatchTest(unittest.TestCase):
         self.assertNotIn("ace294a5", PATCH.HEADER)
         self.assertNotIn("214b89d4", PATCH.HEADER)
         self.assertIn('SNX_RYUJINX_NATIVE_PROBE', PATCH.HEADER)
-        self.assertIn("snx_rn_translate", PATCH.HEADER)
+        self.assertIn("snx_rn_adapt", PATCH.HEADER)
         self.assertIn("snx_rn_free(&out)", PATCH.HEADER)
-        self.assertIn("snx_rn_attempts >= 32", PATCH.HEADER)
+        self.assertIn("snx_rn_attempts >= 256", PATCH.HEADER)
 
 
 if __name__ == "__main__":
