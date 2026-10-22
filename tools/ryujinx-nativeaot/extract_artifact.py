@@ -25,7 +25,7 @@ def extract(archive: Path, dest: Path):
         if not 1024 <= info.file_size <= MAX_SO:
             raise ValueError("unexpected native library size")
         payload = z.read(info)
-        if len(payload) < 64 or payload[:6] != b"\\x7fELF\\x02\\x01".decode("unicode_escape").encode("latin1"):
+        if len(payload) < 64 or payload[:6] != bytes((0x7f, 69, 76, 70, 2, 1)):
             raise ValueError("not a little-endian 64-bit ELF")
         if struct.unpack_from("<H", payload, 16)[0] != 3:
             raise ValueError("native library is not an ELF shared object")
