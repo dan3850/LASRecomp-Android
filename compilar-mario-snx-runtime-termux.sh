@@ -213,7 +213,8 @@ while :; do
       continue
     fi
     [ -s "$SNLIB/$dep" ] && continue
-    [ -s "$MAINLIB/$dep" ] && continue
+    # MAINLIB belongs to a previous build and is not injected into this APK.
+    # Never treat its files as satisfying the current SNX dependency closure.
     case "$SYSTEM_LIBS" in *" $dep "*) continue;; esac
     candidate="$PREFIX/lib/$dep"
     if [ ! -s "$candidate" ] && [ "$dep" = libffi.so ]; then
@@ -267,7 +268,7 @@ while IFS= read -r elf; do
   while IFS= read -r dep; do
     [ -n "$dep" ] || continue
     [ ! -s "$SNLIB/$dep" ] || continue
-    [ ! -s "$MAINLIB/$dep" ] || continue
+    # Validate against current SNX staging, not a stale previous build.
     case "$dep" in
       libc.so|libm.so|libdl.so|liblog.so|libandroid.so|libz.so|libvulkan.so|libEGL.so|libGLESv1_CM.so|libGLESv2.so|libGLESv3.so|libOpenSLES.so|libaaudio.so|libmediandk.so|libjnigraphics.so|libstdc++.so) continue;;
     esac
