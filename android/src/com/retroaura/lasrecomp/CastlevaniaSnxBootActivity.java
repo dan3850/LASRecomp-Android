@@ -209,7 +209,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     private int exportFragmentShaders(Uri destination) throws IOException {
         File directory = new File(getFilesDir(), "snx-games/" + ID + "/captures/shaders");
         File[] shaders = directory.listFiles((dir, name) ->
-                name.matches("[0-9a-fA-F]{16}_4\\\\.snxs"));
+                name.matches("[0-9a-fA-F]{16}_4\\.snxs"));
         if (shaders == null || shaders.length == 0)
             throw new IOException("Nenhum .snxs encontrado. Ative a captura, execute o jogo e tente novamente.");
         Arrays.sort(shaders, (a, b) -> a.getName().compareTo(b.getName()));
