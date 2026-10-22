@@ -9,6 +9,8 @@ on:
       - 'tools/ryujinx-nativeaot/**'
       - 'tests/test_ryujinx_nativeaot_prepare.py'
       - 'tests/test_ryujinx_nativeaot_artifact.py'
+      - 'tests/test_ryujinx_live_probe_patch.py'
+      - 'compilar-castlevania-ryujinx-nativo-termux.sh'
   workflow_dispatch:
 
 permissions:
@@ -43,6 +45,10 @@ jobs:
           set -euo pipefail
           python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_prepare.py'
           python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_artifact.py'
+          python3 -m unittest discover -s tests -p 'test_ryujinx_live_probe_patch.py'
+          bash -n compilar-castlevania-ryujinx-nativo-termux.sh
+          bash -n compilar-castlevania-shader-termux.sh
+          bash -n compilar-mario-snx-runtime-termux.sh
 
       - name: Clone pinned Ryujinx source from nxnative
         shell: bash
