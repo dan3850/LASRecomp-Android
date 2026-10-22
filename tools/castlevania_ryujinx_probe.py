@@ -18,15 +18,16 @@ HEADER = struct.Struct("<4sIIIII")
 STAGES = {0: "vs", 4: "ps", 5: "cs"}
 MAX_SHADER = 1 << 20
 
-# Five initial TEX.B failures in the Castlevania runtime log. The first
-# 8 key digits agree with corpus filenames; the lower digits vary because
-# the log and corpus use different mixes of runtime shader state.
+# TEX.B failures observed in the Castlevania runtime logs.
+# The first 8 key digits agree with corpus filenames; the lower digits can
+# differ because the log and corpus mix distinct runtime shader state.
 KNOWN_FAILURES = {
     "642ea78b": (304, 22),
     "214b89d4": (651, 4),
     "7e305789": (648, 16),
     "41e4dbaf": (661, 12),
     "fc2b7c81": (720, 12),
+    "ace294a5": (651, 8),  # sixth failure after first five Ryujinx shaders rendered
 }
 NAME = re.compile(r"^[0-9a-fA-F]{16}_[0-5]$")
 
