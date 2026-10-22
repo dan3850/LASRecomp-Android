@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # EXPERIMENTAL: first real Android-game-process Ryujinx shader port.
-# NativeAOT translates failed Maxwell programs live but DOES NOT bind their
-# SPIR-V to Vulkan yet. No individual shaders or .snxrbr files are required.
+# NativeAOT can now adapt failed Maxwell fragment shaders into live Vulkan
+# modules after ABI/descriptor validation. No per-shader .snxrbr packs.
 # Preserves the previous app APK and game AOT; reuses CMake/Ninja caches.
 set -euo pipefail
 
@@ -19,27 +19,52 @@ is_vulkan_adapter() {
   llvm-readelf -W --dyn-syms "$1" 2>/dev/null |
     grep -F 'snx_ryu_translate_scarlet_v1' >/dev/null
 }
+# Optional argument: explicit path to the new Vulkan-adapter ZIP in Download.
+# Otherwise try every plausible ZIP, prioritizing the Vulkan-specific name.
+# Never select based only on modification date: an old ZIP can be downloaded later.
+if [ "$#" -gt 1 ]; then
+  echo "Uso: bash compilar-castlevania-ryujinx-nativo-termux.sh [novo-adaptador.zip]" >&2
+  exit 2
+fi
 if ! is_vulkan_adapter "$LIB"; then
-  echo "Ryujinx antigo: procurando biblioteca NativeAOT com adaptador Vulkan em Download..."
-  ARTIFACT=""
-  for candidate in /storage/emulated/0/Download/ryujinx-android-arm64-vulkan-adapter*.zip \
-                   /storage/emulated/0/Download/ryujinx-android-arm64-nativeaot*.zip; do
-    if [ -s "$candidate" ] && { [ -z "$ARTIFACT" ] || [ "$candidate" -nt "$ARTIFACT" ]; }; then
-      ARTIFACT="$candidate"
-    fi
-  done
-  if [ -n "$ARTIFACT" ]; then
-    TEMP_SO="$HOME/ryujinx-nativeaot/libRyujinxShaderNative-NEW.so"
-    python3 "$ROOT/tools/ryujinx-nativeaot/extract_artifact.py" "$ARTIFACT" \
-      --out "$TEMP_SO"
-    if is_vulkan_adapter "$TEMP_SO"; then
-      mv -f "$TEMP_SO" "$LIB"
-      echo "NOVA biblioteca Ryujinx Vulkan verificada e instalada no cache."
-    else
-      echo "O ZIP em Download e da versao ANTIGA, sem adaptador Vulkan."
-      rm -f "$TEMP_SO"
-    fi
+  echo "Ryujinx antigo detectado (8977104 bytes e sem adaptador, na versao anterior)."
+  echo "Procurando o ZIP NOVO pelo conteudo real do ELF, nao pela data do arquivo..."
+  CANDIDATES=()
+  if [ "$#" -eq 1 ]; then
+    [ -s "$1" ] || { echo "ERRO: ZIP informado nao existe: $1" >&2; exit 2; }
+    CANDIDATES+=("$1")
+  else
+    for candidate in /storage/emulated/0/Download/ryujinx-android-arm64-vulkan-adapter*.zip \
+                     /storage/emulated/0/Download/ryujinx-android-arm64-nativeaot*.zip; do
+      if [ -s "$candidate" ]; then CANDIDATES+=("$candidate"); fi
+    done
   fi
+  if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+    echo "Nenhum ZIP Ryujinx localizado em Download."
+  fi
+  TEMP_SO="$HOME/ryujinx-nativeaot/libRyujinxShaderNative-NEW.so"
+  for ARTIFACT in "${CANDIDATES[@]}"; do
+    echo "===== VERIFICANDO: $ARTIFACT ====="
+    rm -f "$TEMP_SO"
+    if ! python3 "$ROOT/tools/ryujinx-nativeaot/extract_artifact.py" \
+          "$ARTIFACT" --out "$TEMP_SO"; then
+      echo "ZIP invalido; tentando proximo candidato."
+      continue
+    fi
+    if ! is_vulkan_adapter "$TEMP_SO"; then
+      echo "Biblioteca ANTIGA (sem snx_ryu_translate_scarlet_v1); ignorada."
+      continue
+    fi
+    if ! python3 "$ROOT/tools/ryujinx-nativeaot/check_native_elf.py" "$TEMP_SO"; then
+      echo "ELF ARM64 invalido; tentando proximo ZIP."
+      continue
+    fi
+    mv -f "$TEMP_SO" "$LIB"
+    echo "NOVO Ryujinx Vulkan selecionado: $ARTIFACT"
+    echo "Biblioteca instalada no cache: $LIB"
+    break
+  done
+  rm -f "$TEMP_SO"
 fi
 if ! is_vulkan_adapter "$LIB"; then
   echo "ERRO: biblioteca com snx_ryu_translate_scarlet_v1 ainda nao disponivel." >&2
