@@ -119,6 +119,19 @@ public final class MarioSnxGameActivity extends SDLActivity {
             stage("SDL_GET_ARGUMENTS: missing game path, refusing to run");
             return new String[]{"--settings"};
         }
+        String source = getIntent().getStringExtra("snx_source_dump");
+        if (source != null) {
+            File dump = new File(source);
+            if (!dump.isFile() || !dump.canRead()) {
+                stage("SDL_SOURCE_INVALID: cannot read selected XCI");
+                return new String[]{"--settings"};
+            }
+            stage("SDL_SOURCE_READY: loading ExeFS and RomFS from selected XCI");
+            // Pinned ScarletNX 34853ee accepts --source=PATH through ini_override,
+            // then fs.c dump_open reads from the encrypted container in-place.
+            return new String[]{"--game=" + base, "--source=" + dump.getAbsolutePath(),
+                    "--log=2", "--fullscreen"};
+        }
         stage("SDL_GET_ARGUMENTS: invoking ScarletNX main with game base " + base);
         return new String[]{"--game=" + base, "--log=2", "--fullscreen"};
     }
