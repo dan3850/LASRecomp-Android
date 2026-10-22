@@ -22,6 +22,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
+import java.util.Arrays;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 /**
  * Experimental ScarletNX ABI-12 launcher. A signed APK contains the AOT module;
@@ -33,6 +36,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     private static final int PICK_XCI = 301;
     private static final int PICK_KEYS = 302;
     private static final int EXPORT_LOG = 303;
+    private static final int EXPORT_SHADERS = 304;
     private TextView status;
     private Uri selectedXci;
 
@@ -70,6 +74,28 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         permission.setText("3. Autorizar leitura direta de arquivos");
         permission.setOnClickListener(v -> requestFilePermission());
         content.addView(permission);
+
+        Button capture = new Button(this);
+        capture.setText(shaderCaptureLabel());
+        capture.setOnClickListener(v -> {
+            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false);
+            getPreferences(MODE_PRIVATE).edit().putBoolean("shader_capture", enabled).apply();
+            capture.setText(shaderCaptureLabel());
+            message(enabled ? "Captura ativada para a proxima execucao; jogue ate a cena com graficos ausentes."
+                    : "Captura de shaders desativada para a proxima execucao.");
+        });
+        content.addView(capture);
+
+        Button exportShaders = new Button(this);
+        exportShaders.setText("Exportar shaders de fragmento (.zip)");
+        exportShaders.setOnClickListener(v -> {
+            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("application/zip");
+            i.putExtra(Intent.EXTRA_TITLE, "Castlevania-shaders-SNXS.zip");
+            startActivityForResult(i, EXPORT_SHADERS);
+        });
+        content.addView(exportShaders);
 
         Button launch = new Button(this);
         launch.setText("4. Iniciar Castlevania pelo ScarletNX");
@@ -145,6 +171,17 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 if (pending.length() < 100 || (!pending.renameTo(dest)))
                     throw new IOException("Chaves invalidas ou nao foi possivel guardar no diretorio privado");
                 message("prod.keys guardado somente no armazenamento privado do app. Nao sera incluido nos logs.");
+            } else if (request == EXPORT_SHADERS) {
+                final Uri output = uri;
+                message("Exportando apenas shaders de fragmento; sem XCI ou chaves...");
+                new Thread(() -> {
+                    try {
+                        int count = exportFragmentShaders(output);
+                        runOnUiThread(() -> message("Exportados " + count + " shaders em ZIP. Os dados ficam no arquivo escolhido."));
+                    } catch (Exception error) {
+                        runOnUiThread(() -> message("Falha exportando shaders: " + error.getMessage()));
+                    }
+                }, "snx-shader-export").start();
             } else if (request == EXPORT_LOG) {
                 final Uri output = uri;
                 message("Gerando relatorio completo de falhas de shader...");
@@ -161,6 +198,41 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         } catch (Exception error) {
             message("Falha: " + error.getMessage());
         }
+    }
+
+    private String shaderCaptureLabel() {
+        return "Capturar shaders na proxima execucao: " +
+                (getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false) ? "LIGADO" : "DESLIGADO");
+    }
+
+    /** Only the captured Maxwell fragment binaries; no dump, savedata or prod.keys. */
+    private int exportFragmentShaders(Uri destination) throws IOException {
+        File directory = new File(getFilesDir(), "snx-games/" + ID + "/captures/shaders");
+        File[] shaders = directory.listFiles((dir, name) ->
+                name.matches("[0-9a-fA-F]{16}_4\\\\.snxs"));
+        if (shaders == null || shaders.length == 0)
+            throw new IOException("Nenhum .snxs encontrado. Ative a captura, execute o jogo e tente novamente.");
+        Arrays.sort(shaders, (a, b) -> a.getName().compareTo(b.getName()));
+        if (shaders.length > 8192)
+            throw new IOException("Muitos shaders: " + shaders.length);
+        OutputStream raw = getContentResolver().openOutputStream(destination, "w");
+        if (raw == null) throw new IOException("Nao abriu o destino");
+        int count = 0;
+        try (ZipOutputStream zip = new ZipOutputStream(raw)) {
+            byte[] buffer = new byte[32768];
+            for (File file : shaders) {
+                if (!file.isFile() || file.length() < 24 || file.length() > 2 * 1024 * 1024)
+                    continue;
+                zip.putNextEntry(new ZipEntry("shaders/" + file.getName()));
+                try (InputStream in = new java.io.FileInputStream(file)) {
+                    int n;
+                    while ((n = in.read(buffer)) != -1) zip.write(buffer, 0, n);
+                }
+                zip.closeEntry();
+                count++;
+            }
+        }
+        return count;
     }
 
     private void requestFilePermission() {
@@ -258,6 +330,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             Intent intent = new Intent(this, MarioSnxGameActivity.class);
             intent.putExtra("snx_game_base", new File(folder, ID).getAbsolutePath());
             intent.putExtra("snx_source_dump", xci.getAbsolutePath());
+            intent.putExtra("snx_shader_captures", getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false));
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);
