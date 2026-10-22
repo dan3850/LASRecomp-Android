@@ -22,7 +22,8 @@ is_vulkan_adapter() {
 if ! is_vulkan_adapter "$LIB"; then
   echo "Ryujinx antigo: procurando biblioteca NativeAOT com adaptador Vulkan em Download..."
   ARTIFACT=""
-  for candidate in /storage/emulated/0/Download/ryujinx-android-arm64-nativeaot*.zip; do
+  for candidate in /storage/emulated/0/Download/ryujinx-android-arm64-vulkan-adapter*.zip \
+                   /storage/emulated/0/Download/ryujinx-android-arm64-nativeaot*.zip; do
     if [ -s "$candidate" ] && { [ -z "$ARTIFACT" ] || [ "$candidate" -nt "$ARTIFACT" ]; }; then
       ARTIFACT="$candidate"
     fi
@@ -35,14 +36,14 @@ if ! is_vulkan_adapter "$LIB"; then
       mv -f "$TEMP_SO" "$LIB"
       echo "NOVA biblioteca Ryujinx Vulkan verificada e instalada no cache."
     else
-      echo "O ZIP em Download e da versão ANTIGA, sem adaptador Vulkan."
+      echo "O ZIP em Download e da versao ANTIGA, sem adaptador Vulkan."
       rm -f "$TEMP_SO"
     fi
   fi
 fi
 if ! is_vulkan_adapter "$LIB"; then
   echo "ERRO: biblioteca com snx_ryu_translate_scarlet_v1 ainda nao disponivel." >&2
-  echo "Baixe o artefato NOVO do workflow no GitHub, salve ZIP em Download." >&2
+  echo "Baixe ryujinx-android-arm64-vulkan-adapter.zip e salve em Download." >&2
   echo "https://github.com/dan3850/LASRecomp-Android/actions/workflows/ryujinx-nativeaot-android.yml" >&2
   echo "O Castlevania anterior continua intacto. Nenhuma compilacao iniciada." >&2
   exit 1
