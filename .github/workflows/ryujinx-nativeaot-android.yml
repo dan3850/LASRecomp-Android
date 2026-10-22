@@ -8,6 +8,7 @@ on:
       - '.github/workflows/ryujinx-nativeaot-android.yml'
       - 'tools/ryujinx-nativeaot/**'
       - 'tests/test_ryujinx_nativeaot_prepare.py'
+      - 'tests/test_ryujinx_nativeaot_artifact.py'
   workflow_dispatch:
 
 permissions:
@@ -36,8 +37,12 @@ jobs:
           restore-keys: |
             ryujinx-nativeaot-nuget-10.0.112-${{ runner.os }}-
 
-      - name: Test source preparation
-        run: python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_prepare.py'
+      - name: Test source preparation and safe Android artifact extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_prepare.py'
+          python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_artifact.py'
 
       - name: Clone pinned Ryujinx source from nxnative
         shell: bash
