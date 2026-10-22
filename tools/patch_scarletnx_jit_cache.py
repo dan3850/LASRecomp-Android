@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in Castlevania ABI 2 cold JIT sessions; preserve existing cache files.
+"""Mandatory Castlevania cold JIT sessions in ABI 2 builds; preserve existing cache files.
 
 The source remains pinned. This selects the JIT service's supported NULL
 cache_path, keeping normal on-demand compilation and all AOT entries intact.
@@ -14,9 +14,8 @@ REPLACES = (
     ('    config.cache_path = g_jit_cache;',
      '''    /* SNX_JIT_COLD_START_V1: isolate persisted CPU code from the ABI 2 reopen test.
        NULL disables both cache_open and cache_append in the JIT service.
-       Keep the old file for diagnosis and for runs without this opt-in. */
-    const char* ryu_mode = getenv("SNX_RYUJINX_NATIVE_PROBE");
-    int cold_jit = ryu_mode && !strcmp(ryu_mode, "1") && !strcmp(g_exename, "0100BA4026E94000");
+       Keep the old file for diagnosis; never reuse it for this title. */
+    int cold_jit = !strcmp(g_exename, "0100BA4026E94000");
     config.cache_path = cold_jit ? NULL : g_jit_cache;
     if (cold_jit)
         LOG("jit: SNX_JIT_COLD_START_V1: persistent units and warm hints bypassed; files preserved\\n");'''),
