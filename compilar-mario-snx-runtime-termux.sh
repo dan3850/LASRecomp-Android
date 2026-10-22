@@ -7,7 +7,8 @@ cd "$ROOT"
 die() { echo "ERRO: $*" >&2; exit 1; }
 [ "$(uname -m)" = aarch64 ] || die "Termux ARM64 necessario"
 [ "$(git branch --show-current)" = experimental/castlevania-belmonts-curse ] ||
-  die "Selecione experimental/castlevania-belmonts-curse"
+[ "$(git branch --show-current)" = experimental/ryujinx-runtime-nativeaot ] ||
+  die "Selecione branch experimental do Castlevania/Ryujinx NativeAOT"
 for tool in unzip zip llvm-readelf llvm-nm patchelf; do
   command -v "$tool" >/dev/null || die "Falta ferramenta $tool"
 done
@@ -163,6 +164,19 @@ while IFS= read -r elf; do
 done < "$COPIED"
 
 cp -L "$SNX_CODE" "$SNLIB/libcastlevania_snx.so"
+# The LIVE shader translator is an actual Android ELF produced by GitHub Actions.
+# Only opt-in on the experimental NativeAOT branch; no precompiled shader packs.
+# Put it into the normal APK nativeLibraryDir so Android's linker can dlopen it.
+if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
+  [ "$(git branch --show-current)" = experimental/ryujinx-runtime-nativeaot ] ||
+    die "Biblioteca Ryujinx: somente a branch NativeAOT experimental"
+  LIB_RYU="${SCARLETNX_RYU_NATIVE_SO:-$HOME/ryujinx-nativeaot/libRyujinxShaderNative.so}"
+  [ -s "$LIB_RYU" ] || die "Biblioteca Ryujinx NativeAOT nao encontrada: $LIB_RYU"
+  python3 "$ROOT/tools/ryujinx-nativeaot/check_native_elf.py" "$LIB_RYU"
+  cp -L "$LIB_RYU" "$SNLIB/libRyujinxShaderNative.so"
+  printf '%s\n' "$SNLIB/libRyujinxShaderNative.so" >> "$COPIED"
+  echo "Ryujinx NativeAOT incluido no APK: $(du -h "$SNLIB/libRyujinxShaderNative.so")"
+fi
 cp android/licenses/RadialGamePad-GPL-3.0.txt "$EXTRA/assets/licenses/ScarletNX-GPL-3.0.txt"
 cat > "$EXTRA/assets/licenses/ScarletNX-SOURCE.txt" <<'NOTICE'
 ScarletNX experimental runtime (GPL-3.0-or-later):
