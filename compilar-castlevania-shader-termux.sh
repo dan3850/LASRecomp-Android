@@ -17,6 +17,13 @@ OUT="$HOME/scarletnx-castlevania-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ "${SCARLETNX_RYU_V2:-0}" = 1 ] &&
+     [ -s "$SRC/src/nx/runtime/guest_jit.c" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_jit_cache.py" "$SRC" --revert; then
+      echo "AVISO: falha restaurando a politica do cache JIT no cache de fontes" >&2
+      restore_failed=1
+    fi
+  fi
   if [ -s "$SRC/src/nx/gpu/shader/spirv_translate.c" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC" --revert >/dev/null; then
       echo "AVISO: nao foi possivel restaurar o diagnostico bindless no cache." >&2
@@ -43,7 +50,9 @@ restore_source() {
   fi
   if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ] &&
      [ -s "$SRC/src/nx/gpu/vk/pipeline.c" ]; then
-    if ! python3 "$ROOT/tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py" "$SRC" --revert; then
+    local restore_tool="$ROOT/tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py"
+    if [ "${SCARLETNX_RYU_V2:-0}" = 1 ]; then restore_tool="$ROOT/tools/termux_ryujinx_v2.py"; fi
+    if ! python3 "$restore_tool" "$SRC" --revert; then
       echo "AVISO: falha restaurando Ryujinx NativeAOT live probe no cache" >&2
       restore_failed=1
     fi
@@ -85,9 +94,16 @@ fi
 if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
   [ "$BRANCH" = experimental/ryujinx-runtime-nativeaot ] ||
     { echo "NativeAOT LIVE probe requires its dedicated experimental branch" >&2; exit 1; }
-  python3 "$ROOT/tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py" "$SRC"
+  if [ "${SCARLETNX_RYU_V2:-0}" = 1 ]; then
+    python3 "$ROOT/tools/patch_scarletnx_jit_cache.py" "$SRC"
+    python3 "$ROOT/tools/ryujinx-nativeaot/patch_runtime_v2.py" "$SRC" \
+      --identity "${SCARLETNX_RYU_V2_IDENTITY:?identidade ABI 2 obrigatoria}" \
+      --revision "$(git rev-parse HEAD)"
+  else
+    python3 "$ROOT/tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py" "$SRC"
+  fi
   python3 "$ROOT/tools/ryujinx-nativeaot/patch_host1x_relocations.py" "$SRC"
-  echo "NativeAOT: tradutor Ryujinx ao vivo, somente DIAGNOSTICO, GPU original preservada"
+  echo "NativeAOT: tradutor Ryujinx ao vivo; ABI 2=${SCARLETNX_RYU_V2:-0}"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"
