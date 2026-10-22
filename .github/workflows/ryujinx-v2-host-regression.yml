@@ -1,0 +1,75 @@
+name: Ryujinx ABI 2 host regression library
+on:
+  push:
+    branches: [experimental/ryujinx-runtime-nativeaot]
+    paths: ['.github/workflows/ryujinx-v2-host-regression.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      NX: ${{ github.workspace }}/nxnative
+      RYU_STAGE: ${{ github.workspace }}/.ci/ryu-stage
+      RYU_OUTPUT: ${{ github.workspace }}/.ci/ryu-android
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-dotnet@v4
+        with: {dotnet-version: 10.0.112}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ryu-v2-nuget-10.0.112-${{ hashFiles('tools/ryujinx-nativeaot/RyujinxShaderNative.csproj') }}
+          restore-keys: ryu-v2-nuget-10.0.112-
+      - name: Clone pinned actual translator
+        run: |
+          git clone --quiet --filter=blob:none --no-checkout https://github.com/seedds/nxnative "$NX"
+          git -C "$NX" sparse-checkout set dm/gfx/tools/dmsh_xlate dm/third_party/ryujinx
+          git -C "$NX" checkout --quiet --detach 1eaaab88caffcc17ada94b6dbdbe4f3b02fbb480
+          python3 tools/ryujinx-nativeaot/prepare_source.py --nxnative "$NX" --out "$RYU_STAGE"
+      - name: Test preparation and pinned patch invariants
+        env: {SCARLETNX_CI_COMPILE: '1'}
+        run: |
+          python3 -m unittest discover -s tests -p 'test_ryujinx_nativeaot_prepare.py'
+          python3 -m unittest discover -s tests -p 'test_ryujinx_v2.py'
+          bash -n tools/ryujinx-nativeaot/build_graphics_apk.sh
+      - name: Execute actual adapter and validate generated SPIR-V on Linux
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends zlib1g-dev spirv-tools glslang-tools
+          cat > "$RUNNER_TEMP/fixture.frag" <<'GLSL'
+          #version 450
+          layout(set=0,binding=0,std140) uniform Support {
+            uint alpha_test; uint is_bgra[8]; vec4 viewport_inverse; vec4 viewport_size;
+            int frag_scale_count; float render_scale[73]; ivec4 tfe_offset; int tfe_vertex_count;
+          } support_buffer;
+          layout(set=0,binding=1) uniform sampler2D tex;
+          layout(location=0) out vec4 color;
+          void main() { color = texelFetch(tex, ivec2(gl_FragCoord.xy / support_buffer.render_scale[0]), 0); }
+          GLSL
+          glslangValidator -V --target-env vulkan1.1 -Od "$RUNNER_TEMP/fixture.frag" -o "$RUNNER_TEMP/fixture.spv"
+          mkdir -p "$RUNNER_TEMP/adapter-tests"
+          dotnet run --project "$RYU_STAGE/RyujinxShaderNative.csproj" \
+            -p:RyuSrc="$NX/dm/third_party/ryujinx" -p:PublishAot=false \
+            -p:AdapterRegression=true -p:AdapterRegressionSource="$GITHUB_WORKSPACE/tools/ryujinx-nativeaot/AdapterV2Regression.cs" \
+            -- "$RUNNER_TEMP/fixture.spv" "$RUNNER_TEMP/adapter-tests"
+          for file in "$RUNNER_TEMP"/adapter-tests/*.spv; do spirv-val --target-env vulkan1.3 "$file"; done
+          dotnet publish "$RYU_STAGE/RyujinxShaderNative.csproj" -c Release -r linux-x64 \
+            -p:RyuSrc="$NX/dm/third_party/ryujinx" -p:PublishAot=true -p:NativeLib=Shared \
+            --nologo -o "$RUNNER_TEMP/ryu-linux"
+          python3 tools/ryujinx-nativeaot/test_v2_native.py "$RUNNER_TEMP/ryu-linux/RyujinxShaderNative.so" \
+            "$RYU_STAGE/build-identity.json" --out "$RUNNER_TEMP/adapter-tests"
+      - name: Stage host library and exact source identity
+        run: |
+          mkdir -p "$RUNNER_TEMP/host-artifact"
+          cp "$RUNNER_TEMP/ryu-linux/RyujinxShaderNative.so" "$RUNNER_TEMP/host-artifact/"
+          cp "$RYU_STAGE/build-identity.json" "$RUNNER_TEMP/host-artifact/"
+          cp /usr/bin/spirv-val "$RUNNER_TEMP/host-artifact/"
+          (cd "$RUNNER_TEMP/host-artifact" && sha256sum RyujinxShaderNative.so > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ryujinx-v2-host-${{ github.sha }}
+          path: ${{ runner.temp }}/host-artifact/
+          if-no-files-found: error
