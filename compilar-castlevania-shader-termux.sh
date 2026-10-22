@@ -19,6 +19,7 @@ restore_source() {
 }
 trap restore_source EXIT
 python3 tests/test_castlevania_shader_patch.py
+python3 tests/test_castlevania_bindless_diag.py
 # Keep the known booting but graphically incomplete test APK for comparison.
 OLD_APK="/storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-TESTE.apk"
 BACKUP="/storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-ANTES-FSWZADD.apk"
