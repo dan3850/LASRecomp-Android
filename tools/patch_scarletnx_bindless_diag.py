@@ -10,7 +10,7 @@ OLD = 'if (bindless && !handle_count) return direct_reject(si, "untracked textur
 NEW = '''if (bindless && !handle_count) {
                 /* Diagnostic only: keep rejection, expose failed handle provenance. */
                 char detail[160];
-                u32 handle_reg = op->id == O_TXD_B ? a : b;
+                u32 handle_reg = (op->id == O_TXD_B || op->id == O_TXQ_B) ? a : b;
                 int def = direct_reaching_def(insn, n, i, handle_reg);
                 const Op* producer = def >= 0 ? decode(insn[def]) : NULL;
                 snprintf(detail, sizeof detail,
@@ -22,9 +22,9 @@ NEW = '''if (bindless && !handle_count) {
 def transform(source: str, revert: bool = False) -> str:
     before, after = (NEW, OLD) if revert else (OLD, NEW)
     old_count, new_count = source.count(before), source.count(after)
-    if old_count == 0 and new_count == 5:
+    if old_count == 0 and new_count == 6:
         return source
-    if old_count != 5 or new_count:
+    if old_count != 6 or new_count:
         raise ValueError(f"Unexpected ScarletNX version or partial patch: old={old_count}, new={new_count}")
     return source.replace(before, after)
 
