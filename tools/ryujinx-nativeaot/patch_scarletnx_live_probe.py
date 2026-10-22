@@ -158,6 +158,21 @@ static u32* snx_rn_live_try_vulkan(const uint8_t *code, uint32_t code_len,
 #endif
 '''
 
+CACHE_OLD = '''    if (getenv("SNX_SHADER_CORPUS")) {
+        LOG("vulkan: SNX_SHADER_CORPUS is set, so every shader is translated and none is kept for the next run\\n");
+        return;
+    }
+    g_pf.on = 1;'''
+CACHE_NEW = '''    /* Experimental Ryujinx fallback must see the Maxwell source, not
+       previously cached ScarletNX SPIR-V. Disable persistent prewarm only
+       for this opt-in session; do not delete or modify the user's cache. */
+    const char *ryu = getenv("SNX_RYUJINX_NATIVE_PROBE");
+    if (ryu && !strcmp(ryu, "1")) {
+        LOG("vulkan: RYUJINX_NATIVE_VULKAN: persistent shader cache bypassed for this session; existing files untouched\\n");
+        return;
+    }
+''' + CACHE_OLD
+
 INCLUDE_OLD = '#include "nx/gpu/vk/internal_spv.h"'
 INCLUDE_NEW = INCLUDE_OLD + '\n#include "nx/gpu/vk/snx_ryujinx_native_live_probe.h"'
 CALL_OLD = '''        if (spv) {
@@ -188,14 +203,14 @@ def transform(source: str, revert=False):
     if revert:
         if source.count(INCLUDE_OLD) == 1 and source.count(CALL_OLD) == 1 and INCLUDE_NEW not in source:
             return source
-        if source.count(INCLUDE_NEW) != 1 or source.count(CALL_NEW) != 1:
+        if source.count(INCLUDE_NEW) != 1 or source.count(CALL_NEW) != 1 or source.count(CACHE_NEW) != 1:
             raise ValueError("live Ryujinx probe patch not found or malformed")
-        return source.replace(CALL_NEW, CALL_OLD, 1).replace(INCLUDE_NEW, INCLUDE_OLD, 1)
-    if source.count(INCLUDE_NEW) == 1 and source.count(CALL_NEW) == 1:
+        return source.replace(CALL_NEW, CALL_OLD, 1).replace(INCLUDE_NEW, INCLUDE_OLD, 1).replace(CACHE_NEW, CACHE_OLD, 1)
+    if source.count(INCLUDE_NEW) == 1 and source.count(CALL_NEW) == 1 and source.count(CACHE_NEW) == 1:
         return source
-    if INCLUDE_NEW in source or source.count(INCLUDE_OLD) != 1 or source.count(CALL_OLD) != 1:
+    if INCLUDE_NEW in source or CACHE_NEW in source or source.count(INCLUDE_OLD) != 1 or source.count(CALL_OLD) != 1 or source.count(CACHE_OLD) != 1:
         raise ValueError("pinned ScarletNX Vulkan pipeline changed; refuse patch")
-    return source.replace(INCLUDE_OLD, INCLUDE_NEW, 1).replace(CALL_OLD, CALL_NEW, 1)
+    return source.replace(INCLUDE_OLD, INCLUDE_NEW, 1).replace(CALL_OLD, CALL_NEW, 1).replace(CACHE_OLD, CACHE_NEW, 1)
 
 
 def apply(root: Path, revert=False):
