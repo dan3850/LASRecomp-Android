@@ -19,7 +19,7 @@ def inst(op, *args):
 
 
 class PackTest(unittest.TestCase):
-    def test_exact_source_pack_layout(self):
+    def check_exact_source_pack_layout(self, count):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bridge = root / "bridge"
@@ -33,7 +33,7 @@ class PackTest(unittest.TestCase):
             spv += inst(71, 2, 30, 0)
             spv += inst(59, 10, 2, 3) + inst(59, 11, 4, 0) + inst(59, 12, 5, 2)
             with zipfile.ZipFile(capture, "w") as archive:
-                for index in range(5):
+                for index in range(count):
                     key = f"{index:016x}_4"
                     file = key + ".bridge.spv"
                     (bridge / file).write_bytes(spv)
@@ -59,12 +59,18 @@ class PackTest(unittest.TestCase):
             }))
             dest = root / "bridge.snxrbr"
             report = package(capture, bridge, dest)
-            self.assertEqual(len(report), 5)
+            self.assertEqual(len(report), count)
             raw = dest.read_bytes()
-            self.assertEqual(struct.unpack_from("<8sI", raw), (b"SNXRB001", 5))
+            self.assertEqual(struct.unpack_from("<8sI", raw), (b"SNXRB001", count))
             header = struct.unpack_from("<16sIIIIII", raw, 12)
             self.assertEqual(header[1:], (96, len(spv), 1 << 2, 0, 1, 1))
             self.assertEqual(struct.unpack_from("<II", raw, 52), (94, 352))
+
+    def test_five_shader_pack_unchanged(self):
+        self.check_exact_source_pack_layout(5)
+
+    def test_six_shader_pack(self):
+        self.check_exact_source_pack_layout(6)
 
 
 if __name__ == "__main__":
