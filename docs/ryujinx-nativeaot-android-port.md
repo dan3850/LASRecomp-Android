@@ -1,41 +1,39 @@
-# Ryujinx no Android: tradutor nativo real (Etapa 1)
+# Tradutor Ryujinx Android ARM64 — port nativo (Etapa 1)
 
 Branch: experimental/ryujinx-runtime-nativeaot
 
-Objetivo: portar o código real do tradutor Ryujinx para Android ARM64. A abordagem anterior, que exigia pacotes .snxrbr individuais para cinco ou seis shaders, está DESCONTINUADA neste novo caminho.
+## Resultado REAL obtido
 
-## Código implementado
+- O .NET 10.0.112 no Termux compilou todos os projetos C#, mas não conseguiu publicá-los em NativeAOT: o SDK procura runtime.linux-bionic-arm64.Microsoft.DotNet.ILCompiler, pacote não publicado para o host Android. Não tentar contornar com referência NuGet inventada.
+- O GitHub Actions agora executa a publicação NativeAOT linux-bionic-arm64 em Linux x64 com Android NDK instalado. A compilação foi confirmada no run https://github.com/dan3850/LASRecomp-Android/actions/runs/39771803764 (sucesso).
+- Biblioteca saída: libRyujinxShaderNative.so (ELF ARM64 compartilhada). Símbolos confirmados: snx_ryu_api_version, snx_ryu_translate_v1, snx_ryu_free_v1. ELF ET_DYN, machine AArch64; dependências: libc.so, libdl.so, libm.so.
+- Artefato aprovado: ryujinx-android-arm64-nativeaot.zip, contendo .so, cabeçalho de ABI, README e SHA256SUMS. Nenhum shader privado ou dump está nesse pacote.
+- Verificação no Android/Termux com ctypes ainda é a PRÓXIMA PROVA; não alegamos integração com ScarletNX Vulkan ou APK pronto.
 
-- RyujinxShaderNative.csproj: referencia os projetos originais Ryujinx.Graphics.Shader e Ryujinx.Common do nxnative e publica libRyujinxShaderNative.so por .NET NativeAOT no RID linux-bionic-arm64.
-- prepare_source.py: cria uma cópia local temporária de Program.cs (somente a classe SwshXlate vira partial). NÃO edita o nxnative nem o ScarletNX. Evita atualizar timestamps se o código não mudou.
-- BridgeExports.cs: chama Translator.CreateContext(... TargetLanguage.Spirv, TargetApi.Vulkan ...) REAL. Exporta snx_ryu_api_version, snx_ryu_translate_v1 e snx_ryu_free_v1 como funções nativas C. Recebe bytes Maxwell e contexto; retorna SPIR-V e reflexão dinâmica de CBs, SSBOs, texturas e imagens.
-- test_native.py: por ctypes, chama a biblioteca no Android e traduz todos os shaders encontrados nos ZIPs locais, sem lista fixa de hashes; verifica SPIR-V, metadata e opcionalmente spirv-val.
-- provar-ryujinx-nativo-termux.sh: executa build/prova local, não modifica APK, AOT, ScarletNX nem cache Vulkan.
+## Teste de tradução de shaders diretamente pela biblioteca NO REDMAGIC
 
-## Teste no Termux
+Baixe o ZIP do artefato do run 39771803764, ou o arquivo enviado nesta conversa, e salve em Download com o nome ryujinx-android-arm64-nativeaot.zip. Não extraia.
 
     cd "$HOME/LASRecomp-Android" || exit 1
-    git status --short
-    git fetch origin
-    git switch experimental/ryujinx-runtime-nativeaot 2>/dev/null || git switch --track origin/experimental/ryujinx-runtime-nativeaot
     git pull --ff-only origin experimental/ryujinx-runtime-nativeaot
-    python3 -m unittest discover -s tests -p test_ryujinx_nativeaot_prepare.py
-    bash provar-ryujinx-nativo-termux.sh
+    bash testar-ryujinx-nativo-termux.sh
 
-Pré-requisitos: checkout existente em ~/.cache/lasrecomp-ryujinx-probe/nxnative; dotnet SDK 10; clang e python3. Não se faz clean. A primeira publicação AOT pode precisar baixar um runtime pack do NuGet.
+Alternativa compatível: bash provar-ryujinx-nativo-termux.sh (agora chama exatamente o teste; não tenta a publicação NativeAOT impossível no Termux).
 
-Saída de sucesso esperada (não confirmada até teste no aparelho): 'RESULTADO: 5/5 shaders translated by NativeAOT'. Log: ~/ryujinx-nativeaot/build.log. A biblioteca compilada fica em ~/.cache/lasrecomp-ryujinx-nativeaot/publish/libRyujinxShaderNative.so.
+O script extrai com validação SHA-256 e cabeçalho ELF ARM64 para $HOME/ryujinx-nativeaot/libRyujinxShaderNative.so, carrega-a pelo ctypes do Termux e traduz TODO shader presente em Castlevania-shaders-SNXS*.zip via o código Ryujinx C# NATIVO, sem hashes fixos. Os shaders originais servem apenas como arquivos de TESTE e NÃO são embutidos na biblioteca. Resultados locais: $HOME/ryujinx-nativeaot/shaders; log: $HOME/ryujinx-nativeaot/test.log.
 
-## Etapas seguintes (AINDA NÃO IMPLEMENTADAS)
+Se a biblioteca falhar ao carregar, o próximo diagnóstico é uma dependência/símbolo ELF ou restrição de linker Bionic. Se carregar, mas o tradutor retornar erro, verificar o contexto real de recursos ou diferenças do NativeAOT. Não modificar arquivos do jogo nem mascarar falhas com shaders previamente convertidos.
 
-1. Provar o build NativeAOT e a chamada nativa real no aparelho. Se não compilar, corrigir o erro concreto antes de mexer no ScarletNX.
-2. Fornecer contexto gráfico verdadeiro (tipo/formato de textura, CBUF1, atributos e saídas) ao tradutor. O teste atual usa consultas-padrão apenas para validar execução, NÃO para renderizar.
-3. Adaptar SPIR-V/reflection ao esquema Vulkan/descritores do ScarletNX. SPIR-V validado isoladamente NÃO significa renderização correta.
-4. Integrar .so ao APK experimental com fallback por shader para Maxwell arbitrário, cache por código+estado e sincronização. Sem .snxrbr e sem hashes fixos.
-5. Comparar a renderização com Ryujinx ON/OFF e preservar o build já funcional.
+## Status das próximas etapas
+
+1. Publicação do tradutor Ryujinx real como .so Android ARM64: CONCLUÍDA no GitHub; chamada no telefone: AINDA NÃO TESTADA.
+2. Obter tipos/formatos de recursos e tabelas CBUF1 do ScarletNX para os pedidos de shader do Ryujinx: PENDENTE.
+3. Adaptar SPIR-V e reflection para layouts Vulkan do ScarletNX sem defaults incorretos: PENDENTE.
+4. Vincular a .so no APK experimental, tradução automática de shaders Maxwell por código+estado, cache e fallback nativo: PENDENTE.
+5. Comparar gráficos com o Ryujinx ligado/desligado preservando o APK original: PENDENTE.
 
 ## Licenças
 
-Os projetos do tradutor Ryujinx vendorizados pelo nxnative usam MIT. O ScarletNX é GPL-3.0-or-later; distribuir o aplicativo com código ScarletNX exige atenção às obrigações específicas da licença. O MIT do tradutor não muda essa condição.
+O tradutor original Ryujinx vendido pelo nxnative tem licença MIT. O ScarletNX continua GPL-3.0-or-later; o uso do tradutor MIT não anula possíveis obrigações ao distribuir binários derivados do ScarletNX.
 
-Esta é uma entrega de infraestrutura real, NÃO uma alegação de port integrado ao Vulkan ou APK pronto.
+Não usar novamente as estratégias de pacotes .snxrbr individuais nesta branch. Não executar Gradle clean/AOT desnecessariamente.
