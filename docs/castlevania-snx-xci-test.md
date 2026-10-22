@@ -47,11 +47,13 @@ export CASTLEVANIA_SNX_CODE_SO="/storage/emulated/0/Download/Castlevania-Atualiz
 bash compilar-castlevania-snx-termux.sh
 ```
 
-O script exige o baseline local já gerado para o Mario
-(`build/private-mario-full-test` e o profile anterior), assim como
-o runtime ScarletNX corrigido que o Mario usou em
-`$HOME/scarletnx-romfs-build/libscarletnx.so`.
-Se faltar um artefato, interrompe com mensagem, sem executar `clean`.
+O script **não exige a biblioteca privada AOT do Mario nem seu profile**.
+O módulo de 603 MB do Castlevania foi preparado pelo ScarletNX e é
+empacotado diretamente. O teste reaproveita o runtime ScarletNX corrigido
+em `$HOME/scarletnx-romfs-build/libscarletnx.so` e os caches de
+dependências do compilador Android. Se o runtime corrigido estiver ausente,
+o script interrompe com uma mensagem; não baixa novamente o jogo nem chama
+`clean`.
 O wrapper confirma ELF ARM64, símbolo `snx_module` e sidecar ABI 12,
 quando presente, antes de empacotar. **Não** fornece nem gera jogos,
 chaves ou módulos recompilados.
