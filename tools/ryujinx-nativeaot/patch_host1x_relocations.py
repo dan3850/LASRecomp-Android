@@ -25,7 +25,7 @@ PATCH = r"""    /* Relocation entries: {cmdbuf handle, byte offset, target handl
         int found = 0;
         if ((src_off & 3u) || shift >= 32 || !nvmap_get(dst_handle, &dst_addr, &dst_size) ||
             !dst_addr || dst_off >= dst_size || iova_map(dst_handle, &dst_base) != NV_OK ||
-            (u64)dst_base + dst_off > UINT32_MAX) {
+            (u64)dst_base + dst_off > 0xffffffffull) {
             WARN_LIMIT(8, "host1x: invalid relocation %u (source %u, target %u)\n",
                        i, src_handle, dst_handle);
             free(job);
