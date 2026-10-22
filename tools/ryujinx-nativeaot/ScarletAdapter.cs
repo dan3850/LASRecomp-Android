@@ -192,8 +192,7 @@ static class ScarletSpirvAdapter
                 floatOneId = pair.Key;
                 break;
             }
-        if (floatOneId == 0)
-            throw new InvalidDataException("float32 1.0 constant missing for support buffer removal");
+        // An unused support buffer needs no synthesized float constant.
 
         var chains = new Dictionary<uint, uint>();
         var loads = new HashSet<uint>();
@@ -214,8 +213,10 @@ static class ScarletSpirvAdapter
                 loads.Add(a[2]);
             }
         }
-        if (chains.Count == 0 || !chains.Keys.ToHashSet().SetEquals(loads))
+        if (!chains.Keys.ToHashSet().SetEquals(loads))
             throw new InvalidDataException("unsupported render scale pointer usage");
+        if (loads.Count != 0 && floatOneId == 0)
+            throw new InvalidDataException("float32 1.0 constant missing for support buffer removal");
         foreach (var ins in instructions)
         {
             uint[] a = ins.A;
