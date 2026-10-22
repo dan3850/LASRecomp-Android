@@ -78,7 +78,13 @@ public final class CastlevaniaSnxBootActivity extends Activity {
 
         Button logs = new Button(this);
         logs.setText("Ver ultimo log");
-        logs.setOnClickListener(v -> message(readLogs()));
+        logs.setOnClickListener(v -> {
+            message("Lendo diagnostico ScarletNX (shaders e Vulkan)...");
+            new Thread(() -> {
+                String report = readLogs();
+                runOnUiThread(() -> message(report));
+            }, "snx-log-preview").start();
+        });
         content.addView(logs);
 
         Button export = new Button(this);
@@ -140,11 +146,17 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                     throw new IOException("Chaves invalidas ou nao foi possivel guardar no diretorio privado");
                 message("prod.keys guardado somente no armazenamento privado do app. Nao sera incluido nos logs.");
             } else if (request == EXPORT_LOG) {
-                try (OutputStream out = getContentResolver().openOutputStream(uri, "w")) {
-                    if (out == null) throw new IOException("Nao abriu destino");
-                    out.write(readLogs().getBytes(StandardCharsets.UTF_8));
-                }
-                message("Log salvo.");
+                final Uri output = uri;
+                message("Gerando relatorio completo de falhas de shader...");
+                new Thread(() -> {
+                    try (OutputStream out = getContentResolver().openOutputStream(output, "w")) {
+                        if (out == null) throw new IOException("Nao abriu destino");
+                        out.write(readLogs().getBytes(StandardCharsets.UTF_8));
+                        runOnUiThread(() -> message("Diagnostico grafico salvo. Envie o TXT para analise."));
+                    } catch (Exception error) {
+                        runOnUiThread(() -> message("Falha salvando diagnostico: " + error));
+                    }
+                }, "snx-log-export").start();
             }
         } catch (Exception error) {
             message("Falha: " + error.getMessage());
@@ -253,28 +265,8 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     }
 
     private String readLogs() {
-        StringBuilder result = new StringBuilder();
-        for (String name : new String[]{"mario-snx-launch.log", "mario-snx-native.log"}) {
-            File file = new File(getFilesDir(), name);
-            if (!file.isFile()) continue;
-            try {
-                byte[] all = java.nio.file.Files.readAllBytes(file.toPath());
-                result.append("\n--- ").append(name).append(" ---\n");
-                result.append(new String(all, Math.max(0, all.length - 40000),
-                        Math.min(all.length, 40000), StandardCharsets.UTF_8));
-            } catch (Exception ignored) { }
-        }
-        File state = new File(new File(new File(getFilesDir(), "snx-games"), ID), "state");
-        File[] logs = state.listFiles();
-        if (logs != null) for (File file : logs) {
-            if (!file.isFile() || !file.getName().endsWith(".log")) continue;
-            try {
-                byte[] all = java.nio.file.Files.readAllBytes(file.toPath());
-                result.append("\n--- ScarletNX ").append(file.getName()).append(" ---\n");
-                result.append(new String(all, Math.max(0, all.length - 60000),
-                        Math.min(all.length, 60000), StandardCharsets.UTF_8));
-            } catch (Exception ignored) { }
-        }
-        return result.length() == 0 ? "Ainda nao ha logs." : result.toString();
+        // Never export only the last 60 KB: early shader failures explain
+        // missing objects and would otherwise disappear from the report.
+        return ScarletNxLogReport.build(getFilesDir(), ID);
     }
 }
