@@ -16,11 +16,7 @@ restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
   if [ -s "$SRC/src/nx/gpu/shader/spirv_translate.c" ]; then
-    if ! python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC"
-if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ]; then
-  python3 "$ROOT/tools/patch_scarletnx_ryujinx_runtime.py" "$SRC"
-  echo "Castlevania: runtime Ryujinx privado e opt-in integrado ao Vulkan"
-fi --revert >/dev/null; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC" --revert >/dev/null; then
       echo "AVISO: nao foi possivel restaurar o diagnostico bindless no cache." >&2
       restore_failed=1
     fi
@@ -63,6 +59,10 @@ if [ ! -s "$SRC/src/nx/gpu/shader/spirv_translate.c" ]; then
   exit 1
 fi
 python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC"
+if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ]; then
+  python3 "$ROOT/tools/patch_scarletnx_ryujinx_runtime.py" "$SRC"
+  echo "Castlevania: runtime Ryujinx privado e opt-in integrado ao Vulkan"
+fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"
 echo "============================================="
