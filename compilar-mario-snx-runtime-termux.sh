@@ -8,17 +8,18 @@ die() { echo "ERRO: $*" >&2; exit 1; }
 [ "$(uname -m)" = aarch64 ] || die "Termux ARM64 necessario"
 [ "$(git branch --show-current)" = experimental/castlevania-belmonts-curse ] ||
 [ "$(git branch --show-current)" = experimental/ryujinx-runtime-nativeaot ] ||
+[ "$(git branch --show-current)" = experimental/zelda-links-awakening-ryujinx-nativeaot ] ||
   die "Selecione branch experimental do Castlevania/Ryujinx NativeAOT"
 for tool in unzip zip llvm-readelf llvm-nm patchelf; do
   command -v "$tool" >/dev/null || die "Falta ferramenta $tool"
 done
 
-SNX_CODE="${CASTLEVANIA_SNX_CODE_SO:-}"
-[ -n "$SNX_CODE" ] || SNX_CODE=/storage/emulated/0/Download/Castlevania-Atualizado/0100BA4026E94000/0100BA4026E94000_code.so
+SNX_CODE="${ZELDA_SNX_CODE_SO:-}"
+[ -n "$SNX_CODE" ] || SNX_CODE=/storage/emulated/0/Download/01006BB00C6F0000 (1)/01006BB00C6F0000_code.so
 [ -s "$SNX_CODE" ] || die "Modulo recompilado ausente: $SNX_CODE"
 llvm-nm -D --defined-only "$SNX_CODE" | grep -E '[[:space:]]snx_module$' >/dev/null ||
   die "Modulo sem snx_module"
-ABI_FILE="$(dirname "$SNX_CODE")/0100BA4026E94000.abi"
+ABI_FILE="$(dirname "$SNX_CODE")/01006BB00C6F0000.abi"
 [ ! -s "$ABI_FILE" ] || [ "$(cat "$ABI_FILE")" = 12 ] ||
   die "Requer ABI 12"
 
@@ -56,12 +57,12 @@ unzip -Z1 "$SNX_APK" | grep -Fx 'lib/arm64-v8a/libscarletnx.so' >/dev/null ||
 # The Castlevania AOT is already emitted by ScarletNX (snx_module ABI 12).
 # LASRecomp's old private Mario library and boot profile are a separate engine
 # and MUST NOT be prerequisites or accidentally packaged into this test APK.
-OUT="$ROOT/build/castlevania-snx-runtime-boot"
+OUT="$ROOT/build/zelda-snx-runtime-boot"
 unset LASRECOMP_MARIO_PROFILE LASRECOMP_GAME_SO
 export LASRECOMP_BUILD_OUT="$OUT"
 export LASRECOMP_MANIFEST="$ROOT/android/castlevania/AndroidManifest.xml"
-export LASRECOMP_APK_FILENAME=Castlevania-SNX-Runtime-TESTE.apk
-export LASRECOMP_DOWNLOAD_FOLDER=CastlevaniaRecomp
+export LASRECOMP_APK_FILENAME=Zelda-SNX-Runtime-TESTE.apk
+export LASRECOMP_DOWNLOAD_FOLDER=ZeldaRecomp
 # This APK launches ScarletNX directly; the LASRecomp-only RadialGamePad
 # frontend would bring extra dependencies without controlling ScarletNX.
 export LASRECOMP_NEO_CONTROLS=0
@@ -163,7 +164,7 @@ while IFS= read -r elf; do
   done < "$MAP"
 done < "$COPIED"
 
-cp -L "$SNX_CODE" "$SNLIB/libcastlevania_snx.so"
+cp -L "$SNX_CODE" "$SNLIB/libzelda_snx.so"
 # The LIVE shader translator is an actual Android ELF produced by GitHub Actions.
 # Only opt-in on the experimental NativeAOT branch; no precompiled shader packs.
 # Put it into the normal APK nativeLibraryDir so Android's linker can dlopen it.
@@ -298,7 +299,7 @@ python3 "$ROOT/tools/scarletnx_elf_audit.py" "$SNLIB/libscarletnx.so" \
 # Add all native libraries to the normal Android app's JNI staging BEFORE
 # the APK is assembled and signed, not to an already-built ZIP. Android's
 # package manager will see these as normal nativeLibraryDir entries.
-export LASRECOMP_SNX_MODULE_NAME="libcastlevania_snx.so"
+export LASRECOMP_SNX_MODULE_NAME="libzelda_snx.so"
 export LASRECOMP_SNX_STAGE_LIB_DIR="$SNLIB"
 export LASRECOMP_SNX_STAGE_LICENSE_DIR="$EXTRA/assets/licenses"
 
@@ -328,7 +329,7 @@ export LASRECOMP_SNX_SDL_JAVA_DIR="$SDL_JAVA"
 echo "SCARLETNX JNI: SDLActivity.nativeSetupJNI()V compatível"
 echo "===== COMPILANDO E ASSINANDO APK COM SCARLETNX INTEGRADO ====="
 bash compilar-lasrecomp-termux.sh
-APK="$OUT/Castlevania-SNX-Runtime-TESTE.apk"
+APK="$OUT/Zelda-SNX-Runtime-TESTE.apk"
 [ -s "$APK" ] || die "APK final nao foi produzido"
 
 # The main build script already verified and signed the completed archive;
@@ -342,7 +343,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path('tools').resolve()))
 from scarletnx_elf_audit import audit
 with zipfile.ZipFile(sys.argv[1]) as z:
-    for n in ["lib/arm64-v8a/libscarletnx.so", "lib/arm64-v8a/libcastlevania_snx.so"]:
+    for n in ["lib/arm64-v8a/libscarletnx.so", "lib/arm64-v8a/libzelda_snx.so"]:
         f = z.getinfo(n)
         print("BIBLIOTECA INSTALAVEL:", n, f.file_size, "bytes")
         if f.file_size < 100000:
@@ -365,19 +366,19 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     report = audit(packaged, require_main=True, require_trace=True)
     if report['problems']:
         raise SystemExit('ELF final recusado: ' + '; '.join(report['problems']))
-    with z.open('lib/arm64-v8a/libcastlevania_snx.so') as stream:
+    with z.open('lib/arm64-v8a/libzelda_snx.so') as stream:
         aot_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     with open(sys.argv[2], 'rb') as stream:
         source_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     if aot_digest != source_digest:
-        raise SystemExit('ERRO: AOT Castlevania foi alterado durante o empacotamento')
+        raise SystemExit('ERRO: AOT Zelda foi alterado durante o empacotamento')
     print('SIGNED_APK_ELF_AUDIT: OK; AOT_SHA256_UNCHANGED:', aot_digest)
 PY
-mkdir -p /storage/emulated/0/Download/CastlevaniaRecomp
-cp -f "$APK" /storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-TESTE.apk
+mkdir -p /storage/emulated/0/Download/ZeldaRecomp
+cp -f "$APK" /storage/emulated/0/Download/ZeldaRecomp/Zelda-SNX-Runtime-TESTE.apk
 echo "===== APK SNX PRONTO ====="
-echo "APK: /storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-TESTE.apk"
-echo "Tela: Castlevania SNX Runtime — XCI source"
-echo "Botao: Iniciar Castlevania pelo ScarletNX"
+echo "APK: /storage/emulated/0/Download/ZeldaRecomp/Zelda-SNX-Runtime-TESTE.apk"
+echo "Tela: Zelda SNX Runtime — XCI source"
+echo "Botao: Iniciar Zelda pelo ScarletNX"
 echo "Teste real: o log deve conter SCARLETNX_MAIN_ENTERED. Sem esse marcador, main() nao foi comprovado."
 echo "Se nao abrir, use Salvar log para capturar a tentativa atual."
