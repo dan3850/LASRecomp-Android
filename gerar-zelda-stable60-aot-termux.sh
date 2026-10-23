@@ -71,7 +71,7 @@ test -s "$RUNTIME" || {
   exit 1
 }
 SNX_ZELDA60_AOT=1 "$BUILD/scarletnx" -r "$EXTRACTED" "$GAME" \
-  --outdir "$OUTDIR" --runtime "$RUNTIME"
+  --outdir "$OUTDIR" --runtime "$RUNTIME" --jobs "$JOBS"
 # The driver creates <outdir>/<game>/<game>_code.so.
 AOT="$OUTDIR/$GAME/${GAME}_code.so"
 test -s "$AOT" || {
