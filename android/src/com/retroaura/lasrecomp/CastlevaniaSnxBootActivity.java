@@ -130,6 +130,8 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 message("Medicao aplicada na proxima execucao. GPU detalhada adiciona timestamps por passe.");
             });
             content.addView(perf);
+            addPerfOption(content, "zelda_known_complete", "Reutilizar esperas confirmadas");
+            addPerfOption(content, "zelda_ryu_persist", "Cache Ryujinx entre execucoes");
         }
 
         Button launch = new Button(this);
@@ -273,6 +275,18 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     private String perfLabel() {
         int mode = getPreferences(MODE_PRIVATE).getInt("zelda_perf_mode", 0);
         return "Medicao de FPS: " + (mode == 1 ? "LEVE" : mode == 2 ? "GPU DETALHADA" : "OFF");
+    }
+
+    private void addPerfOption(LinearLayout content, String preference, String label) {
+        Button option = new Button(this);
+        option.setText(label + ": " + (getPreferences(MODE_PRIVATE).getBoolean(preference, false) ? "ON" : "OFF"));
+        option.setOnClickListener(v -> {
+            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean(preference, false);
+            getPreferences(MODE_PRIVATE).edit().putBoolean(preference, enabled).apply();
+            option.setText(label + ": " + (enabled ? "ON" : "OFF"));
+            message("Aplicado na proxima execucao do jogo.");
+        });
+        content.addView(option);
     }
 
     private void importRyujinxBridge(Uri source) throws IOException {
@@ -493,6 +507,8 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_shader_captures", getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false));
             intent.putExtra("snx_ryujinx_native_probe", getPreferences(MODE_PRIVATE).getBoolean("zelda_live_ryujinx", false));
             intent.putExtra("snx_perf_mode", hasPerfBuild() ? getPreferences(MODE_PRIVATE).getInt("zelda_perf_mode", 0) : 0);
+            intent.putExtra("snx_known_complete", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_known_complete", false));
+            intent.putExtra("snx_ryu_persist", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_ryu_persist", false));
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);

@@ -98,6 +98,8 @@ def replacements():
              '    if (snx_perf_on) snx_perf_add(SNX_PM_SUBMIT, plat_ns() - snx_t0, 1);'),
         ],
         'src/nx/gpu/vk/texture.c': [
+            ('#include "nx/gpu/vk/vk.h"',
+             '#include "nx/gpu/vk/vk.h"\n#include "nx/runtime/platform/plat.h"'),
             ('static int tex_upload(Surf* t) {', 'static int snx_tex_upload_raw(Surf* t) {'),
             ('/* change checks: a hash of the whole texture, 4 KiB at a time, the same whichever way its bytes are reached (the',
              'static int tex_upload(Surf* t) {\n'

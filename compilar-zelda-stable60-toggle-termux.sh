@@ -25,7 +25,7 @@ test -s "$ZELDA_SNX_CODE_SO" || {
 }
 command -v llvm-readelf >/dev/null || { echo "ERRO: llvm-readelf ausente" >&2; exit 1; }
 if ! llvm-readelf -W --dyn-syms "$ZELDA_SNX_CODE_SO" |
-     grep -Fq "snx_zelda_stable60_enabled"; then
+     grep -F "snx_zelda_stable60_enabled" >/dev/null; then
   echo "ERRO: biblioteca AOT sem o simbolo snx_zelda_stable60_enabled." >&2
   echo "Recompile primeiro o jogo com SNX_ZELDA60_AOT=1 e patch --mode aot." >&2
   exit 1

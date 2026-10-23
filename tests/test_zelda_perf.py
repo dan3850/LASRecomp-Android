@@ -115,6 +115,12 @@ int main(void) {
             self.assertEqual(result['streams']['render']['over_50ms'], 1)
             self.assertIsNone(result['displayed_fps'])
             self.assertIsNone(result['simulation_fps'])
+            # Android's exporter includes preview copies before the canonical
+            # bounded telemetry section. They must not double-count frames.
+            exported = text + '\n=== SNX PERF BEGIN ===\n' + text + '=== SNX PERF END ===\n'
+            self.assertEqual(ANALYZE.analyze(exported, 0), result)
+            with self.assertRaisesRegex(ValueError, 'export truncated'):
+                ANALYZE.analyze(exported + 'SNX_PERF_EXPORT_TRUNCATED', 0)
             # A concatenated report cannot silently combine independent runs.
             with self.assertRaisesRegex(ValueError, 'sessions found'):
                 ANALYZE.analyze(text + text, skip_seconds=0)

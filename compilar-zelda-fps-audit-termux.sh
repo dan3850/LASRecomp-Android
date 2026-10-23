@@ -6,6 +6,7 @@ cd "$ROOT"
 test "$(git branch --show-current)" = experimental/zelda-links-awakening-ryujinx-nativeaot || {
   echo "ERRO: selecione a branch experimental do Zelda" >&2; exit 1;
 }
+export SCARLETNX_TEST_SRC="${SCARLETNX_TEST_SRC:-$HOME/.cache/lasrecomp-scarletnx-romfs/ScarletNX}"
 python3 -m unittest discover -s tests -p 'test_zelda_perf*.py'
 FOLDER=/storage/emulated/0/Download/ZeldaRecomp
 GOOD="$FOLDER/Zelda-SNX-Runtime-STABLE60-TOGGLE-TESTE.apk"
@@ -17,7 +18,8 @@ python3 - "$GOOD" "$(git rev-parse HEAD)" <<'PY'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as z:
     runtime = z.read('lib/arm64-v8a/libscarletnx.so')
-    if b'SNX_PERF_META_V1' not in runtime or sys.argv[2].encode() not in runtime:
+    if any(marker not in runtime for marker in [b'SNX_PERF_META_V1', b'SNX_RYU_CACHE_V1',
+                                               b'SNX_KNOWN_COMPLETE_V1', sys.argv[2].encode()]):
         raise SystemExit('ERRO: APK nao contem o runtime de medicao desta revisao')
     if z.read('assets/licenses/Zelda-PERF.txt').decode().strip() != sys.argv[2]:
         raise SystemExit('ERRO: marcador de medicao desatualizado')

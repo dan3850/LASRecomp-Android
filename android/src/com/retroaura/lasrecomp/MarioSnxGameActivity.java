@@ -136,9 +136,16 @@ public final class MarioSnxGameActivity extends SDLActivity {
         boolean zelda = new File(base).getName().equals("01006BB00C6F0000");
         int perfMode = zelda ? getIntent().getIntExtra("snx_perf_mode", 0) : 0;
         SDLActivity.nativeSetenv("SNX_PERF", perfMode > 0 ? "1" : "0");
-        SDLActivity.nativeSetenv("SNX_VK_GPU_PROFILE", perfMode == 2 ? "1" : "0");
-        // BUFFER_STATS checks presence, so do not set it to "0" in other modes.
-        if (perfMode == 2) SDLActivity.nativeSetenv("SNX_VK_BUFFER_STATS", "1");
+        SDLActivity.nativeSetenv("SNX_VK_KNOWN_COMPLETE",
+                zelda && getIntent().getBooleanExtra("snx_known_complete", false) ? "1" : "0");
+        SDLActivity.nativeSetenv("SNX_RYU_PERSIST",
+                zelda && getIntent().getBooleanExtra("snx_ryu_persist", false) ? "1" : "0");
+        // Each trial has a fresh child process. Neither variable needs a "0"
+        // value: BUFFER_STATS checks presence and gpuprof warns on disabled "0".
+        if (perfMode == 2) {
+            SDLActivity.nativeSetenv("SNX_VK_GPU_PROFILE", "1");
+            SDLActivity.nativeSetenv("SNX_VK_BUFFER_STATS", "1");
+        }
         stage("SDL_PERF_MODE=" + perfMode);
         // Real C# translation, explicitly selected before starting the child.
         if (getIntent().getBooleanExtra("snx_ryujinx_native_probe", false)

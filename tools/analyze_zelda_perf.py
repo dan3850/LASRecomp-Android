@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -48,6 +48,7 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     if index < 0 or index >= len(sessions):
         raise ValueError('session out of range')
     selected = sessions[index]
+    cache = [r for k, r in selected['rows'] if k == 'SNX_RYU_CACHE_V1']
     all_windows = {r['window']: r for k, r in selected['rows'] if k == 'SNX_PERF_V1'}
     # Include only windows wholly inside the requested time range. No mix of
     # startup/warmup with gameplay, no partial-window FPS extrapolation.
@@ -75,6 +76,8 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     result = {'session': index + 1, 'metadata': selected['meta'], 'seconds': round(seconds, 3),
               'windows': len(valid), 'streams': {}, 'costs': {}, 'vulkan': {},
               'displayed_fps': None, 'simulation_fps': None}
+    if cache:
+        result['metadata']['effective_cache'] = cache[-1]
     for name in ('guest_queue', 'render', 'present_enqueue'):
         frames = sum(r['frames'] for k, r in selected['rows']
                      if k == 'SNX_STREAM_V1' and r['window'] in valid and r['stream'] == name)

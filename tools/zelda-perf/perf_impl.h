@@ -13,7 +13,7 @@ int snx_perf_on;
 static PMutex snx_perf_lock = PMUTEX_INIT;
 static const char* const snx_pm_names[SNX_PM_COUNT] = {
     "timeline", "recycle", "record_sync", "submit", "present_api", "acquire",
-    "pace", "jit_wait", "jit_compile", "jit_failed", "no_image", "render_cpu", "wait_elided",
+    "pace", "jit_wait", "jit_compile", "jit_failed", "no_image", "show_wall", "wait_elided",
     "texture_hash", "hash_bytes", "texture_upload_cpu"
 };
 static const char* const snx_pf_names[SNX_PF_COUNT] = {"guest_queue", "render", "present_enqueue"};

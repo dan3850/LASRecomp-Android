@@ -92,6 +92,12 @@ Stable60 AOT symbol and uses
 by default. An existing `ZELDA_SNX_CODE_SO` override is respected. It does not
 invoke `scarletnx -r` or build game LLVM blocks.
 
+This audit APK uses `shader_cache/fps-audit-v1/`. The working APK's existing
+shader and driver files are not opened or overwritten. Its first run therefore
+warms a separate audit cache. Compare A/B in this same audit binary after
+warming the native cache, rather than comparing a cold audit APK with a warm
+older APK. Gradle/CMake/Ninja/LLVM/dependency caches and the game AOT are reused.
+
 APK: `/storage/emulated/0/Download/ZeldaRecomp/Zelda-SNX-STABLE60-FPS-AUDIT.apk`.
 The previous toggle APK is copied once to
 `Zelda-SNX-STABLE60-ANTES-FPS-AUDIT.apk` before the build. Same package: install
@@ -132,6 +138,115 @@ require `--session N`. Counters are per selected window; parallel thread
 times overlap and must not be summed as a frame-time budget. `hash_bytes` has
 bytes as its count, rather than calls. GPU timestamps are GPU measurements;
 CPU submission API time is not GPU execution time.
+`show_wall` measures wall time inside the final renderer `show()` path,
+including its waits; it is not GPU-thread CPU utilization or total frame CPU
+time. A short final partial window is not extrapolated.
+
+## Implemented experiments (default OFF)
+
+### Confirmed graphics completion
+
+**Reutilizar esperas confirmadas** sets `SNX_VK_KNOWN_COMPLETE=1` for the next
+child process. A monotonic atomic lower bound is advanced only after
+`vkWaitSemaphores` actually returns `VK_SUCCESS` for the existing graphics
+timeline. Another call for that value or an older one can return without
+repeating the driver wait. A higher/unconfirmed value still executes the
+original infinite wait. Error results never publish a completion, and the
+watermark is reset at timeline initialization. It does not speculate from a
+submission number or add a driver polling call.
+
+Only repeated host waits are elided. The original `land_through`, compute
+gates, release ordering, frame/hold values, HOST barriers and noncoherent
+allocation invalidation remain. Cross-thread publication uses release/acquire
+atomics. The `wait_elided` counter verifies the path is being exercised; FPS
+and p95/p99 determine whether it matters on this phone. No skipped draw is
+introduced by this experiment.
+
+Reference: [Vulkan synchronization](https://docs.vulkan.org/spec/latest/chapters/synchronization.html)
+and [timeline semaphore sample](https://docs.vulkan.org/samples/latest/samples/extensions/timeline_semaphore/README.html).
+Timeline values are monotonic; host waiting is separate from the barriers and
+cache operations that make memory visible. This implementation conservatively
+reuses successful host waits rather than replacing visibility operations.
+
+### Isolated ABI 1 persistence
+
+**Cache Ryujinx entre execucoes** sets `SNX_RYU_PERSIST=1`. It acts only when
+the live v1 Ryujinx backend was explicitly enabled. The real adapter is still
+checked by `snx_rn_init`; `dladdr` identifies the actual loaded translator and
+runtime files. Their bytes are fingerprinted once, with the GPU/driver/UUID,
+to construct isolated shader and driver filenames. A changed runtime,
+translator or driver selects a different namespace. The usual shader-file
+build/features/layout key and record checks are additionally retained.
+
+The original checked `PfShader` representation is sufficient for v1: it
+contains ShaderInfo, all keyed masks, shader source hashes, CB reads and the
+validated SPIR-V. This reuses the existing loader/prewarm/pipeline workers.
+It neither adds a replacement shader nor drops a draw while compilation is
+pending. Original capability/descriptor checks and fallback translation stay.
+
+ABI 2 is refused because its `ryujinx` flag and live `ryu_facts` are not
+serialized by that format. Capture mode disables v1 persistence; identity
+failure or an overlong path disables it as well. With live v1 but persistence
+OFF, both shader and driver persistence are bypassed, without touching the
+old native files. With the native ScarletNX backend, its original policy
+continues within the separate audit folder.
+
+`SNX_RYU_CACHE_V1` reports the effective policy and namespace. A request in
+`SNX_PERF_META_V1` is not proof that persistence succeeded. On the second
+identical run, look for earlier-run shaders/pipelines being loaded, lower
+translation/compile/wait time, and equivalent graphics. This primarily targets
+repeated scene-entry stalls, not a claim of higher sustained GPU throughput.
+
+### Comparisons
+
+Keep LEVE measurement and Home > Stable 60 FPS unchanged throughout. Change
+one setting between trials and start a fresh game process each time.
+
+| Trial | Ryujinx live | Confirmed waits | Ryujinx persistence | Purpose |
+|---|---|---|---|---|
+| A | OFF | OFF | OFF | Functional native baseline; warm its separate audit cache first. |
+| B | OFF | ON | OFF | Compare repeated graphics waits with A on the same native backend. |
+| C | ON | OFF | OFF | Explicitly validate the live adapter's graphics and gameplay first. |
+| D1 | ON | OFF | ON | Populate the isolated v1 cache on the same route as C. |
+| D2/D3 | ON | OFF | ON | Reopen; compare warm persistent v1 with C, not with native A. |
+
+Do not attribute an A-to-D difference to cache: those trials also change the
+translator. If live Ryujinx has a graphical regression, leave it OFF and keep
+using A/B; there is no need to sacrifice graphics for its cache experiment.
+Any new skipped draw, rendering/pipeline error, crash, audio fault or abnormal
+animation speed invalidates that trial even if its FPS counter is higher.
+
+Both experiments can be turned OFF for the next launch. To return completely
+to the pre-audit APK, reinstall `Zelda-SNX-STABLE60-ANTES-FPS-AUDIT.apk` as an
+update without uninstalling or deleting data. That APK ignores the new audit
+cache folder and preferences. The two development commits are also separate
+so the experiment patch can be reverted while retaining measurement tools.
+
+## Host verification
+
+The suite `python3 -m unittest discover -s tests -p 'test_zelda_perf*.py'`
+compiles and executes the real telemetry/helper headers and injected wait and
+cache guards with a host C compiler. It tests multiple CPU writers, failed
+waits, monotonic publication, opt-out, identity/driver changes, cold/reopened
+policies, capture/identity failure, long paths, untouched legacy files, pooled
+frame percentiles, missing/truncated data and transactional patch reversal.
+
+When `SCARLETNX_TEST_SRC` names a checkout containing the pinned objects, it
+also applies/reverses the complete patch stack on temporary copies of the
+actual source, and compiles/runs the original `pipeline_file` regression with
+its real PfShader/ShaderInfo. Its **74 checks** cover reopen, payload integrity,
+missing modules, partial/corrupt records and file bounds. Only unused Vulkan
+API headers are excluded from that standalone file test. No Vulkan driver or
+Android rendering is exercised by it. Zelda font, Stable60 toggle, ABI-12 and
+ABI-2 cache regressions are run separately; the audit APK script also verifies
+the runtime markers and revision in the signed archive.
+
+Audit-host result on 2026-10-23: **29 selected tests passed**, including the
+upstream cache test's 74 internal checks; shell syntax and patch/whitespace
+checks passed. No test was skipped in that run. The signed Android archive
+verification is installed for the Termux build; an actual new APK, game run,
+visual/audio comparison and FPS result have **not** been produced on this
+host. The signed-APK unit regression uses synthetic payloads, not a game APK.
 
 ### FPS definitions
 
