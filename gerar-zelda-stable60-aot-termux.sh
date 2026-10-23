@@ -155,39 +155,13 @@ test -s "$RUNTIME" || {
   echo "ERRO: runtime ABI 12 ausente para --runtime: $RUNTIME" >&2
   exit 1
 }
-# The direct recompiler accepts positional game names for an extracted ExeFS.
-# For XCI/NSP, first extract into a separate reusable staging folder. The
-# automatic game-preparation wrapper rejects --runtime and --jobs alongside
-# a second positional name; never silently fall back to recompiling the base.
-GAME_SOURCE="$INPUT"
-if [ -f "$INPUT" ]; then
-  EXTRACTED="$OUTDIR/_extracted"
-  if [ ! -s "$EXTRACTED/exefs/main" ] || [ ! -s "$EXTRACTED/exefs/main.npdm" ]; then
-    if [ -e "$EXTRACTED" ]; then
-      echo "ERRO: extracao incompleta encontrada: $EXTRACTED" >&2
-      echo "Nao vou apagar nem substituir os dados existentes." >&2
-      exit 1
-    fi
-    # Extraction plus the AOT game's data copy may require ~2x the XCI size.
-    # Termux's df has no -B1; use POSIX filesystem stats via Python.
-    # The extraction has not started yet, so use available bytes on
-    # OUTDIR's filesystem and a conservative 2x input + 2 GiB margin.
-    FREE="$(python3 -c 'import os,sys; s=os.statvfs(sys.argv[1]); print(s.f_bavail*s.f_frsize)' "$OUTDIR")"
-    NEED="$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_size * 2 + 2147483648)' "$INPUT")"
-    if [ -n "$FREE" ] && [ "$FREE" -lt "$NEED" ]; then
-      echo "ERRO: espaco livre insuficiente para extrair e recompilar com margem." >&2
-      echo "Livre: $FREE bytes, exigidos por seguranca: $NEED bytes." >&2
-      exit 1
-    fi
-    echo "Extraindo o XCI/NSP para uma pasta separada (pode ocupar varios GB)..."
-    "$BUILD/scarletnx" -x --out "$EXTRACTED" -- "$INPUT"
-  else
-    echo "Reutilizando a extracao ja existente: $EXTRACTED"
-  fi
-  GAME_SOURCE="$EXTRACTED"
-fi
+# ScarletNX's recompiler reads a Switch XCI/NSP directly in place:
+# snx_recompile() detects dump input and invokes load_dump(). No extraction,
+# cache reset or ROM copy is necessary. ExeFS input also remains supported.
+# The explicit '--' keeps the game filename (which contains spaces and
+# brackets) separate from recompiler options.
 SNX_ZELDA60_AOT=1 "$BUILD/scarletnx" -r --outdir "$OUTDIR" \
-  --runtime "$RUNTIME" --jobs "$JOBS" -- "$GAME_SOURCE" "$GAME"
+  --runtime "$RUNTIME" --jobs "$JOBS" -- "$INPUT" "$GAME"
 # The driver creates <outdir>/<game>/<game>_code.so.
 AOT="$OUTDIR/$GAME/${GAME}_code.so"
 test -s "$AOT" || {
