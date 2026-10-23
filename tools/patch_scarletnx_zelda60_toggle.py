@@ -15,17 +15,17 @@ REPLACEMENTS = [
   {
     "path": "src/common/cpu/recompiler/llvm/ir_codegen.c",
     "old": "#define B ir->b\n",
-    "new": "#define B ir->b\n\n/* Zelda Stable60 AOT: resolved from the verified main module before parallel codegen. */\nextern SnxU64 snx_zelda60_site_a, snx_zelda60_site_b;\nSnxU64 snx_zelda60_site_a, snx_zelda60_site_b;\n"
+    "new": "#define B ir->b\n\n/* Zelda Stable60 AOT: resolved from the verified main module before parallel codegen. */\nextern SnxU64 snx_zelda60_site_a, snx_zelda60_site_b;\nSnxU64 snx_zelda60_site_a, snx_zelda60_site_b;\nunsigned snx_zelda60_hook_seen;\n"
   },
   {
     "path": "src/common/cpu/recompiler/llvm/ir_codegen.c",
     "old": "            case SNX_FLOW_BL:\n                target = snx_a64_target(word, address);\n                ir_set_x(ir, 30, ir_i64(ir, next));\n                call(ir, codegen, target, 0);\n                check_return(ir, next);\n                break;",
-    "new": "            case SNX_FLOW_BL:\n                target = snx_a64_target(word, address);\n                if ((address == snx_zelda60_site_a && word == 0x94009eb2u) ||\n                    (address == snx_zelda60_site_b && word == 0x9400020au)) {\n                    /* OFF executes the original BL. ON behaves as the mod's NOP,\n                       preserving LR and the rest of the guest CPU state. */\n                    LLVMBasicBlockRef original = ir_block(ir, \"zelda60_bl\");\n                    LLVMBasicBlockRef resume = ir_block(ir, \"zelda60_next\");\n                    LLVMValueRef slot = LLVMGetNamedGlobal(ir->mod, \"snx_zelda_stable60_enabled\");\n                    LLVMValueRef flag;\n                    if (!slot) {\n                        slot = LLVMAddGlobal(ir->mod, ir->t_i32, \"snx_zelda_stable60_enabled\");\n                        LLVMSetLinkage(slot, LLVMExternalLinkage);\n                    }\n                    flag = LLVMBuildLoad2(B, ir->t_i32, slot, \"zelda60_flag\");\n                    LLVMSetOrdering(flag, LLVMAtomicOrderingAcquire);\n                    LLVMSetAlignment(flag, 4);\n                    LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntEQ, flag, ir_i32(ir, 0), \"\"),\n                                    original, resume);\n                    LLVMPositionBuilderAtEnd(B, original);\n                    ir_set_x(ir, 30, ir_i64(ir, next));\n                    call(ir, codegen, target, 0);\n                    check_return(ir, next);\n                    LLVMBuildBr(B, resume);\n                    LLVMPositionBuilderAtEnd(B, resume);\n                } else {\n                    ir_set_x(ir, 30, ir_i64(ir, next));\n                    call(ir, codegen, target, 0);\n                    check_return(ir, next);\n                }\n                break;"
+    "new": "            case SNX_FLOW_BL:\n                target = snx_a64_target(word, address);\n                if ((address == snx_zelda60_site_a && word == 0x94009eb2u) ||\n                    (address == snx_zelda60_site_b && word == 0x9400020au)) {\n                    __atomic_fetch_or(&snx_zelda60_hook_seen,\n                                      address == snx_zelda60_site_a ? 1u : 2u, __ATOMIC_RELAXED);\n                    /* OFF executes the original BL. ON behaves as the mod's NOP,\n                       preserving LR and the rest of the guest CPU state. */\n                    LLVMBasicBlockRef original = ir_block(ir, \"zelda60_bl\");\n                    LLVMBasicBlockRef resume = ir_block(ir, \"zelda60_next\");\n                    LLVMValueRef slot = LLVMGetNamedGlobal(ir->mod, \"snx_zelda_stable60_enabled\");\n                    LLVMValueRef flag;\n                    if (!slot) {\n                        slot = LLVMAddGlobal(ir->mod, ir->t_i32, \"snx_zelda_stable60_enabled\");\n                        LLVMSetLinkage(slot, LLVMExternalLinkage);\n                    }\n                    flag = LLVMBuildLoad2(B, ir->t_i32, slot, \"zelda60_flag\");\n                    LLVMSetOrdering(flag, LLVMAtomicOrderingAcquire);\n                    LLVMSetAlignment(flag, 4);\n                    LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntEQ, flag, ir_i32(ir, 0), \"\"),\n                                    original, resume);\n                    LLVMPositionBuilderAtEnd(B, original);\n                    ir_set_x(ir, 30, ir_i64(ir, next));\n                    call(ir, codegen, target, 0);\n                    check_return(ir, next);\n                    LLVMBuildBr(B, resume);\n                    LLVMPositionBuilderAtEnd(B, resume);\n                } else {\n                    ir_set_x(ir, 30, ir_i64(ir, next));\n                    call(ir, codegen, target, 0);\n                    check_return(ir, next);\n                }\n                break;"
   },
   {
     "path": "src/nx/loader/module_llvm.c",
     "old": "#include <string.h>\n",
-    "new": "#include <string.h>\n\n/* Only nonzero for an opt-in build whose main Build ID and both BL words match. */\nextern SnxU64 snx_zelda60_site_a, snx_zelda60_site_b;\n"
+    "new": "#include <string.h>\n\n/* Only nonzero for an opt-in build whose main Build ID and both BL words match. */\nextern SnxU64 snx_zelda60_site_a, snx_zelda60_site_b;\nextern unsigned snx_zelda60_hook_seen;\n"
   },
   {
     "path": "src/nx/loader/module_llvm.c",
@@ -40,7 +40,7 @@ REPLACEMENTS = [
   {
     "path": "src/nx/loader/module_llvm.c",
     "old": "    memset(&codegen, 0, sizeof(codegen));\n    memset(&q, 0, sizeof(q));",
-    "new": "    memset(&codegen, 0, sizeof(codegen));\n    snx_zelda60_site_a = snx_zelda60_site_b = 0;\n    memset(&q, 0, sizeof(q));"
+    "new": "    memset(&codegen, 0, sizeof(codegen));\n    snx_zelda60_site_a = snx_zelda60_site_b = 0;\n    snx_zelda60_hook_seen = 0;\n    memset(&q, 0, sizeof(q));"
   },
   {
     "path": "src/nx/loader/module_llvm.c",
@@ -102,6 +102,11 @@ REPLACEMENTS = [
     "old": "    if (page == PAGE_MAIN) {\n        if (step) return OVERLAY_NONE;\n        if (i == M_EXIT) return OVERLAY_EXIT;\n        page_open(i == M_PADS ? PAGE_PADS : PAGE_CONTROLS);\n        return OVERLAY_NONE;\n    }",
     "new": "    if (page == PAGE_MAIN) {\n        i = main_item(i);\n        if (step) return OVERLAY_NONE;\n        if (i == M_EXIT) return OVERLAY_EXIT;\n        if (i == M_STABLE60) {\n            snx_zelda60_set(!snx_zelda60_get());\n            return OVERLAY_NONE;\n        }\n        page_open(i == M_PADS ? PAGE_PADS : PAGE_CONTROLS);\n        return OVERLAY_NONE;\n    }"
   }
+  {
+    "path": "src/nx/loader/module_llvm.c",
+    "old": "    if (q.failed) {\n        snx_error(\"LLVM backend: %s\", q.error);\n        goto done;\n    }",
+    "new": "    if (q.failed) {\n        snx_error(\"LLVM backend: %s\", q.error);\n        goto done;\n    }\n    if (snx_zelda60_site_a && snx_zelda60_hook_seen != 3u) {\n        snx_error(\"Zelda60: both sites must be compiled (seen=0x%x)\", snx_zelda60_hook_seen);\n        goto done;\n    }"
+  },
 ]
 
 AOT = {
