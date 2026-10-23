@@ -3,6 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
+python3 -m unittest discover -s tests -p 'test_scarletnx_zelda60_toggle.py'
 test "$(git branch --show-current)" = "experimental/zelda-links-awakening-ryujinx-nativeaot" || {
   echo "ERRO: selecione a branch experimental/zelda-links-awakening-ryujinx-nativeaot" >&2
   exit 1
