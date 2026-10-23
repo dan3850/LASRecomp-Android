@@ -20,6 +20,7 @@ final class ScarletNxLogReport {
     private static final int MAX_SHADER_LINES = 150;
     private static final int MAX_RYU_LINES = 100;
     private static final int MAX_STATS_LINES = 90;
+    private static final int MAX_PERF_BYTES = 8 * 1024 * 1024;
 
     private ScarletNxLogReport() { }
 
@@ -68,11 +69,22 @@ final class ScarletNxLogReport {
         StringBuilder shaders = new StringBuilder();
         StringBuilder nativeRyujinx = new StringBuilder();
         StringBuilder stats = new StringBuilder();
+        StringBuilder perf = new StringBuilder();
+        boolean perfTruncated = false;
         int shaderWarnings = 0, fswzadd = 0, untracked = 0, statsCount = 0, ryujinxCount = 0;
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(new FileInputStream(log), StandardCharsets.UTF_8), 65536)) {
             String line;
             while ((line = reader.readLine()) != null) {
+                // Keep complete telemetry exactly once. Start/end preview
+                // windows may contain copies of these same lines.
+                if ((line.contains("SNX_") && line.contains("_V1 "))
+                        || line.contains("vulkan: GPU ") || line.contains("vulkan: buffer ")
+                        || line.contains("write tracking") || line.contains("memory: no traps")
+                        || line.contains("memory: GPU engines keep")) {
+                    if (perf.length() + line.length() + 1 <= MAX_PERF_BYTES) perf.append(line).append('\n');
+                    else perfTruncated = true;
+                }
                 String low = line.toLowerCase(Locale.ROOT);
                 boolean warning = low.contains("not translated") ||
                     low.contains("unsupported") || low.contains("failed") ||
@@ -118,6 +130,12 @@ final class ScarletNxLogReport {
         if (statsCount > MAX_STATS_LINES)
             out.append("... mais ").append(statsCount - MAX_STATS_LINES).append(" estatisticas omitidas\n");
         window(out, log, TAIL_BYTES, true);
+        if (perf.length() > 0) {
+            out.append("\n=== SNX PERF BEGIN ===\n");
+            if (perfTruncated) out.append("SNX_PERF_EXPORT_TRUNCATED\n");
+            out.append(perf);
+            out.append("=== SNX PERF END ===\n");
+        }
         return out.toString();
     }
 }

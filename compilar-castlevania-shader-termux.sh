@@ -18,6 +18,12 @@ OUT="$HOME/scarletnx-zelda-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_perf.py" "$SRC" --revert; then
+      echo "ERRO: falha restaurando instrumentacao de desempenho" >&2
+      restore_failed=1
+    fi
+  fi
   if [ "${SCARLETNX_RYU_V2:-0}" = 1 ] &&
      [ -s "$SRC/src/nx/runtime/guest_jit.c" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_jit_cache.py" "$SRC" --revert; then
@@ -131,6 +137,9 @@ if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
   fi
   python3 "$ROOT/tools/ryujinx-nativeaot/patch_host1x_relocations.py" "$SRC"
   echo "NativeAOT: tradutor Ryujinx ao vivo; ABI 2=${SCARLETNX_RYU_V2:-0}"
+fi
+if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
+  python3 "$ROOT/tools/patch_scarletnx_zelda_perf.py" "$SRC" --revision "$(git rev-parse HEAD)"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"

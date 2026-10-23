@@ -106,20 +106,31 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         });
         content.addView(exportShaders);
 
-        // NativeAOT Ryujinx translates live Maxwell shaders, no .snxrbr packs.
-        // This gate only diagnoses rejected shaders. The original Vulkan output
-        // is intentionally preserved until descriptor/IO compatibility is proven.
+        // A fresh preference avoids activating the old Castlevania-only choice,
+        // which previous Zelda builds passed but never applied to this title.
         Button nativeProbe = new Button(this);
         nativeProbe.setText(nativeProbeLabel());
         nativeProbe.setOnClickListener(v -> {
-            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", getPackageName().endsWith(".graphics"));
+            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean("zelda_live_ryujinx", false);
             getPreferences(MODE_PRIVATE).edit()
-                    .putBoolean("ryujinx_native_probe", enabled).apply();
+                    .putBoolean("zelda_live_ryujinx", enabled).apply();
             nativeProbe.setText(nativeProbeLabel());
-            message(enabled ? "Ryujinx Vulkan: tradutor automatico ligado para shaders rejeitados pelo ScarletNX; fallback seguro."
+            message(enabled ? "Ryujinx Vulkan ativo na proxima execucao; compare os graficos com a opcao desligada."
                     : "Ryujinx Vulkan desligado. Renderizador ScarletNX original.");
         });
         content.addView(nativeProbe);
+
+        if (hasPerfBuild()) {
+            Button perf = new Button(this);
+            perf.setText(perfLabel());
+            perf.setOnClickListener(v -> {
+                int mode = (getPreferences(MODE_PRIVATE).getInt("zelda_perf_mode", 0) + 1) % 3;
+                getPreferences(MODE_PRIVATE).edit().putInt("zelda_perf_mode", mode).apply();
+                perf.setText(perfLabel());
+                message("Medicao aplicada na proxima execucao. GPU detalhada adiciona timestamps por passe.");
+            });
+            content.addView(perf);
+        }
 
         Button launch = new Button(this);
         launch.setText("4. Iniciar Zelda pelo ScarletNX");
@@ -249,8 +260,19 @@ public final class CastlevaniaSnxBootActivity extends Activity {
 
     private String nativeProbeLabel() {
         return "Ryujinx Vulkan automatico (experimental): " +
-               (getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", getPackageName().endsWith(".graphics"))
+               (getPreferences(MODE_PRIVATE).getBoolean("zelda_live_ryujinx", false)
                 ? "LIGADO" : "DESLIGADO");
+    }
+
+    private boolean hasPerfBuild() {
+        try (java.io.InputStream in = getAssets().open("licenses/Zelda-PERF.txt")) {
+            return in.read() >= 0;
+        } catch (IOException e) { return false; }
+    }
+
+    private String perfLabel() {
+        int mode = getPreferences(MODE_PRIVATE).getInt("zelda_perf_mode", 0);
+        return "Medicao de FPS: " + (mode == 1 ? "LEVE" : mode == 2 ? "GPU DETALHADA" : "OFF");
     }
 
     private void importRyujinxBridge(Uri source) throws IOException {
@@ -469,7 +491,8 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_game_base", new File(folder, ID).getAbsolutePath());
             intent.putExtra("snx_source_dump", xci.getAbsolutePath());
             intent.putExtra("snx_shader_captures", getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false));
-            intent.putExtra("snx_ryujinx_native_probe", getPreferences(MODE_PRIVATE).getBoolean("ryujinx_native_probe", getPackageName().endsWith(".graphics")));
+            intent.putExtra("snx_ryujinx_native_probe", getPreferences(MODE_PRIVATE).getBoolean("zelda_live_ryujinx", false));
+            intent.putExtra("snx_perf_mode", hasPerfBuild() ? getPreferences(MODE_PRIVATE).getInt("zelda_perf_mode", 0) : 0);
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);
