@@ -29,12 +29,12 @@ import java.util.zip.ZipOutputStream;
 
 /**
  * Experimental ScarletNX ABI-12 launcher. A signed APK contains the AOT module;
- * ScarletNX reads the user's XCI through source= without extracting ExeFS/RomFS.
+ * ScarletNX reads the user's NSP through source= without extracting ExeFS/RomFS.
  * Does not execute untrusted code from writable external storage.
  */
 public final class CastlevaniaSnxBootActivity extends Activity {
-    private static final String ID = "0100BA4026E94000";
-    private static final int PICK_XCI = 301;
+    private static final String ID = "01006BB00C6F0000";
+    private static final int PICK_NSP = 301;
     private static final int PICK_KEYS = 302;
     private static final int EXPORT_LOG = 303;
     private static final int EXPORT_SHADERS = 304;
@@ -57,16 +57,16 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         content.setPadding(pad, pad, pad, pad);
 
         TextView title = new TextView(this);
-        title.setText("Castlevania — ScarletNX experimental");
+        title.setText("Zelda: Link's Awakening — ScarletNX experimental");
         title.setTextSize(22);
         content.addView(title);
         TextView info = new TextView(this);
-        info.setText("Selecione seu XCI e suas chaves. Se o modulo do jogo nao estiver no aplicativo, importe o arquivo 0100BA4026E94000_code.so que voce ja possui.");
+        info.setText("Selecione seu NSP e suas chaves. Se o modulo do jogo nao estiver no aplicativo, importe o arquivo 01006BB00C6F0000_code.so que voce ja possui.");
         content.addView(info);
 
         Button chooseXci = new Button(this);
-        chooseXci.setText("1. Selecionar XCI");
-        chooseXci.setOnClickListener(v -> pick(PICK_XCI));
+        chooseXci.setText("1. Selecionar NSP");
+        chooseXci.setOnClickListener(v -> pick(PICK_NSP));
         content.addView(chooseXci);
 
         Button chooseKeys = new Button(this);
@@ -101,7 +101,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             i.addCategory(Intent.CATEGORY_OPENABLE);
             i.setType("application/zip");
-            i.putExtra(Intent.EXTRA_TITLE, "Castlevania-shaders-SNXS.zip");
+            i.putExtra(Intent.EXTRA_TITLE, "Zelda-shaders-SNXS.zip");
             startActivityForResult(i, EXPORT_SHADERS);
         });
         content.addView(exportShaders);
@@ -122,7 +122,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         content.addView(nativeProbe);
 
         Button launch = new Button(this);
-        launch.setText("4. Iniciar Castlevania pelo ScarletNX");
+        launch.setText("4. Iniciar Zelda pelo ScarletNX");
         launch.setOnClickListener(v -> startGame());
         content.addView(launch);
 
@@ -143,14 +143,14 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             i.addCategory(Intent.CATEGORY_OPENABLE);
             i.setType("text/plain");
-            i.putExtra(Intent.EXTRA_TITLE, "Castlevania-SNX-boot.txt");
+            i.putExtra(Intent.EXTRA_TITLE, "Zelda-SNX-boot.txt");
             startActivityForResult(i, EXPORT_LOG);
         });
         content.addView(export);
 
         status = new TextView(this);
         status.setTextIsSelectable(true);
-        status.setText("XCI: " + (selectedXci == null ? "nao selecionado" : selectedXci.toString()));
+        status.setText("NSP: " + (selectedXci == null ? "nao selecionado" : selectedXci.toString()));
         content.addView(status);
 
         ScrollView scroll = new ScrollView(this);
@@ -172,12 +172,12 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         try {
-            if (request == PICK_XCI) {
+            if (request == PICK_NSP) {
                 getContentResolver().takePersistableUriPermission(
                         uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 selectedXci = uri;
                 getPreferences(MODE_PRIVATE).edit().putString("xci", uri.toString()).apply();
-                message("XCI selecionado. Agora confira as chaves e a permissao de arquivos.");
+                message("NSP selecionado. Agora confira as chaves e a permissao de arquivos.");
             } else if (request == PICK_KEYS) {
                 File home = new File(getFilesDir(), "snx-home/.switch");
                 if (!home.isDirectory() && !home.mkdirs()) throw new IOException("Nao criou " + home);
@@ -209,7 +209,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 }, "snx-module-import").start();
             } else if (request == IMPORT_RYUJINX_BRIDGE) {
                 final Uri input = uri;
-                message("Importando pack local Ryujinx para a pasta privada do Castlevania...");
+                message("Importando pack local Ryujinx para a pasta privada do Zelda...");
                 new Thread(() -> {
                     try {
                         importRyujinxBridge(input);
@@ -220,7 +220,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 }, "snx-ryujinx-import").start();
             } else if (request == EXPORT_SHADERS) {
                 final Uri output = uri;
-                message("Exportando apenas shaders de fragmento; sem XCI ou chaves...");
+                message("Exportando apenas shaders de fragmento; sem NSP ou chaves...");
                 new Thread(() -> {
                     try {
                         int count = exportFragmentShaders(output);
@@ -349,26 +349,26 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     }
 
     private File directXciPath() throws Exception {
-        if (selectedXci == null) throw new IOException("Selecione seu XCI.");
+        if (selectedXci == null) throw new IOException("Selecione seu NSP.");
         if (Build.VERSION.SDK_INT < 30 || !Environment.isExternalStorageManager())
             throw new IOException("Autorize o acesso a todos os arquivos.");
         String id = DocumentsContract.getDocumentId(selectedXci);
-        if (!id.startsWith("primary:")) throw new IOException("O XCI deve estar na memoria interna principal.");
+        if (!id.startsWith("primary:")) throw new IOException("O NSP deve estar na memoria interna principal.");
         String relative = id.substring("primary:".length());
         if (relative.isEmpty() || relative.startsWith("/") ||
                 relative.contains("\\") || relative.indexOf(':') >= 0 ||
                 relative.indexOf((char) 0) >= 0)
-            throw new IOException("Caminho XCI invalido");
+            throw new IOException("Caminho NSP invalido");
         for (String part : relative.split("/", -1)) {
             if (part.isEmpty() || part.equals(".") || part.equals(".."))
-                throw new IOException("Caminho XCI inseguro");
+                throw new IOException("Caminho NSP inseguro");
         }
         File root = Environment.getExternalStorageDirectory().getCanonicalFile();
         File xci = new File(root, relative).getCanonicalFile();
         if (!xci.getPath().startsWith(root.getPath() + File.separator) ||
                 !xci.isFile() || !xci.canRead() ||
                 !xci.getName().toLowerCase(Locale.ROOT).endsWith(".xci"))
-            throw new IOException("XCI nao encontrado ou sem acesso de leitura: " + xci);
+            throw new IOException("NSP nao encontrado ou sem acesso de leitura: " + xci);
         return xci;
     }
 
@@ -409,7 +409,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 if (got != 64 || header[0] != 0x7f || header[1] != 'E' || header[2] != 'L' || header[3] != 'F' ||
                     header[4] != 2 || header[5] != 1 || header[16] != 3 || header[17] != 0 ||
                     (header[18] & 255) != 183 || header[19] != 0)
-                    throw new IOException("Selecione o _code.so ARM64 recompilado do Castlevania");
+                    throw new IOException("Selecione o _code.so ARM64 recompilado do Zelda");
             }
             Os.rename(pending.getAbsolutePath(), destination.getAbsolutePath());
         } finally { if (pending.exists()) pending.delete(); }
@@ -448,7 +448,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             makeDir(folder);
             makeDir(data);
             // This is the source= mode: there must be NO extracted exefs/romfs
-            // overlay in the data directory. The pinned ScarletNX reads the XCI.
+            // overlay in the data directory. The pinned ScarletNX reads the NSP.
             if (new File(data, "exefs").exists() || new File(data, "romfs").exists())
                 throw new IOException("Diretorio contem extracao antiga. Nao misturar com source=.");
             linkLibrary(new File(folder, ID + "_code.so"), module);
