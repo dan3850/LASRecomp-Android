@@ -35,7 +35,7 @@ for tool in cmake ninja python3 llvm-readelf git; do
 done
 BASE="$HOME/.cache/lasrecomp-scarletnx-romfs"
 SRC="$BASE/ScarletNX"
-BUILD="$BASE/zelda60-aot-tools-build"
+BUILD="$BASE/zelda60-aot-tools-android26-build"
 GAME="01006BB00C6F0000"
 OUTDIR="/storage/emulated/0/Download/ZeldaRecomp/Stable60AOT"
 DEST="$OUTDIR/${GAME}_code.so"
@@ -63,12 +63,87 @@ restore_source() {
 trap restore_source EXIT
 python3 "$PATCH" "$SRC" --mode aot
 mkdir -p "$OUTDIR"
+echo "===== CONFERINDO TOOLCHAIN ANDROID ARM64 DO TERMUX ====="
+# The tools-only executable still uses Android's NDK sysroot and OpenSSL's
+# Android target. Without ANDROID_ABI the OpenSSL CMake configuration aborts.
+if [ -z "${ANDROID_NDK_ROOT:-}" ]; then
+  for candidate in "${ANDROID_HOME:-$HOME/Android/Sdk}"/ndk/* "$HOME/android-sdk/ndk/"*; do
+    if [ -f "$candidate/build/cmake/android.toolchain.cmake" ]; then
+      ANDROID_NDK_ROOT="$candidate"
+    fi
+  done
+fi
+export ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT:-}"
+[ -f "$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" ] || {
+  echo "ERRO: NDK nao encontrado. Configure ANDROID_NDK_ROOT para o NDK r28c." >&2
+  exit 1
+}
+export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+NDK_API_LIB="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/sysroot/usr/lib/aarch64-linux-android/26"
+[ -s "$NDK_API_LIB/libc.so" ] || {
+  echo "ERRO: biblioteca de importacao libc Android 26 ausente" >&2
+  exit 1
+}
+CXX_RUNTIME="$PREFIX/lib/libc++_shared.so"
+[ -s "$CXX_RUNTIME" ] || {
+  echo "ERRO: biblioteca C++ compartilhada do Termux ausente: $CXX_RUNTIME" >&2
+  exit 1
+}
+[ -x "$PREFIX/bin/llvm-config" ] || {
+  echo "ERRO: llvm-config do Termux nao encontrado" >&2
+  exit 1
+}
+# The existing ARM64 runtime build already uses this private OpenSSL compiler
+# alias. Reuse it; regenerate only if it has not been produced yet.
+OPENSSL_CC_BIN="$BASE/openssl-cc-bin"
+OPENSSL_CC="$OPENSSL_CC_BIN/aarch64-linux-android26-clang"
+if [ ! -x "$OPENSSL_CC" ]; then
+  mkdir -p "$OPENSSL_CC_BIN"
+  printf '#!/data/data/com.termux/files/usr/bin/sh\nexec "%s" --target=aarch64-none-linux-android26 --sysroot="%s" -L"%s" "$@"\n' \
+    "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/bin/clang" \
+    "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/sysroot" "$PREFIX/lib" > "$OPENSSL_CC"
+  chmod 755 "$OPENSSL_CC"
+fi
+export SNX_TERMUX_OPENSSL_BIN="$OPENSSL_CC_BIN"
+# The pinned runtime builder already uses the same, reversible-in-principle
+# OpenSSL CMake PATH adapter. Avoid editing cached CPM packages or resetting
+# existing working Android build directories.
+python3 - "$SRC/cmake/openssl.cmake" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+old = '"PATH=${ANDROID_TOOLCHAIN_ROOT}/bin:$ENV{PATH}"'
+new = '"PATH=$ENV{SNX_TERMUX_OPENSSL_BIN}:${ANDROID_TOOLCHAIN_ROOT}/bin:$ENV{PATH}"'
+text = path.read_text()
+if text.count(new) == 1:
+    print("ZELDA60_OPENSSL_PATH: reutilizado")
+elif text.count(old) == 1:
+    path.write_text(text.replace(old, new, 1))
+    print("ZELDA60_OPENSSL_PATH: adaptado para Termux")
+else:
+    raise SystemExit("ERRO: versao inesperada de cmake/openssl.cmake")
+PY
+export CMAKE_BUILD_PARALLEL_LEVEL="$JOBS"
+export MAKEFLAGS="-j$JOBS"
 echo "===== COMPILANDO FERRAMENTA AOT COM CACHE NINJA ====="
+echo "AOT_TOOLCHAIN: Android ABI arm64-v8a, API 26, NDK $ANDROID_NDK_ROOT"
+# A separate build folder avoids mixing the earlier incomplete non-NDK
+# CMakeCache with this correctly targeted configuration. Source/CPM caches
+# and the already booting ARM64 game library remain unchanged.
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
   -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_NX=ON -DSNX_BUILD_GUI=OFF \
   -DSNX_BUILD_GNUABI=OFF -DSNX_BUILD_3DS=OFF -DBUILD_TESTING=OFF \
-  -DCMAKE_BUILD_TYPE=Release -DSNX_TERMUX_NATIVE_LLVM=ON \
-  -DLLVM_DIR="$PREFIX/lib/cmake/llvm"
+  -DSNX_DEPLOY=OFF -DCMAKE_BUILD_TYPE=Release \
+  -DSNX_TERMUX_NATIVE_LLVM=ON \
+  -DSNX_LLVM_CONFIG="$PREFIX/bin/llvm-config" \
+  -DLLVM_DIR="$PREFIX/lib/cmake/llvm" \
+  -DCMAKE_EXE_LINKER_FLAGS="-L$NDK_API_LIB -L$PREFIX/lib" \
+  -DCMAKE_CXX_FLAGS="-nostdlib++" \
+  -DCMAKE_CXX_STANDARD_LIBRARIES="$CXX_RUNTIME" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-L$NDK_API_LIB -L$PREFIX/lib" \
+  -DCMAKE_MODULE_LINKER_FLAGS="-L$NDK_API_LIB -L$PREFIX/lib"
 cmake --build "$BUILD" --target scarletnx --parallel "$JOBS"
 test -x "$BUILD/scarletnx" || {
   echo "ERRO: executavel AOT nao foi gerado" >&2
