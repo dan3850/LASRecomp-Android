@@ -64,7 +64,13 @@ test -x "$BUILD/scarletnx" || {
   exit 1
 }
 echo "===== RECOMPILANDO SOMENTE O ZELDA EM PASTA SEPARADA ====="
-SNX_ZELDA60_AOT=1 "$BUILD/scarletnx" -r "$EXTRACTED" "$GAME" --outdir "$OUTDIR"
+RUNTIME="${SCARLETNX_RUNTIME_SO:-$HOME/scarletnx-zelda-shader-build/libscarletnx.so}"
+test -s "$RUNTIME" || {
+  echo "ERRO: runtime ABI 12 ausente para --runtime: $RUNTIME" >&2
+  exit 1
+}
+SNX_ZELDA60_AOT=1 "$BUILD/scarletnx" -r "$EXTRACTED" "$GAME" \
+  --outdir "$OUTDIR" --runtime "$RUNTIME"
 # The driver creates <outdir>/<game>/<game>_code.so.
 AOT="$OUTDIR/$GAME/${GAME}_code.so"
 test -s "$AOT" || {
