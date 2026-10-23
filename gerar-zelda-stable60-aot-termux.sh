@@ -160,7 +160,19 @@ test -s "$RUNTIME" || {
 # cache reset or ROM copy is necessary. ExeFS input also remains supported.
 # The explicit '--' keeps the game filename (which contains spaces and
 # brackets) separate from recompiler options.
-SNX_ZELDA60_AOT=1 "$BUILD/scarletnx" -r --outdir "$OUTDIR" \
+# The Android NDK executable is linked to Termux's shared LLVM but
+# NDK's linker does not add a Termux RUNPATH. Resolve libLLVM.so and the
+# matching libc++_shared.so from Termux during THIS invocation only.
+# Do not relink the tool or modify global linker configuration.
+if [ ! -r "$PREFIX/lib/libLLVM.so" ]; then
+  echo "ERRO: libLLVM.so nao encontrada em $PREFIX/lib" >&2
+  echo "Bibliotecas LLVM disponiveis:" >&2
+  ls -l "$PREFIX"/lib/libLLVM* >&2 || true
+  exit 1
+fi
+echo "ZELDA60_LLVM_RUNTIME_PATH: $PREFIX/lib"
+LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  SNX_ZELDA60_AOT=1 "$BUILD/scarletnx" -r --outdir "$OUTDIR" \
   --runtime "$RUNTIME" --jobs "$JOBS" -- "$INPUT" "$GAME"
 # The driver creates <outdir>/<game>/<game>_code.so.
 AOT="$OUTDIR/$GAME/${GAME}_code.so"
