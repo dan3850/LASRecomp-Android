@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.retroaura.castlevania.snxruntime">
+    package="com.retroaura.zelda.snxruntime">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Only with explicit user approval, to read the selected XCI without copying it. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-    <application android:label="ScarletNX Castlevania TESTE" android:hasCode="true"
+    <application android:label="ScarletNX Zelda TESTE" android:hasCode="true"
         android:allowBackup="false" android:extractNativeLibs="true">
         <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS"
             android:value="LandscapeLeft LandscapeRight" />
         <activity android:name="com.retroaura.lasrecomp.CastlevaniaSnxBootActivity"
-            android:label="ScarletNX Castlevania TESTE" android:exported="true"
+            android:label="ScarletNX Zelda TESTE" android:exported="true"
             android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -18,7 +18,7 @@
             </intent-filter>
         </activity>
         <activity android:name="com.retroaura.lasrecomp.MarioSnxGameActivity"
-            android:label="ScarletNX Castlevania TESTE"
+            android:label="ScarletNX Zelda TESTE"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"
             android:process=":snx" android:exported="false"
             android:hardwareAccelerated="true" android:screenOrientation="sensorLandscape"
