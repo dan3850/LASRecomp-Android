@@ -133,10 +133,15 @@ def patch(source: Path, mode: str, revert: bool = False, check: bool = False) ->
         for change in changes:
             before = change["new"] if revert else change["old"]
             after = change["old"] if revert else change["new"]
+            # A replacement can embed the original anchor. Checking the old
+            # anchor first would insert the patch AGAIN on every invocation.
+            # Reverse operation intentionally checks the patch first instead.
+            if not revert and content.count(after) == 1:
+                continue  # Already applied, even if the new span contains the old.
             if content.count(before) == 1:
                 content = content.replace(before, after, 1)
             elif content.count(after) == 1:
-                continue  # Already at the requested state.
+                continue  # Already reverted.
             else:
                 raise ValueError(
                     f"{relative}: unexpected source; refusing partial or ambiguous patch"
