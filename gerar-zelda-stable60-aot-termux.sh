@@ -169,8 +169,11 @@ if [ -f "$INPUT" ]; then
       exit 1
     fi
     # Extraction plus the AOT game's data copy may require ~2x the XCI size.
-    FREE="$(df -PB1 "$OUTDIR" | awk 'NR==2 {print $4}')"
-    NEED="$(( $(stat -c%s "$INPUT") * 2 + 2147483648 ))"
+    # Termux's df has no -B1; use POSIX filesystem stats via Python.
+    # The extraction has not started yet, so use available bytes on
+    # OUTDIR's filesystem and a conservative 2x input + 2 GiB margin.
+    FREE="$(python3 -c 'import os,sys; s=os.statvfs(sys.argv[1]); print(s.f_bavail*s.f_frsize)' "$OUTDIR")"
+    NEED="$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_size * 2 + 2147483648)' "$INPUT")"
     if [ -n "$FREE" ] && [ "$FREE" -lt "$NEED" ]; then
       echo "ERRO: espaco livre insuficiente para extrair e recompilar com margem." >&2
       echo "Livre: $FREE bytes, exigidos por seguranca: $NEED bytes." >&2
