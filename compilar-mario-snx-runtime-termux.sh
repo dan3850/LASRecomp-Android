@@ -15,7 +15,7 @@ for tool in unzip zip llvm-readelf llvm-nm patchelf; do
 done
 
 SNX_CODE="${ZELDA_SNX_CODE_SO:-}"
-[ -n "$SNX_CODE" ] || SNX_CODE=/storage/emulated/0/Download/01006BB00C6F0000 (1)/01006BB00C6F0000_code.so
+[ -n "$SNX_CODE" ] || SNX_CODE="/storage/emulated/0/Download/01006BB00C6F0000 (1)/01006BB00C6F0000_code.so"
 [ -s "$SNX_CODE" ] || die "Modulo recompilado ausente: $SNX_CODE"
 llvm-nm -D --defined-only "$SNX_CODE" | grep -E '[[:space:]]snx_module$' >/dev/null ||
   die "Modulo sem snx_module"
