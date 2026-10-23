@@ -367,7 +367,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         File xci = new File(root, relative).getCanonicalFile();
         if (!xci.getPath().startsWith(root.getPath() + File.separator) ||
                 !xci.isFile() || !xci.canRead() ||
-                !xci.getName().toLowerCase(Locale.ROOT).endsWith(".xci"))
+                !xci.getName().toLowerCase(Locale.ROOT).endsWith(".nsp"))
             throw new IOException("NSP nao encontrado ou sem acesso de leitura: " + xci);
         return xci;
     }
