@@ -6,12 +6,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 BRANCH="$(git branch --show-current)"
 if [ "$BRANCH" != experimental/castlevania-belmonts-curse ] &&
-   [ "$BRANCH" != experimental/ryujinx-runtime-nativeaot ]; then
+   [ "$BRANCH" != experimental/ryujinx-runtime-nativeaot ] &&
+   [ "$BRANCH" != experimental/zelda-links-awakening-ryujinx-nativeaot ]; then
   echo "ERRO: branch experimental do Castlevania ou Ryujinx NativeAOT necessaria" >&2
   exit 1
 fi
 SRC="$HOME/.cache/lasrecomp-scarletnx-romfs/ScarletNX"
-OUT="$HOME/scarletnx-castlevania-shader-build/libscarletnx.so"
+OUT="$HOME/scarletnx-zelda-shader-build/libscarletnx.so"
 # The source cache is shared with other builds. Restore it quietly, but never
 # hide the original build failure or silently ignore a failed restoration.
 restore_source() {
@@ -76,8 +77,8 @@ if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ]; then
   python3 -m unittest discover -s tests -p 'test_ryujinx_spirv_bridge.py'
 fi
 # Keep the known booting but graphically incomplete test APK for comparison.
-OLD_APK="/storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-TESTE.apk"
-BACKUP="/storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-ANTES-FSWZADD.apk"
+OLD_APK="/storage/emulated/0/Download/ZeldaRecomp/Zelda-SNX-Runtime-TESTE.apk"
+BACKUP="/storage/emulated/0/Download/ZeldaRecomp/Castlevania-SNX-Runtime-ANTES-FSWZADD.apk"
 if [ -s "$OLD_APK" ] && [ ! -e "$BACKUP" ]; then
   cp -p "$OLD_APK" "$BACKUP"
   echo "APK experimental anterior preservado em: $BACKUP"
@@ -92,7 +93,8 @@ if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ]; then
   echo "Castlevania: runtime Ryujinx privado e opt-in integrado ao Vulkan"
 fi
 if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
-  [ "$BRANCH" = experimental/ryujinx-runtime-nativeaot ] ||
+  { [ "$BRANCH" = experimental/ryujinx-runtime-nativeaot ] ||
+    [ "$BRANCH" = experimental/zelda-links-awakening-ryujinx-nativeaot ]; } ||
     { echo "NativeAOT LIVE probe requires its dedicated experimental branch" >&2; exit 1; }
   if [ "${SCARLETNX_RYU_V2:-0}" = 1 ]; then
     python3 "$ROOT/tools/patch_scarletnx_jit_cache.py" "$SRC"
@@ -120,4 +122,4 @@ if [ ! -s "$OLD_APK" ]; then
 fi
 echo "===== VERSAO EXPERIMENTAL GERADA ====="
 echo "Runtime: $OUT"
-echo "APK: /storage/emulated/0/Download/CastlevaniaRecomp/Castlevania-SNX-Runtime-TESTE.apk"
+echo "APK: /storage/emulated/0/Download/ZeldaRecomp/Zelda-SNX-Runtime-TESTE.apk"
