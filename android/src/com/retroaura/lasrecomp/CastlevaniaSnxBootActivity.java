@@ -438,7 +438,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             if (!keys.isFile() || keys.length() < 100)
                 throw new IOException("Importe primeiro seu prod.keys.");
             File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
-            File module = new File(nativeDir, "libcastlevania_snx.so");
+            File module = new File(nativeDir, "libzelda_snx.so");
             if (!module.isFile()) module = importedGameModule();
             File runtime = new File(nativeDir, "libscarletnx.so");
             if (!runtime.isFile() || !module.isFile())
