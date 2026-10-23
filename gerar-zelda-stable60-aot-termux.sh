@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Generate a NEW Zelda AOT with a runtime-switchable two-BL patch.
-# Usage: bash gerar-zelda-stable60-aot-termux.sh /absolute/path/to/extracted-game
+# Usage: bash gerar-zelda-stable60-aot-termux.sh /absolute/path/to/game.xci-or-extracted
 # Never recompiles into or overwrites the original known-booting code.so.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -11,15 +11,25 @@ test "$(git branch --show-current)" = "experimental/zelda-links-awakening-ryujin
   exit 1
 }
 test "$#" = 1 || {
-  echo "Uso: bash gerar-zelda-stable60-aot-termux.sh /caminho/da/extracao" >&2
-  echo "A pasta deve conter exefs/main e exefs/main.npdm." >&2
+  echo "Uso: bash gerar-zelda-stable60-aot-termux.sh /caminho/Zelda.xci" >&2
+  echo "Tambem aceita pasta extraida que contenha exefs/main." >&2
   exit 2
 }
-EXTRACTED="$1"
-test -s "$EXTRACTED/exefs/main" && test -s "$EXTRACTED/exefs/main.npdm" || {
-  echo "ERRO: extracao invalida: faltam exefs/main ou exefs/main.npdm" >&2
+INPUT="$1"
+if [ -d "$INPUT" ]; then
+  test -s "$INPUT/exefs/main" && test -s "$INPUT/exefs/main.npdm" || {
+    echo "ERRO: extracao invalida; faltam exefs/main ou exefs/main.npdm" >&2
+    exit 2
+  }
+elif [ -f "$INPUT" ]; then
+  case "${INPUT,,}" in
+    *.xci|*.xcz|*.nsp|*.nsz|*.dnsp|*.dxci) ;;
+    *) echo "ERRO: arquivo nao parece um dump Switch suportado" >&2; exit 2 ;;
+  esac
+else
+  echo "ERRO: entrada nao encontrada: $INPUT" >&2
   exit 2
-}
+fi
 for tool in cmake ninja python3 llvm-readelf git; do
   command -v "$tool" >/dev/null || { echo "ERRO: ferramenta ausente: $tool" >&2; exit 1; }
 done
@@ -70,7 +80,7 @@ test -s "$RUNTIME" || {
   echo "ERRO: runtime ABI 12 ausente para --runtime: $RUNTIME" >&2
   exit 1
 }
-SNX_ZELDA60_AOT=1 "$BUILD/scarletnx" -r "$EXTRACTED" "$GAME" \
+SNX_ZELDA60_AOT=1 "$BUILD/scarletnx" -r "$INPUT" "$GAME" \
   --outdir "$OUTDIR" --runtime "$RUNTIME" --jobs "$JOBS"
 # The driver creates <outdir>/<game>/<game>_code.so.
 AOT="$OUTDIR/$GAME/${GAME}_code.so"
