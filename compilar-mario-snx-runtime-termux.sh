@@ -169,8 +169,9 @@ cp -L "$SNX_CODE" "$SNLIB/libzelda_snx.so"
 # Only opt-in on the experimental NativeAOT branch; no precompiled shader packs.
 # Put it into the normal APK nativeLibraryDir so Android's linker can dlopen it.
 if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
-  [ "$(git branch --show-current)" = experimental/ryujinx-runtime-nativeaot ] ||
-    die "Biblioteca Ryujinx: somente a branch NativeAOT experimental"
+  { [ "$(git branch --show-current)" = experimental/ryujinx-runtime-nativeaot ] ||
+    [ "$(git branch --show-current)" = experimental/zelda-links-awakening-ryujinx-nativeaot ]; } ||
+    die "Biblioteca Ryujinx: somente branches NativeAOT experimentais"
   LIB_RYU="${SCARLETNX_RYU_NATIVE_SO:-$HOME/ryujinx-nativeaot/libRyujinxShaderNative.so}"
   [ -s "$LIB_RYU" ] || die "Biblioteca Ryujinx NativeAOT nao encontrada: $LIB_RYU"
   python3 "$ROOT/tools/ryujinx-nativeaot/check_native_elf.py" "$LIB_RYU"
