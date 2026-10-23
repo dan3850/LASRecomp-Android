@@ -58,6 +58,13 @@ restore_source() {
       restore_failed=1
     fi
   fi
+  if [ "${SCARLETNX_ZELDA_DEJAVU_FONT:-0}" = 1 ] &&
+     [ -f "$SRC/cmake/shared_fonts.cmake" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_fonts.py" "$SRC" --revert; then
+      echo "AVISO: nao consegui restaurar as fontes originais no cache ScarletNX" >&2
+      restore_failed=1
+    fi
+  fi
   if [ "$rc" -ne 0 ]; then
     echo "ERRO: compilacao experimental falhou (codigo $rc). Veja a primeira mensagem ERRO acima." >&2
   elif [ "$restore_failed" -ne 0 ]; then

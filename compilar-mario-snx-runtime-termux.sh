@@ -180,6 +180,10 @@ if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
   echo "Ryujinx NativeAOT incluido no APK: $(du -h "$SNLIB/libRyujinxShaderNative.so")"
 fi
 cp android/licenses/RadialGamePad-GPL-3.0.txt "$EXTRA/assets/licenses/ScarletNX-GPL-3.0.txt"
+if [ "${SCARLETNX_ZELDA_DEJAVU_FONT:-0}" = 1 ]; then
+  cp "$ROOT/android/licenses/DejaVu-LICENSE.txt" "$EXTRA/assets/licenses/DejaVu-Bitstream-Vera.txt"
+  echo "ZELDA_DEJAVU_LICENSE_STAGED: OK"
+fi
 cat > "$EXTRA/assets/licenses/ScarletNX-SOURCE.txt" <<'NOTICE'
 ScarletNX experimental runtime (GPL-3.0-or-later):
 https://github.com/scarletnx/ScarletNX

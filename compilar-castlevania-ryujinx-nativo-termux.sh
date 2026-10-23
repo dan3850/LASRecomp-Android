@@ -47,7 +47,14 @@ FOLDER="/storage/emulated/0/Download/ZeldaRecomp"
 OLD="$FOLDER/Zelda-SNX-Runtime-TESTE.apk"
 BACKUP="$FOLDER/Zelda-SNX-Runtime-ANTES-RYU-NATIVO.apk"
 SEPARATE="$FOLDER/Zelda-SNX-Runtime-RYUJINX-NATIVO-TESTE.apk"
+FONT_TEST="$FOLDER/Zelda-SNX-Runtime-DEJAVU-TESTE.apk"
+FONT_BACKUP="$FOLDER/Zelda-SNX-Runtime-ANTES-DEJAVU.apk"
 mkdir -p "$FOLDER"
+if [ "${SCARLETNX_ZELDA_DEJAVU_FONT:-0}" = 1 ] &&
+   [ -s "$OLD" ] && [ ! -e "$FONT_BACKUP" ]; then
+  cp -p "$OLD" "$FONT_BACKUP"
+  echo "APK anterior preservado: $FONT_BACKUP"
+fi
 if [ -s "$OLD" ] && [ ! -e "$BACKUP" ]; then
   cp -p "$OLD" "$BACKUP"
   echo "APK anterior preservado: $BACKUP"
@@ -69,9 +76,15 @@ if [ ! -s "$OLD" ]; then
   echo "ERRO: APK experimental nao produzido" >&2
   exit 1
 fi
-cp -p "$OLD" "$SEPARATE"
-echo "===== APK DE TESTE NATIVO ====="
-echo "$SEPARATE"
+if [ "${SCARLETNX_ZELDA_DEJAVU_FONT:-0}" = 1 ]; then
+  cp -p "$OLD" "$FONT_TEST"
+  echo "===== APK ZELDA DEJAVU ABI 12 ====="
+  echo "$FONT_TEST"
+else
+  cp -p "$OLD" "$SEPARATE"
+  echo "===== APK DE TESTE NATIVO ====="
+  echo "$SEPARATE"
+fi
 echo "Back-up anterior: $BACKUP"
 echo "No launcher, ligue 'Ryujinx Vulkan automatico (experimental)'"
 echo "Esta rodada usa de verdade o SPIR-V adaptado no Vulkan para shaders que o ScarletNX rejeitar."

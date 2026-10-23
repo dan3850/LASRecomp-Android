@@ -11,4 +11,8 @@ cd "$ROOT"
 export ZELDA_SNX_CODE_SO="${ZELDA_SNX_CODE_SO:-/storage/emulated/0/Download/ZeldaRecomp/01006BB00C6F0000/01006BB00C6F0000_code.so}"
 [ -s "$ZELDA_SNX_CODE_SO" ] || { echo "ERRO: Zelda code.so nao encontrado: $ZELDA_SNX_CODE_SO" >&2; exit 1; }
 echo "Zelda AOT: $ZELDA_SNX_CODE_SO"
+# Backport official ScarletNX 3692ba68: Link's Awakening needs U+25A1.
+# Keep the original ABI 12 game code; change only the runtime's bundled font.
+export SCARLETNX_ZELDA_DEJAVU_FONT=1
+python3 -m unittest discover -s tests -p "test_scarletnx_zelda_fonts.py"
 bash "$ROOT/compilar-castlevania-ryujinx-nativo-termux.sh" "$@"
