@@ -109,6 +109,7 @@ if [ "${SCARLETNX_RYU_NATIVE_PROBE_BUILD:-0}" = 1 ]; then
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"
+export SCARLETNX_PATCHED_RUNTIME_SO="$OUT"
 echo "============================================="
 echo "CASTLEVANIA: shader FSWZADD 0xD7 experimental"
 echo "Mario runtime estavel: NAO sera sobrescrito"
