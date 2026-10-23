@@ -252,8 +252,9 @@ int main(int argc, char** argv) {
 
     @unittest.skipUnless((SRC / '.git').exists() and shutil.which('cc'), 'pinned source and C compiler required')
     def test_original_pipeline_file_corruption_and_reopen_regressions(self):
-        # Run the upstream test and implementation, with their real ShaderInfo
-        # and PfShader. The Vulkan include guard excludes only unused GPU APIs.
+        # Keep every upstream assertion and the real PfShader/ShaderInfo. Inject
+        # ENOSPC at the I/O boundary: Android /dev/full may be inaccessible or
+        # behave differently from the Linux host. No runtime source is patched.
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / 'snx_settings.h').write_text('/* this test reads no generated settings */\n')
@@ -261,12 +262,21 @@ int main(int argc, char** argv) {
             command = ['cc', '-std=gnu11', '-D_GNU_SOURCE', '-DSNX_VK_H', '-ffunction-sections',
                        '-fdata-sections', '-Wall', '-Wextra', '-I' + str(root), '-I' + str(SRC / 'src'),
                        str(SRC / 'tests/pipeline_file.c'), str(SRC / 'src/common/filesystem/host.c'),
-                       str(SRC / 'src/common/utilities/common.c'), '-Wl,--gc-sections', '-pthread', '-o', str(binary)]
+                       str(SRC / 'src/common/utilities/common.c'),
+                       str(ROOT / 'tests/fixtures/zelda_pipeline_enospc.c'),
+                       '-Wl,--wrap=fopen,--wrap=fwrite,--wrap=fflush,--wrap=fclose',
+                       '-Wl,--gc-sections', '-pthread', '-o', str(binary)]
             build = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(build.returncode, 0, build.stderr)
-            run = subprocess.run([str(binary)], cwd=root, capture_output=True, text=True)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertIn('74 checks passed', run.stdout)
+            for mode in ('write', 'flush'):
+                with self.subTest(enospc_at=mode):
+                    run = subprocess.run([str(binary)], cwd=root, capture_output=True, text=True,
+                                         env={**os.environ, 'SNX_TEST_ENOSPC_MODE': mode})
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertIn('74 checks passed', run.stdout)
+                    # Prove that this check ran, rather than being skipped or
+                    # satisfied by the host's real /dev/full implementation.
+                    self.assertEqual(run.stderr.count('SNX_TEST_ENOSPC_INJECTED=' + mode), 1, run.stderr)
 
 
 if __name__ == '__main__':

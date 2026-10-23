@@ -248,6 +248,16 @@ verification is installed for the Termux build; an actual new APK, game run,
 visual/audio comparison and FPS result have **not** been produced on this
 host. The signed-APK unit regression uses synthetic payloads, not a game APK.
 
+Termux portability follow-up: the original cache test assumed that opening and
+writing `/dev/full` produces ENOSPC. The phone reported a failure at that
+environment-dependent assertion. The standalone test now links a test-only
+I/O fixture that substitutes a temporary stream for that path and injects
+ENOSPC separately at a short write and at a buffered flush. All 74 original
+assertions remain and run in both cases; the Python driver also requires proof
+that the intended failure was injected. No assertion is skipped, and the
+fixture is not linked into the Android runtime/APK. Real cache files and the
+cached ScarletNX source are untouched.
+
 ### FPS definitions
 
 * **guest_queue**: successful QueueBuffer transactions for the visible guest
