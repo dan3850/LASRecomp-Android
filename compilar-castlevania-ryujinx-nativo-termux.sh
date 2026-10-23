@@ -48,6 +48,7 @@ OLD="$FOLDER/Zelda-SNX-Runtime-TESTE.apk"
 BACKUP="$FOLDER/Zelda-SNX-Runtime-ANTES-RYU-NATIVO.apk"
 SEPARATE="$FOLDER/Zelda-SNX-Runtime-RYUJINX-NATIVO-TESTE.apk"
 FONT_TEST="$FOLDER/Zelda-SNX-Runtime-DEJAVU-TESTE.apk"
+FPS_TOGGLE_APK="$FOLDER/Zelda-SNX-Runtime-STABLE60-TOGGLE-TESTE.apk"
 FPS_DIAG_APK="$FOLDER/Zelda-SNX-Runtime-FPS-ID-DIAG.apk"
 KNOWN_GOOD_APK="$FOLDER/Zelda-SNX-Runtime-BOOT-OK-ANTES-FPS.apk"
 FONT_BACKUP="$FOLDER/Zelda-SNX-Runtime-ANTES-DEJAVU.apk"
@@ -83,7 +84,11 @@ if [ ! -s "$OLD" ]; then
   echo "ERRO: APK experimental nao produzido" >&2
   exit 1
 fi
-if [ "${SCARLETNX_ZELDA_60FPS_DIAG:-0}" = 1 ]; then
+if [ "${SCARLETNX_ZELDA60_TOGGLE:-0}" = 1 ]; then
+  cp -p "$OLD" "$FPS_TOGGLE_APK"
+  echo "===== APK ZELDA STABLE60 HOME TOGGLE ====="
+  echo "$FPS_TOGGLE_APK"
+elif [ "${SCARLETNX_ZELDA_60FPS_DIAG:-0}" = 1 ]; then
   cp -p "$OLD" "$FPS_DIAG_APK"
   echo "===== APK DIAGNOSTICO ZELDA60 (SEM MOD) ====="
   echo "$FPS_DIAG_APK"
