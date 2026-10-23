@@ -8,7 +8,7 @@ cd "$ROOT"
   echo "ERRO: selecione a branch experimental/zelda-links-awakening-ryujinx-nativeaot" >&2
   exit 1
 }
-export ZELDA_SNX_CODE_SO="${ZELDA_SNX_CODE_SO:-/storage/emulated/0/Download/01006BB00C6F0000 (1)/01006BB00C6F0000_code.so}"
+export ZELDA_SNX_CODE_SO="${ZELDA_SNX_CODE_SO:-/storage/emulated/0/Download/ZeldaRecomp/01006BB00C6F0000/01006BB00C6F0000_code.so}"
 [ -s "$ZELDA_SNX_CODE_SO" ] || { echo "ERRO: Zelda code.so nao encontrado: $ZELDA_SNX_CODE_SO" >&2; exit 1; }
 echo "Zelda AOT: $ZELDA_SNX_CODE_SO"
 bash "$ROOT/compilar-castlevania-ryujinx-nativo-termux.sh" "$@"
