@@ -48,8 +48,15 @@ OLD="$FOLDER/Zelda-SNX-Runtime-TESTE.apk"
 BACKUP="$FOLDER/Zelda-SNX-Runtime-ANTES-RYU-NATIVO.apk"
 SEPARATE="$FOLDER/Zelda-SNX-Runtime-RYUJINX-NATIVO-TESTE.apk"
 FONT_TEST="$FOLDER/Zelda-SNX-Runtime-DEJAVU-TESTE.apk"
+FPS_DIAG_APK="$FOLDER/Zelda-SNX-Runtime-FPS-ID-DIAG.apk"
+KNOWN_GOOD_APK="$FOLDER/Zelda-SNX-Runtime-BOOT-OK-ANTES-FPS.apk"
 FONT_BACKUP="$FOLDER/Zelda-SNX-Runtime-ANTES-DEJAVU.apk"
 mkdir -p "$FOLDER"
+if [ "${SCARLETNX_ZELDA_60FPS_DIAG:-0}" = 1 ] &&
+   [ -s "$FONT_TEST" ] && [ ! -e "$KNOWN_GOOD_APK" ]; then
+  cp -p "$FONT_TEST" "$KNOWN_GOOD_APK"
+  echo "Zelda original que deu boot preservado: $KNOWN_GOOD_APK"
+fi
 if [ "${SCARLETNX_ZELDA_DEJAVU_FONT:-0}" = 1 ] &&
    [ -s "$OLD" ] && [ ! -e "$FONT_BACKUP" ]; then
   cp -p "$OLD" "$FONT_BACKUP"
@@ -76,7 +83,11 @@ if [ ! -s "$OLD" ]; then
   echo "ERRO: APK experimental nao produzido" >&2
   exit 1
 fi
-if [ "${SCARLETNX_ZELDA_DEJAVU_FONT:-0}" = 1 ]; then
+if [ "${SCARLETNX_ZELDA_60FPS_DIAG:-0}" = 1 ]; then
+  cp -p "$OLD" "$FPS_DIAG_APK"
+  echo "===== APK DIAGNOSTICO ZELDA60 (SEM MOD) ====="
+  echo "$FPS_DIAG_APK"
+elif [ "${SCARLETNX_ZELDA_DEJAVU_FONT:-0}" = 1 ]; then
   cp -p "$OLD" "$FONT_TEST"
   echo "===== APK ZELDA DEJAVU ABI 12 ====="
   echo "$FONT_TEST"

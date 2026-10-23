@@ -89,6 +89,13 @@ if [ "$(git rev-parse HEAD)" != "$COMMIT" ]; then
 fi
 
 python3 "$ROOT/tools/patch_scarletnx_romfs.py" "$SRC"
+# Optional runtime-side diagnostic: inspect the actual loaded NSO descriptor.
+# This prints the Zelda v1.1.0 build ID and two original words, never patches them.
+if [ "${SCARLETNX_ZELDA_60FPS_DIAG:-0}" = 1 ]; then
+  python3 "$ROOT/tools/patch_scarletnx_zelda60_diag.py" "$SRC"
+else
+  python3 "$ROOT/tools/patch_scarletnx_zelda60_diag.py" "$SRC" --revert
+fi
 if [ "${SCARLETNX_ZELDA_DEJAVU_FONT:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda_fonts.py" "$SRC" --license "$ROOT/android/licenses/DejaVu-LICENSE.txt"
   echo "ZELDA_FONT_BACKPORT: DejaVu Sans 2.37 on ScarletNX ABI 12"

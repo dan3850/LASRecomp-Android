@@ -65,6 +65,13 @@ restore_source() {
       restore_failed=1
     fi
   fi
+  if [ "${SCARLETNX_ZELDA_60FPS_DIAG:-0}" = 1 ] &&
+     [ -f "$SRC/src/nx/runtime/main.c" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda60_diag.py" "$SRC" --revert; then
+      echo "AVISO: nao consegui restaurar diagnostico Zelda60 no cache fonte" >&2
+      restore_failed=1
+    fi
+  fi
   if [ "$rc" -ne 0 ]; then
     echo "ERRO: compilacao experimental falhou (codigo $rc). Veja a primeira mensagem ERRO acima." >&2
   elif [ "$restore_failed" -ne 0 ]; then
