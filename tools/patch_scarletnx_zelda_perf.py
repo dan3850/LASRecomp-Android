@@ -50,7 +50,8 @@ def replacements():
         'src/nx/gpu/vk/renderer.c': [
             ('static VkSemaphore g_acquired[VK_FRAMES];',
              '#include "nx/runtime/snx_perf_impl.h"\n' + VK_SNAPSHOT + '\nstatic VkSemaphore g_acquired[VK_FRAMES];'),
-            ('    if (!vk_init()) return 0;', '    snx_perf_init();\n    if (!vk_init()) return 0;'),
+            ('    if (!vk_init()) return 0;',
+             '    snx_perf_init();\n    if (!vk_init()) return 0;\n    snx_gfx_init();'),
             ('static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {',
              'static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {\n'
              '    u64 snx_show_t0 = game && snx_perf_on ? plat_ns() : 0;'),
@@ -73,7 +74,24 @@ def replacements():
              '    if (game && snx_perf_on) {\n'
              '        snx_perf_add(SNX_PM_RENDER_CPU, plat_ns() - snx_show_t0, 1);\n'
              '        u64 window = snx_perf_frame(SNX_PF_RENDER);\n'
-             '        if (window) snx_perf_vk_snapshot(window);\n    }\n}'),
+             '        if (window) { snx_perf_vk_snapshot(window); snx_gfx_report(window); }\n    }\n}'),
+        ],
+        'src/nx/gpu/vk/render.c': [
+            ('#include "nx/gpu/vk/internal_spv.h"',
+             '#include "nx/gpu/vk/internal_spv.h"\n#include "nx/runtime/snx_gfx_diag.h"'),
+            ('                funcs[id] = x.have && (x.tsc[0] >> 9 & 1) ? (x.tsc[0] >> 10) & 7 : 3;',
+             '                if (snx_gfx_diag_on)\n'
+             '                    snx_gfx_texture(s, stage, first[table], st, handle, x.tic, x.tsc, x.t,\n'
+             '                                    want, num, view, 1);\n'
+             '                funcs[id] = x.have && (x.tsc[0] >> 9 & 1) ? (x.tsc[0] >> 10) & 7 : 3;'),
+            ('        const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */',
+             '        if (snx_gfx_diag_on)\n'
+             '            snx_gfx_texture(s, stage, i, &s->si.tex[i], handle, x->tic, x->tsc, t,\n'
+             '                            want, num, view, 0);\n'
+             '        const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */'),
+            ('    PipeKey k;\n    memset(&k, 0, sizeof k);\n    k.vs = vs->mod;',
+             '    if (snx_gfx_diag_on) snx_gfx_draw(vs, fs, rt, zt, n, r);\n'
+             '    PipeKey k;\n    memset(&k, 0, sizeof k);\n    k.vs = vs->mod;'),
         ],
         'src/nx/gpu/vk/cmd.c': [
             ('static void timeline_wait(u64 value) {',
@@ -167,7 +185,8 @@ def apply(root, revision='', revert=False):
         if path.read_text() != text:
             path.write_text(text)
     dest = root / 'src/nx/runtime'
-    for source, target in [('perf.h', 'snx_perf.h'), ('perf_impl.h', 'snx_perf_impl.h')]:
+    for source, target in [('perf.h', 'snx_perf.h'), ('perf_impl.h', 'snx_perf_impl.h'),
+                           ('gfx_diag.h', 'snx_gfx_diag.h')]:
         path = dest / target
         if revert:
             path.unlink(missing_ok=True)

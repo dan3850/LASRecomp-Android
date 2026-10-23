@@ -129,6 +129,13 @@ int main(void) {
                 ANALYZE.analyze(text.replace('SNX_FRAMES_V1', 'MISSING', 1), 0)
             with self.assertRaisesRegex(ValueError, 'invalid telemetry'):
                 ANALYZE.analyze(text + 'SNX_COST_V1 {\"window\":', 0)
+            detailed = text + 'SNX_GFX_META_V1 {"shadows_enabled":1}\n'
+            for w in windows:
+                detailed += 'SNX_GFX_V1 ' + json.dumps({'window': w, 'null_bindings': w}) + '\n'
+            graphics = ANALYZE.analyze(detailed, 0)
+            self.assertEqual(graphics['graphics'], {'null_bindings': sum(windows)})
+            self.assertEqual(graphics['metadata']['graphics_diagnostics'], {'shadows_enabled': 1})
+            self.assertEqual(graphics['streams'], result['streams'])
 
     def test_zelda_launcher_gate_and_legacy_choice_do_not_silently_activate_backend(self):
         activity = (ROOT / 'android/src/com/retroaura/lasrecomp/MarioSnxGameActivity.java').read_text()

@@ -103,7 +103,8 @@ The previous toggle APK is copied once to
 `Zelda-SNX-STABLE60-ANTES-FPS-AUDIT.apk` before the build. Same package: install
 as an update and keep app data/saves. Use a new process for every trial.
 
-Choose **Medicao de FPS: LEVE** in the launcher. The default is OFF. Keep
+Choose **Registrar FPS no log: LEVE** in the launcher. This records evidence
+in the exported log; it is not an on-screen FPS overlay. The default is OFF. Keep
 shader capture OFF and use the same Home > Stable 60 FPS setting each time.
 Use the same save, route, camera, resolution, vsync, display refresh, cooling,
 performance mode and power state. Avoid recording the screen during trials.
@@ -114,7 +115,8 @@ not time since entering the save.
 
 Detailed GPU mode additionally enables the existing
 `SNX_VK_GPU_PROFILE=1` and `SNX_VK_BUFFER_STATS=1`. It adds timestamps per pass
-and buffer bookkeeping. Use it to locate the expensive work; compare A/B FPS
+and buffer bookkeeping, plus the bounded graphics evidence described below.
+Use it to locate the expensive work; compare A/B FPS
 using LEVE in both runs. Profiling OFF is also available for overhead checks.
 
 Every five seconds the log includes bounded raw frame intervals, window
@@ -141,6 +143,84 @@ CPU submission API time is not GPU execution time.
 `show_wall` measures wall time inside the final renderer `show()` path,
 including its waits; it is not GPU-thread CPU utilization or total frame CPU
 time. A short final partial window is not extrapolated.
+
+## First RedMagic measurement and visual comparison
+
+The supplied `Zelda-SNX-boot (4).txt`, revision `9f9ea9a`, contains a valid
+LEVE session with live Ryujinx, confirmed waits and Ryujinx persistence OFF.
+For the ten complete windows inside elapsed 20 to 80 seconds, the available
+data actually covers 50.103 seconds (approximately 20.044 to 70.147):
+
+| Evidence | Observed |
+|---|---:|
+| Renderer / successful presentation enqueue cadence | 51.494 frames/s |
+| Renderer interval p50 / p95 / p99 | 18.842 / 21.036 / 23.109 ms |
+| Longest renderer interval | 189.316 ms |
+| Skipped draws | 0 |
+| Texture content hashing | 9,202.161 ms over 454,734 checks; 119,167,188,992 bytes |
+| Graphics timeline host waits | 26,519.477 ms over 10,324 calls |
+| New graphics pipelines / cumulative pipeline wait | 24 / 820 ms |
+| New shaders / translation time | 18 / 7 ms |
+| JIT compilation / guest miss wait | One batch, about 62.4 ms |
+
+These overlapping thread costs are not a frame-time decomposition or a
+prediction of recoverable FPS. Texture hashing alone averages about 3.57 ms
+per renderer frame. The runtime reports `no write tracking`, while GPU-owned
+guest-memory trapping is active. Native persistence already works: 160
+shaders and 200 earlier pipelines load, with all 200 prewarmed from the driver
+cache. New pipelines still stall scene entry; a 189 ms frame includes 169 ms
+of pipeline waiting. The log does not identify which GPU passes consume the
+timeline wait. Physical display rate and simulation speed remain unmeasured.
+
+The user's three Eden reference captures and corresponding LASRecomp captures
+show projected ground shadows missing, interior light shafts missing or
+greatly reduced, and a visibly different water appearance. Leaf highlights,
+geometry and some water highlights remain. This is visual evidence of partial
+rendering differences, not proof that every missing effect shares one cause.
+The static FPS overlays in the pictures are not a controlled performance
+comparison. No shader or synchronization semantic is changed on that basis.
+
+### Detailed graphics evidence for missing effects
+
+The current native `render.c` can bind `vk_null_view` when a texture/view
+cannot be used, then continue the draw. Thus zero skipped draws does not
+exclude missing shadow or lighting resources. Some null descriptors, notably
+unused indexed elements, are intentional and are not errors by themselves.
+
+Selecting **Registrar FPS no log: GPU DETALHADA** now also sets
+`SNX_GFX_DIAG=1` in the fresh Zelda child process. LEVE and OFF do not enable
+this resource trace. It logs:
+
+- `SNX_GFX_META_V1`: the effective native shadows setting and detail limits.
+- `SNX_GFX_PASS_V1`: draw setup signatures with vertex/fragment shader hashes,
+  color/depth target addresses, dimensions, Vulkan formats and depth state.
+- `SNX_GFX_BIND_V1`: relevant texture preparation decisions, shader/slot,
+  handle, requested view/numeric kind, candidate surface and format,
+  depth/manual comparison state and selected TIC/TSC words. Null, depth,
+  shadow and non-2D resources receive detail; ordinary valid 2D color binds
+  only increment counters. Handle zero is treated as a valid handle.
+- `SNX_GFX_V1`: per-window draw setup and binding counts, including depth-only
+  setups, null/shadow bindings, indexed entries and shadow samplers with an
+  unexpected color view. The analyzer includes these under `graphics`.
+
+Signatures are exact and deduplicated, bounded to 64 draw setups and 128
+bindings per five-second telemetry window. `SNX_GFX_LIMIT_V1` reports a reached
+limit; counters continue and the next window gets a fresh detail budget.
+The normal bounded exporter retains these records and detects truncation.
+These are CPU setup events: a depth setup does not prove nonempty shadow-map
+pixels, and an indexed entry does not prove it was sampled dynamically.
+The trace never retries a resource, reads texture pixels, changes a
+descriptor, submits work, adds GPU waits or changes shader/cache decisions.
+Its CPU/logging overhead makes it diagnostic evidence, not the mode for an
+A/B throughput claim.
+
+For the next visual trial, install the current audit APK as an update, fully
+end the game process, select GPU DETALHADA and leave Ryujinx, confirmed waits,
+Ryujinx persistence and shader capture OFF. Keep the previous Stable60 setting.
+Visit the same outdoor trees, telephone-house interior and water scene for
+about 20 seconds each, then export the log before starting another run.
+No AOT regeneration or cache deletion is required. This stage instruments the
+failure; it does not claim that shadows or lighting have been corrected.
 
 ## Implemented experiments (default OFF)
 

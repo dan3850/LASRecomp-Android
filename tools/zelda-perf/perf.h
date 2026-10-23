@@ -17,4 +17,8 @@ void snx_perf_init(void);
 void snx_perf_add(int metric, u64 ns, u64 count);
 /* Only SNX_PF_RENDER flushes a window, on the renderer thread. */
 u64 snx_perf_frame(int stream);
+/* Detailed-only resource evidence; all calls run under the renderer lock. */
+extern int snx_gfx_diag_on;
+void snx_gfx_init(void);
+void snx_gfx_report(u64 window);
 #endif

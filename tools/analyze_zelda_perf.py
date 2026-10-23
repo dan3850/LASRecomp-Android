@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -78,6 +78,9 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
               'displayed_fps': None, 'simulation_fps': None}
     if cache:
         result['metadata']['effective_cache'] = cache[-1]
+    graphics_meta = [r for k, r in selected['rows'] if k == 'SNX_GFX_META_V1']
+    if graphics_meta:
+        result['metadata']['graphics_diagnostics'] = graphics_meta[-1]
     for name in ('guest_queue', 'render', 'present_enqueue'):
         frames = sum(r['frames'] for k, r in selected['rows']
                      if k == 'SNX_STREAM_V1' and r['window'] in valid and r['stream'] == name)
@@ -104,6 +107,11 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
                     result['vulkan'][name] = value
                 else:
                     result['vulkan'][name] = result['vulkan'].get(name, 0) + value
+        if k == 'SNX_GFX_V1':
+            graphics = result.setdefault('graphics', {})
+            for name, value in r.items():
+                if name != 'window':
+                    graphics[name] = graphics.get(name, 0) + value
     return result
 
 
@@ -122,6 +130,9 @@ def markdown(report, label):
               'Metadata: `' + json.dumps(report['metadata'], sort_keys=True) + '`', '',
               'present_enqueue counts successful/suboptimal vkQueuePresentKHR calls. '
               'Physical display FPS and game simulation FPS are unavailable.']
+    if 'graphics' in report:
+        lines += ['', 'Detailed graphics setup counters: `' + json.dumps(report['graphics'], sort_keys=True) + '`',
+                  'Null bindings may be intentional; indexed entries count descriptor preparation, not actual shader samples.']
     return '\n'.join(lines)
 
 

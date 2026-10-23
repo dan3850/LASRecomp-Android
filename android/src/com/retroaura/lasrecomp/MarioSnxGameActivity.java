@@ -145,6 +145,7 @@ public final class MarioSnxGameActivity extends SDLActivity {
         if (perfMode == 2) {
             SDLActivity.nativeSetenv("SNX_VK_GPU_PROFILE", "1");
             SDLActivity.nativeSetenv("SNX_VK_BUFFER_STATS", "1");
+            SDLActivity.nativeSetenv("SNX_GFX_DIAG", "1");
         }
         stage("SDL_PERF_MODE=" + perfMode);
         // Real C# translation, explicitly selected before starting the child.

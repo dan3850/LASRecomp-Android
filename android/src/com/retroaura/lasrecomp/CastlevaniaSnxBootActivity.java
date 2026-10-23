@@ -127,7 +127,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 int mode = (getPreferences(MODE_PRIVATE).getInt("zelda_perf_mode", 0) + 1) % 3;
                 getPreferences(MODE_PRIVATE).edit().putInt("zelda_perf_mode", mode).apply();
                 perf.setText(perfLabel());
-                message("Medicao aplicada na proxima execucao. GPU detalhada adiciona timestamps por passe.");
+                message("FPS e tempos de quadro serao gravados no log na proxima execucao. GPU detalhada inclui diagnostico de sombras e texturas.");
             });
             content.addView(perf);
             addPerfOption(content, "zelda_known_complete", "Reutilizar esperas confirmadas");
@@ -274,7 +274,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
 
     private String perfLabel() {
         int mode = getPreferences(MODE_PRIVATE).getInt("zelda_perf_mode", 0);
-        return "Medicao de FPS: " + (mode == 1 ? "LEVE" : mode == 2 ? "GPU DETALHADA" : "OFF");
+        return "Registrar FPS no log: " + (mode == 1 ? "LEVE" : mode == 2 ? "GPU DETALHADA" : "OFF");
     }
 
     private void addPerfOption(LinearLayout content, String preference, String label) {
