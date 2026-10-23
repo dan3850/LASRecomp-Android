@@ -65,6 +65,13 @@ restore_source() {
       restore_failed=1
     fi
   fi
+  if [ "${SCARLETNX_ZELDA60_TOGGLE:-0}" = 1 ] &&
+     [ -f "$SRC/src/nx/runtime/main.c" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda60_toggle.py" "$SRC" --mode runtime --revert; then
+      echo "AVISO: nao consegui restaurar o toggle Zelda60 no cache ScarletNX" >&2
+      restore_failed=1
+    fi
+  fi
   if [ "${SCARLETNX_ZELDA_60FPS_DIAG:-0}" = 1 ] &&
      [ -f "$SRC/src/nx/runtime/main.c" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_zelda60_diag.py" "$SRC" --revert; then
@@ -102,6 +109,10 @@ if [ ! -s "$SRC/src/nx/gpu/shader/spirv_translate.c" ]; then
   exit 1
 fi
 python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC"
+if [ "${SCARLETNX_ZELDA60_TOGGLE:-0}" = 1 ]; then
+  python3 "$ROOT/tools/patch_scarletnx_zelda60_toggle.py" "$SRC" --mode runtime
+  echo "Zelda Stable60: Home overlay toggle opt-in (ABI 12)"
+fi
 if [ "${SCARLETNX_RYUJINX_BRIDGE:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_ryujinx_runtime.py" "$SRC"
   echo "Castlevania: runtime Ryujinx privado e opt-in integrado ao Vulkan"
