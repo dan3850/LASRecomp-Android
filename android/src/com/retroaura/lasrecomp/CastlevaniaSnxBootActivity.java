@@ -61,11 +61,11 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         title.setTextSize(22);
         content.addView(title);
         TextView info = new TextView(this);
-        info.setText("Selecione seu NSP e suas chaves. Se o modulo do jogo nao estiver no aplicativo, importe o arquivo 01006BB00C6F0000_code.so que voce ja possui.");
+        info.setText("Selecione seu XCI ou NSP e suas chaves. Se o modulo do jogo nao estiver no aplicativo, importe o arquivo 01006BB00C6F0000_code.so que voce ja possui.");
         content.addView(info);
 
         Button chooseXci = new Button(this);
-        chooseXci.setText("1. Selecionar NSP");
+        chooseXci.setText("1. Selecionar XCI ou NSP");
         chooseXci.setOnClickListener(v -> pick(PICK_NSP));
         content.addView(chooseXci);
 
@@ -349,11 +349,11 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     }
 
     private File directXciPath() throws Exception {
-        if (selectedXci == null) throw new IOException("Selecione seu NSP.");
+        if (selectedXci == null) throw new IOException("Selecione seu XCI ou NSP.");
         if (Build.VERSION.SDK_INT < 30 || !Environment.isExternalStorageManager())
             throw new IOException("Autorize o acesso a todos os arquivos.");
         String id = DocumentsContract.getDocumentId(selectedXci);
-        if (!id.startsWith("primary:")) throw new IOException("O NSP deve estar na memoria interna principal.");
+        if (!id.startsWith("primary:")) throw new IOException("O XCI/NSP deve estar na memoria interna principal.");
         String relative = id.substring("primary:".length());
         if (relative.isEmpty() || relative.startsWith("/") ||
                 relative.contains("\\") || relative.indexOf(':') >= 0 ||
@@ -361,14 +361,15 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             throw new IOException("Caminho NSP invalido");
         for (String part : relative.split("/", -1)) {
             if (part.isEmpty() || part.equals(".") || part.equals(".."))
-                throw new IOException("Caminho NSP inseguro");
+                throw new IOException("Caminho XCI/NSP inseguro");
         }
         File root = Environment.getExternalStorageDirectory().getCanonicalFile();
         File xci = new File(root, relative).getCanonicalFile();
         if (!xci.getPath().startsWith(root.getPath() + File.separator) ||
                 !xci.isFile() || !xci.canRead() ||
-                !xci.getName().toLowerCase(Locale.ROOT).endsWith(".nsp"))
-            throw new IOException("NSP nao encontrado ou sem acesso de leitura: " + xci);
+                !(xci.getName().toLowerCase(Locale.ROOT).endsWith(".nsp") ||
+                  xci.getName().toLowerCase(Locale.ROOT).endsWith(".xci")))
+            throw new IOException("XCI/NSP nao encontrado ou sem acesso de leitura: " + xci);
         return xci;
     }
 
