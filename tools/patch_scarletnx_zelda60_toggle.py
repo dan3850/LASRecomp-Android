@@ -15,7 +15,7 @@ REPLACEMENTS = [
   {
     "path": "src/common/cpu/recompiler/llvm/ir_codegen.c",
     "old": "#define B ir->b\n",
-    "new": "#define B ir->b\n\n/* Zelda Stable60 AOT: resolved from the verified main module before parallel codegen. */\nSnxU64 snx_zelda60_site_a, snx_zelda60_site_b;\n"
+    "new": "#define B ir->b\n\n/* Zelda Stable60 AOT: resolved from the verified main module before parallel codegen. */\nextern SnxU64 snx_zelda60_site_a, snx_zelda60_site_b;\nSnxU64 snx_zelda60_site_a, snx_zelda60_site_b;\n"
   },
   {
     "path": "src/common/cpu/recompiler/llvm/ir_codegen.c",
