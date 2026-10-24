@@ -92,9 +92,10 @@ Stable60 AOT symbol and uses
 by default. An existing `ZELDA_SNX_CODE_SO` override is respected. It does not
 invoke `scarletnx -r` or build game LLVM blocks.
 
-The current audit APK enables the operand-exact FSWZADD repair described below
-and uses `shader_cache/fps-audit-fswz-v1/`. The comparison build with
-`SCARLETNX_ZELDA_FSWZADD=0` uses the earlier `shader_cache/fps-audit-v1/`.
+The current audit APK defaults to the original arithmetic and the earlier
+`shader_cache/fps-audit-v1/` namespace (`SCARLETNX_ZELDA_FSWZADD=0`). The
+operand-exact FSWZADD experiment is retained only as an explicit opt-in with
+`SCARLETNX_ZELDA_FSWZADD=1`, using `shader_cache/fps-audit-fswz-v1/`.
 The working APK's existing
 shader and driver files are not opened or overwritten. Its first run therefore
 warms a separate audit cache. Compare A/B in this same audit binary after
@@ -301,7 +302,7 @@ before another launch. Capture adds translation and I/O overhead; it is for
 correctness diagnosis, not a performance comparison. Disable it afterward.
 No full AOT rebuild or cache deletion is needed.
 
-## Captured-shader finding and operand-exact FSWZADD repair
+## Captured-shader finding and operand-exact FSWZADD experiment (default OFF)
 
 The supplied `Zelda-shaders-SNXS.zip` contains 155 complete version-1 programs:
 70 vertex, 81 fragment and 4 compute. Its SHA-256 is
@@ -360,12 +361,14 @@ set -e
 cd "$HOME/LASRecomp-Android"
 git switch experimental/zelda-links-awakening-ryujinx-nativeaot
 git pull --ff-only origin experimental/zelda-links-awakening-ryujinx-nativeaot
-SCARLETNX_BUILD_JOBS=2 SCARLETNX_ZELDA_FSWZADD=1 bash ./compilar-zelda-fps-audit-termux.sh
+SCARLETNX_BUILD_JOBS=2 SCARLETNX_ZELDA_FSWZADD=0 bash ./compilar-zelda-fps-audit-termux.sh
 ```
 
-Install `Zelda-SNX-STABLE60-FPS-AUDIT.apk` as an update. The builder preserves
-the previous toggle APK once as `Zelda-SNX-STABLE60-ANTES-FSWZADD.apk` when
-present. It reuses the game AOT and build caches. Host audit result: 13 Zelda
+Install `Zelda-SNX-STABLE60-FPS-AUDIT.apk` as an update. In baseline mode the
+builder preserves the previous toggle APK once as
+`Zelda-SNX-STABLE60-ANTES-BASELINE.apk` when present; explicit experiment mode
+uses `Zelda-SNX-STABLE60-ANTES-FSWZADD.apk`. It reuses the game AOT and build
+caches. Host audit result: 13 Zelda
 performance tests passed, plus the three existing D7 patch tests; no skips.
 The upstream shader regression passes with this repair on its original
 translator and its 68 emitted modules pass spirv-val. With the pre-existing
@@ -375,7 +378,8 @@ is still refused. That configuration is not reported as an all-pass run.
 Shell syntax, patch reversal and whitespace checks also pass. No Android APK
 or live Zelda run was produced on this host.
 
-For the phone trial, fully end the game process, select LEVE and leave shader
+For an explicit FSWZADD experiment, set `SCARLETNX_ZELDA_FSWZADD=1` in that
+command. For the phone trial, fully end the game process, select LEVE and leave shader
 capture, live Ryujinx, confirmed waits and Ryujinx persistence OFF. Keep the
 Stable60 setting unchanged. Warm the new cache on the same three scenes,
 restart the game process, then record the same route for 90 seconds. Export
@@ -394,9 +398,9 @@ SCARLETNX_BUILD_JOBS=2 SCARLETNX_ZELDA_FSWZADD=0 bash ./compilar-zelda-fps-audit
 
 That is another incremental runtime build; it uses the earlier audit cache
 namespace. Alternatively reinstall the preserved pre-repair APK as an update.
-The repair's visual benefit, possible shader cost and any FPS difference
-remain unmeasured until matching device runs are supplied. Correctness takes
-priority over throughput with missing effects.
+The phone feedback below supersedes the expected visual benefit of this
+experiment. Quantitative FPS effects still require matching runs. Correctness
+takes priority over throughput with missing effects.
 
 Termux test portability follow-up: Bionic headers expose the POSIX `O_SYNC`
 file-open macro before the generated Maxwell enum, which also names its SYNC
@@ -407,6 +411,40 @@ runtime are unchanged. A regression reproduces the failing include order,
 then compiles and executes the real decoder to verify that Maxwell SYNC and
 its control-stack classification remain intact. All 14 audit tests pass on
 the host, including before/after shader semantics; no assertion is skipped.
+
+### Phone feedback: return to the pre-FSWZADD baseline
+
+The user reports that the missing shadows/lighting look unchanged and that
+FPS seems worse. Treat this as a failed visual hypothesis, not as a successful
+graphics fix. The mathematical FSWZADD discrepancy is reproducible, but it
+does not establish the cause of the visible game defect. The repair is now
+OFF by default; the original arithmetic and previous audit cache are restored
+in the next build. The isolated experiment/cache and tests remain available
+for explicit comparisons. No stable branch or generated AOT is changed.
+
+The supplied `1f4d2a7` log confirms the experiment active, native translation,
+GPU DETALHADA, shader capture enabled and no translated-shader prewarm. The
+55.101-second selected interval contains 2,518 renderer events (45.698/s),
+p95 30.935 ms and p99 48.421 ms. It also contains 71 new pipelines with
+1,810 ms of cumulative waiting, 9,652.070 ms in texture content hashing and
+no JIT compilation. These thread wall times overlap. Capture and detailed
+profiling, cache warmness and scene differences prevent attributing an FPS
+change to FSWZADD alone; this does not discount the user's reported experience.
+
+The newer capture contains 166 valid SNXS files, all of which translate and
+pass spirv-val with the experimental translator; 155 inputs are unchanged
+and 11 are additional. No missing descriptor or skipped draw was reported.
+Thus accepting more shaders is not an evidenced remedy for the remaining
+visual issue. Its next graphics investigation needs evidence of shadow-map
+contents and render-target/depth state rather than another arithmetic guess.
+
+Before the baseline build replaces the current toggle APK, the builder copies
+it once to `Zelda-SNX-STABLE60-ANTES-BASELINE.apk` if present. Older backups
+and both shader-cache directories remain intact. The same runtime-only build
+command above produces `Zelda-SNX-STABLE60-FPS-AUDIT.apk` with the FSWZADD
+marker absent, verified in the signed archive. For the next performance
+trial, use shader capture OFF, LEVE, live Ryujinx OFF, both wait/cache
+experiments OFF and the same Stable60 state; warm the baseline cache first.
 
 ## Implemented experiments (default OFF)
 
