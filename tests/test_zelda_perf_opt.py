@@ -251,6 +251,77 @@ int main(int argc, char** argv) {
             self.assertEqual(before, {name: (root / name).read_bytes() for name in names})
 
     @unittest.skipUnless((SRC / '.git').exists() and shutil.which('cc'), 'pinned source and C compiler required')
+    def test_native_capture_bypasses_real_prewarm_and_normal_policy_resumes(self):
+        # Capture must exercise vk_shader_get, not silently reuse old SPIR-V
+        # modules and export only the few newly encountered shaders.
+        source = subprocess.check_output(['git', '-C', str(SRC), 'show',
+                                          PIN + ':src/nx/gpu/vk/pipeline.c'], text=True)
+        source = LIVE.transform(source)
+        for old, new in OPT.replacements()['src/nx/gpu/vk/pipeline.c']:
+            self.assertEqual(source.count(old), 1)
+            source = source.replace(old, new, 1)
+        start = source.index('static void pf_start_load(void) {')
+        end = source.index('\n}\n', start) + 3
+        function = source[start:end]
+        program = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+static struct {
+    struct { int lock; } file;
+    int lock, done, on;
+    char path[1200];
+} g_pf;
+static struct { int shader_captures; } g_settings;
+static int snx_ryu_persistent, threads, null_modules, synchronous_loads;
+static char g_cache_dir[1024];
+static const char* g_exename = "01006BB00C6F0000";
+#define LOG(...) printf(__VA_ARGS__)
+static void pm_init(int* p) { *p = 0; }
+static void pc_init(int* p) { *p = 0; }
+static void null_fs(void) { null_modules++; }
+static void pf_load(void* arg) { (void)arg; synchronous_loads++; }
+static int plat_thread(void (*fn)(void*), void* arg, size_t stack) {
+    (void)fn; (void)arg; (void)stack; threads++; return 0;
+}
+static int snx_ryu_cache_path(char* out, size_t cap, const char* dir, const char* game, const char* ext) {
+    int n = snprintf(out, cap, "%s/%s.test%s", dir, game, ext);
+    return n >= 0 && (size_t)n < cap;
+}
+''' + function + r'''
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    snprintf(g_cache_dir, sizeof g_cache_dir, "%s", argv[1]);
+    unsetenv("SNX_SHADER_CORPUS"); unsetenv("SNX_RYUJINX_NATIVE_PROBE");
+    pf_start_load();
+    assert(g_pf.on && threads == 1 && null_modules == 1 && !synchronous_loads);
+    assert(strstr(g_pf.path, "01006BB00C6F0000.vkshaders"));
+    g_pf.on = 0; g_settings.shader_captures = 1;
+    pf_start_load(); /* Android --diag=1 capture, even with an existing cache */
+    assert(!g_pf.on && threads == 1 && null_modules == 1);
+    g_settings.shader_captures = 0; setenv("SNX_SHADER_CORPUS", "private-corpus", 1);
+    pf_start_load();
+    assert(!g_pf.on && threads == 1 && null_modules == 1);
+    unsetenv("SNX_SHADER_CORPUS");
+    pf_start_load(); /* disabling capture restores the original prewarm */
+    assert(g_pf.on && threads == 2 && null_modules == 2);
+    g_pf.on = 0; g_settings.shader_captures = 1;
+    setenv("SNX_RYUJINX_NATIVE_PROBE", "1", 1); snx_ryu_persistent = 1;
+    pf_start_load();
+    assert(!g_pf.on && threads == 2 && null_modules == 2);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            shader_file = root / '01006BB00C6F0000.vkshaders'
+            shader_file.write_bytes(b'existing shader records')
+            output = compile_run(program, root, root)
+            self.assertEqual(shader_file.read_bytes(), b'existing shader records')
+            self.assertEqual(output.count('SNX_SHADER_CAPTURE_V1'), 3)
+
+    @unittest.skipUnless((SRC / '.git').exists() and shutil.which('cc'), 'pinned source and C compiler required')
     def test_original_pipeline_file_corruption_and_reopen_regressions(self):
         # Keep every upstream assertion and the real PfShader/ShaderInfo. Inject
         # ENOSPC at the I/O boundary: Android /dev/full may be inaccessible or

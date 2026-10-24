@@ -222,6 +222,82 @@ about 20 seconds each, then export the log before starting another run.
 No AOT regeneration or cache deletion is required. This stage instruments the
 failure; it does not claim that shadows or lighting have been corrected.
 
+### Detailed RedMagic result: resources are bound, pixel correctness unresolved
+
+`Zelda-SNX-boot (6).txt` confirms detailed mode on `02f1f3c`, with
+`shadows_enabled=1` and the native translator. The twelve complete windows
+after elapsed 20 seconds cover 60.144 seconds and 3,150 renderer events:
+
+| Evidence | Observed |
+|---|---:|
+| Renderer / presentation enqueue rate | 52.374 / 52.357 frames/s |
+| Renderer p50 / p95 / p99 | 18.594 / 25.837 / 34.196 ms |
+| Depth-only draw setups | 473,973 |
+| Texture binding events / null bindings | 2,539,221 / 0 |
+| Shadow binding events / null shadow bindings | 237,514 / 0 |
+| Shadow samplers with unexpected color views | 0 |
+| Skipped draws | 0 |
+| Texture content hashing | 8,964.322 ms; about 2.85 ms per renderer event |
+| Graphics host timeline wait | 30,215.390 ms |
+| JIT compilation / guest miss waits in this interval | 0 / 0 |
+
+Detailed mode and a different scene mix mean these FPS figures are not an
+A/B gain claim. The counters rule out an explicit shadows-OFF setting and
+null-view substitution for the measured bindings; they do not establish the
+contents of a shadow map or the results of a shader comparison.
+
+All recorded shadow sampler signatures reference address `5432b0000`,
+2048x2048, Vulkan format 129 (D24_UNORM_S8_UINT), requested as a 2D array.
+The same address appears in depth-only setups with depth test/write enabled
+and also in the GPU's timed target list. This correlates a produced target
+with its consuming shader bindings. Layer contents, coordinates, references,
+shader semantics and the driver's rendering still need examination. The
+trace has no GPU pixel readback and cannot prove that the map contains the
+expected occluders. Its detail limits are reached in some windows; the
+untruncated per-window counters continue regardless.
+
+During gameplay the existing profiler records roughly 2--5 ms per frame in
+passes and roughly 7--9 ms in gaps containing copies. These timestamps include
+the interval between passes: pipeline bubbles, CPU submission delays and
+semaphore waits can be included. They are not isolated measurements of a
+particular transfer's execution time. Texture hashing, staged copies and
+dependencies between passes are stronger next performance targets than JIT
+in this specific run. No wait or correctness check is removed on that basis.
+
+### Complete shader capture without deleting a warm cache
+
+The next required evidence is the actual shader programs for the identified
+depth map and its readers. The previous launcher enabled `--diag=1` but the
+native prewarm guard only checked `SNX_SHADER_CORPUS`. With an existing warm
+shader file, previously translated shaders could therefore escape capture.
+The old ZIP export also included fragment stage 4 only, omitting vertices
+needed to examine shadow-map generation.
+
+In the audit patch, `pf_start_load` now also checks
+`g_settings.shader_captures`. For a capture session it does not prewarm or
+append translated-shader records and logs `SNX_SHADER_CAPTURE_V1`; existing
+files remain in place. Turning capture OFF restores the original persistent
+shader policy. The driver pipeline cache is retained under the normal native
+policy. The original `shader_corpus_save` records each newly encountered
+in-memory shader; no alternative shader, partial shader or placeholder draw
+is introduced.
+
+The launcher's **Exportar shaders de todos os estagios (.zip)** includes the
+existing private `.snxs` captures for stages 0--5: vertex, tessellation control,
+tessellation evaluation, geometry, fragment and compute. File-name, file-size
+and file-count bounds are retained; the ZIP still contains only files under
+`captures/shaders`, not the game container, keys, saves or AOT module. Earlier
+captures are retained as well, so ZIP presence is not proof of current use;
+the detailed log's shader hashes and state identify the relevant programs.
+
+After updating this audit build, fully end the child, select GPU DETALHADA,
+enable **Capturar shaders na proxima execucao**, leave Ryujinx, confirmed waits
+and Ryujinx persistence OFF, and keep Stable60 at the prior setting. Visit
+the three comparison scenes briefly, then export the shader ZIP and log
+before another launch. Capture adds translation and I/O overhead; it is for
+correctness diagnosis, not a performance comparison. Disable it afterward.
+No full AOT rebuild or cache deletion is needed.
+
 ## Implemented experiments (default OFF)
 
 ### Confirmed graphics completion

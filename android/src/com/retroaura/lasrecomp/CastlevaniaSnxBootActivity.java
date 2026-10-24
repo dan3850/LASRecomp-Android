@@ -96,7 +96,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         content.addView(capture);
 
         Button exportShaders = new Button(this);
-        exportShaders.setText("Exportar shaders de fragmento (.zip)");
+        exportShaders.setText("Exportar shaders de todos os estagios (.zip)");
         exportShaders.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             i.addCategory(Intent.CATEGORY_OPENABLE);
@@ -233,10 +233,10 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 }, "snx-ryujinx-import").start();
             } else if (request == EXPORT_SHADERS) {
                 final Uri output = uri;
-                message("Exportando apenas shaders de fragmento; sem NSP ou chaves...");
+                message("Exportando shaders de vertices, fragmentos e demais estagios; sem NSP ou chaves...");
                 new Thread(() -> {
                     try {
-                        int count = exportFragmentShaders(output);
+                        int count = exportCapturedShaders(output);
                         runOnUiThread(() -> message("Exportados " + count + " shaders em ZIP. Os dados ficam no arquivo escolhido."));
                     } catch (Exception error) {
                         runOnUiThread(() -> message("Falha exportando shaders: " + error.getMessage()));
@@ -337,11 +337,11 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 (getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false) ? "LIGADO" : "DESLIGADO");
     }
 
-    /** Only the captured Maxwell fragment binaries; no dump, savedata or prod.keys. */
-    private int exportFragmentShaders(Uri destination) throws IOException {
+    /** Captured Maxwell stages 0..5; no dump, savedata or prod.keys. */
+    private int exportCapturedShaders(Uri destination) throws IOException {
         File directory = new File(getFilesDir(), "snx-games/" + ID + "/captures/shaders");
         File[] shaders = directory.listFiles((dir, name) ->
-                name.matches("[0-9a-fA-F]{16}_4\\.snxs"));
+                name.matches("[0-9a-fA-F]{16}_[0-5]\\.snxs"));
         if (shaders == null || shaders.length == 0)
             throw new IOException("Nenhum .snxs encontrado. Ative a captura, execute o jogo e tente novamente.");
         Arrays.sort(shaders, (a, b) -> a.getName().compareTo(b.getName()));

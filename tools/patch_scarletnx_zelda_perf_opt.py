@@ -13,6 +13,11 @@ LIVE = runpy.run_path(str(HERE / 'ryujinx-nativeaot/patch_scarletnx_live_probe.p
 CACHE = LIVE['CACHE_NEW']
 CACHE_PERSIST = CACHE.replace('if (ryu && !strcmp(ryu, "1")) {',
                              'if (ryu && !strcmp(ryu, "1") && !snx_ryu_persistent) {')
+CACHE_PERSIST = CACHE_PERSIST.replace('if (getenv("SNX_SHADER_CORPUS")) {',
+                                      'if (getenv("SNX_SHADER_CORPUS") || g_settings.shader_captures) {')
+CACHE_PERSIST = CACHE_PERSIST.replace(
+    'vulkan: SNX_SHADER_CORPUS is set, so every shader is translated and none is kept for the next run',
+    'vulkan: SNX_SHADER_CAPTURE_V1 capture enabled; translated-shader persistence bypassed, existing files untouched')
 
 
 def replacements():
