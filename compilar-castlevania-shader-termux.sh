@@ -18,6 +18,12 @@ OUT="$HOME/scarletnx-zelda-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ -f "$SRC/src/nx/gpu/vk/snx_clear_load.h" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_clear_load.py" "$SRC" --revert; then
+      echo "ERRO: falha restaurando limpezas iniciais dos passes" >&2
+      restore_failed=1
+    fi
+  fi
   if [ -f "$SRC/src/nx/gpu/vk/snx_uniform.h" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_zelda_uniform.py" "$SRC" --revert; then
       echo "ERRO: falha restaurando snapshots de uniformes" >&2
@@ -176,6 +182,7 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda_hash_span.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_transfer.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_uniform.py" "$SRC"
+  python3 "$ROOT/tools/patch_scarletnx_zelda_clear_load.py" "$SRC"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"

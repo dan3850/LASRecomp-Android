@@ -35,7 +35,9 @@ Build the latest reference with
 Output: `Download/ZeldaRecomp/Zelda-SNX-UNIFORMES.apk`.
 Preserve that APK and `Zelda-SNX-NXNATIVE-TRANSFER.apk`. Keep transfer reuse
 and uniforms ON, capture OFF, telemetry LEVE, the native translator and the
-same Stable60 state when comparing the next independent option.
+same Stable60 state when comparing the next independent option. If rebuilding
+the uniform profile from newer code, explicitly keep the clear option OFF
+for the reference trial; a saved ON preference overrides the profile default.
 
 ## Implemented and published
 
@@ -49,16 +51,58 @@ same Stable60 state when comparing the next independent option.
 | `24250a6` | Optional range-qualified CPU reads for texture hashing. | All bytes still hashed; page-rounded GPU ownership and visibility checks preserved. Not a dirty-page tracker. |
 | `9b405a6` | Fence-retired transfer-buffer pool, contiguous row coalescing and eligible full linear DMA overwrites without old-destination staging. | New generation on every reused resource; bounded pool. Previous delivery reported 21 host tests passing. User subsequently reported a large improvement. |
 | `d212126` | Optional graphics-only immutable uniform snapshots, reuse after strict content checks within the same submission, and bypass of promotion copies. | 25 host tests pass; full patched `buffer.c`, `render.c`, `renderer.c` pass C syntax checks. User subsequently reported improvement; controlled device metrics remain pending. |
+| `clear-load-v1` delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_clear_load.py`) | Optional eligible full clears as new-pass load actions, preserving same-pass reuse and conservative fallbacks. | 29 host tests pass; 40 old/new pixel-model scenes and full patched C syntax checks. Not yet tested on the Android Vulkan driver; no FPS gain claimed. |
 
-## Current stopping point: next clear-load adaptation being investigated
+## Current stopping point: clear-load adaptation delivered; device A/B pending
 
 The first uniform adaptation is implemented, host-validated and now positively
-reviewed by the user. The next step is full clears at a new Vulkan pass's
-beginning, inspired by nxnative's clear load actions. It has not yet been
-implemented at this intermediate checkpoint. No Android APK or new measured
-on-device FPS result was produced on the assistant's host.
+reviewed by the user. The next adaptation is implemented in
+`tools/patch_scarletnx_zelda_clear_load.py` and `tools/zelda-perf/clear_load.h`.
+The user explicitly asked to resume from the exact stopping point without
+redoing existing work. Do not rewrite the transfer/uniform implementations
+or restart the nxnative audit. Read [the clear scope](zelda-clear-load.md)
+and check whether device logs/feedback for this delivery have arrived first.
 
-Initial source findings on the pinned ScarletNX:
+- Option: `SNX_VK_CLEAR_LOAD=1`, **Limpezas completas no inicio do passe**.
+  Default ON only in the new clear profile (saved preference respected);
+  runtime/ordinary audit default OFF. Roll back this step alone by switching
+  it OFF and restarting the game process. Keep approved transfers/uniforms ON.
+- Only immediate, unpredicated full clears of single-layer, equal-extent,
+  distinct bound images qualify, when the original rules already need a new
+  pass. Full color masks and complete actual depth/stencil aspects are
+  required. Open-pass clears, scissors, partial masks/aspects, arrays, volumes,
+  aliases and invalid selections retain the original commands. There is no
+  cross-command lazy clear, new pass break, discard or removed barrier.
+- Existing store operations, color bits, chosen views, depth clamping,
+  stencil truncation, feedback and all write/full/undefined bookkeeping stay.
+  Actual delayed recorder functions are exercised, including stack-value
+  lifetime. Full stack apply/revert restores every source byte.
+- `SNX_CLEAR_LOAD_META_V1` and `SNX_CLEAR_LOAD_V1` count requests, candidates,
+  folded commands, same-pass fallbacks, per-aspect clears and initialized
+  pixel areas. Areas are not measured bandwidth savings; use matching complete
+  windows in the analyzer. Forty old/new scenes keep pixel-model contents,
+  metadata, pass/query/profiler/barrier and masked-clear work equivalent.
+- `compilar-zelda-clears-termux.sh` validates the signed APK's current profile
+  assets and compiled markers, then produces `Zelda-SNX-CLEARS.apk`. It
+  preserves the approved uniform/transfer APK filenames and takes a once-only
+  before-clears backup of an existing uniform APK. Reuse the existing AOT,
+  Gradle, CMake, Ninja and shader caches. FSWZADD stays OFF.
+- All 29 host audit tests pass with zero skips and a real `spirv-val`.
+  Complete patched `render.c`, `renderer.c`, `record.c`, shell syntax and
+  whitespace checks pass. No Java/Android APK or game run was performed here.
+  A pixel model does not establish Vulkan-driver correctness or an FPS gain.
+
+**Resume:** first inspect OFF/ON phone evidence for this clear option, with
+transfers/uniforms ON and capture OFF. Check `folded_commands`, frame p95/p99
+and visuals; maintain the last approved `d212126` reference until validated.
+If no device evidence is available, the next useful independent task is
+read-only diagnosis and bounded instrumentation of Android write-watch
+availability/cost, using the existing tracker before adding any fallback.
+Do not transplant fault handlers or shared pools without the alias/ownership
+proofs listed below. Broader partial/deferred clears and load/store elimination
+remain separate, unimplemented work.
+
+## Approved uniform scope and existing mechanisms (preserve)
 
 - `maxwell3d.c:r3d_const_upload/r3d_const_flush` already batches inline constant
   words and writes them through `gmem_write`. Do not implement batching again.
@@ -77,8 +121,8 @@ Initial source findings on the pinned ScarletNX:
   writes remain immediately guest-visible through the original APIs. Complete
   deferred GPU updates and partial shadows are still potential later work.
 - Runtime option: `SNX_VK_UNIFORM_STREAM=1`; UI:
-  `Uniformes em snapshots reutilizaveis`. Defaults ON only in the new uniform
-  variant, OFF in the ordinary audit/transfer variant unless the user has
+  `Uniformes em snapshots reutilizaveis`. Defaults ON in the uniform and clear
+  profiles, OFF in the ordinary audit/transfer variant unless the user has
   explicitly saved a preference. Transfer reuse remains enabled in the new
   variant; FSWZADD stays OFF. Every trial uses a fresh game process.
 - `compilar-zelda-uniformes-termux.sh` produces
@@ -99,13 +143,8 @@ Initial source findings on the pinned ScarletNX:
   staging snapshot. Both hash all bytes on all five required checks. This
   establishes work removed in that case, not a phone FPS gain.
 
-**Resume:** audit `render.c:render_begin/vk_render_clear` for an immediate
-`VK_ATTACHMENT_LOAD_OP_CLEAR` alternative to eligible full attachment clears
-when a new pass is already needed. Preserve in-pass clears, GPU predicates,
-scissors, partial channel/aspect masks, layers, aliasing, metadata and barriers.
-Do not transplant cross-command lazy clears without complete observer tracking.
-Add actual-source pixel/command equivalence and bounded counters before
-publishing the next independent runtime option. The uniform scope remains in
+The immediate clear adaptation described above completes that former stopping
+point. Do not implement it a second time. The uniform scope remains in
 [`zelda-uniform-snapshots.md`](zelda-uniform-snapshots.md).
 
 ## Remaining work inventory
@@ -120,7 +159,7 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 | Broader persistent/shared GPU pools | Only transfer-result pooling adapted. A whole-pool shared-memory path needs Vulkan/driver support, alias and lifetime proofs. |
 | Binding/state fast paths | Descriptor reuse already exists; evaluate skipping repeated reconstruction through validated generations. |
 | Texture upload batches / dynamic image versions | Existing staging, image reuse and GPU conversion are present. Profile remaining transitions and dependencies before extending them. |
-| Fold clears into render-pass load actions | Current investigation; immediate new-pass full clears only, with conservative fallback. No implementation at this intermediate checkpoint. |
+| Fold clears into render-pass load actions | First immediate new-pass full-clear adaptation delivered; Android A/B pending. Partial, layered and deferred-clear extensions remain unimplemented. |
 | Attachment load/store elimination | Experimental. Needs complete reads/writes/alias/bindless tracking and CPU observers. |
 | Pass merging / tile-local feedback | Experimental; nxnative itself defaults its broad TBDR optimization set OFF because bindless defeats its dependency inference. Do not enable it blindly. |
 | More precise Vulkan barriers | Candidate; preserve producer/consumer visibility and required waits. |
@@ -138,6 +177,17 @@ unresolved. Supplied logs show shadow targets rendered and bound, not their
 correct pixel contents. Do not call an optimization a visual fix without
 device comparison or decisive pixel/semantic evidence.
 
+Suggested investigation order (expected impact is a hypothesis, not a result):
+
+| Next front | Expected impact / evidence needed | Change risk | Difficulty |
+|---|---|---|---|
+| Validate clear-load option | Unknown; count actual folds and compare equal-route frame intervals. | Conservative scope; driver validation pending. | Low: one APK, fresh-process OFF/ON. |
+| Diagnose existing Android write-watch | Potentially high if full-content hashing remains expensive; measure availability and hash cost. | Low for diagnostics; high for a new fault-handler fallback. | Medium diagnosis / high implementation. |
+| Repeated bindings, uploads and pass breaks | Potentially medium/high if CPU reconstruction or tile traffic dominates; use existing profiler/counters. | Medium to high depending on dependency scope. | Medium/high. |
+| Shader prewarm/pipeline prediction | Mainly first-visit stutter; separate warm/cold-cache trials without deleting caches. | Medium; all variants must be correct. | Medium/high. |
+| CPU scheduler/frame pacing | Unknown until CPU waits and stream intervals establish the bottleneck. | High if timing/scheduler semantics change. | High. |
+| Missing visual effects / full bridge | Correctness priority; no FPS benefit assumed. Capture targeted pass pixels/resources. | High for resource/stage integration. | High. |
+
 ## Sources and build/test procedure
 
 ScarletNX is pinned to `34853eeae5af132e320adbb0193f13344085bf89`. The actual
@@ -154,7 +204,7 @@ libraries, game binaries, keys or private shader captures into the repository.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_zelda_perf*.py' -v
-bash -n compilar-castlevania-shader-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh compilar-zelda-uniformes-termux.sh
+bash -n compilar-castlevania-shader-termux.sh compilar-mario-snx-runtime-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh compilar-zelda-uniformes-termux.sh compilar-zelda-clears-termux.sh
 git diff --check
 ```
 
@@ -171,7 +221,7 @@ set -e
 cd "$HOME/LASRecomp-Android"
 git switch experimental/zelda-links-awakening-ryujinx-nativeaot
 git pull --ff-only origin experimental/zelda-links-awakening-ryujinx-nativeaot
-SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-uniformes-termux.sh
+SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-clears-termux.sh
 ```
 
 Use a warm cache and the same save, route, camera, resolution, refresh, cooling
@@ -179,9 +229,10 @@ and Stable60 state. Separate processes for OFF/ON; export 90-second logs and
 compare matching complete windows after warmup. Preserve the last good APK.
 Never compare capture+GPU-detailed sessions with LEVE and claim causality.
 
-The latest delivery completed 25 audit tests with zero skips and a real
+The latest delivery completed 29 audit tests with zero skips and a real
 `spirv-val`, plus shell syntax, whitespace and the three full patched C-unit
-syntax checks. Settings for the C-unit checks were generated from the pinned
-specification; LLVM option-table generation is unnecessary for those units.
+syntax checks described in the clear scope. Settings for the C-unit checks
+were generated from the pinned specification; LLVM option-table generation
+is unnecessary for those units.
 No full game/AOT rebuild was performed. A future test failure on Termux must
 be fixed and recorded rather than dismissed because these host checks pass.

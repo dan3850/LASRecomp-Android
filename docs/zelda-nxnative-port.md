@@ -244,4 +244,20 @@ produces `Zelda-SNX-UNIFORMES.apk` with a separate runtime ON/OFF option.
 See [scope, validation and comparison](zelda-uniform-snapshots.md) and the
 [continuation checkpoint](zelda-performance-handoff.md). This first step does
 not defer guest-visible writes or implement all of nxnative's uniform update
-machinery. Device FPS validation is pending; host tests are not an FPS claim.
+machinery. The user subsequently reported improvement on the phone; controlled
+device metrics remain pending. Host tests are not an FPS claim.
+
+## Fourth implementation: full clears at new-pass begin
+
+The next independent option folds eligible immediate full clears into Vulkan
+attachment load actions, keeping existing same-pass reuse and original
+predicated/partial/layered clear paths. Transfers and uniform snapshots remain
+available. `compilar-zelda-clears-termux.sh` produces `Zelda-SNX-CLEARS.apk`
+without overwriting the approved uniform or transfer APKs. It adds bounded
+counters and a separate OFF/ON control, without rebuilding the game AOT.
+
+See [scope, 40-case model evidence and device procedure](zelda-clear-load.md).
+All 29 host audit tests pass; Android Vulkan/FPS validation of this step is
+pending. Deferred clears, broad load/store elimination and pass reordering
+have not been implemented. Continue from the
+[handoff](zelda-performance-handoff.md), which lists the remaining fronts.
