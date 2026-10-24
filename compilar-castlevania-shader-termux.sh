@@ -18,6 +18,12 @@ OUT="$HOME/scarletnx-zelda-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ -f "$SRC/src/nx/gpu/vk/snx_transfer.h" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_transfer.py" "$SRC" --revert; then
+      echo "ERRO: falha restaurando transferencias Vulkan" >&2
+      restore_failed=1
+    fi
+  fi
   if [ -f "$SRC/src/nx/gpu/vk/snx_hash_span.h" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_zelda_hash_span.py" "$SRC" --revert; then
       echo "ERRO: falha restaurando a verificacao de texturas por faixa" >&2
@@ -162,6 +168,7 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda_perf.py" "$SRC" --revision "$(git rev-parse HEAD)"
   python3 "$ROOT/tools/patch_scarletnx_zelda_perf_opt.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_hash_span.py" "$SRC"
+  python3 "$ROOT/tools/patch_scarletnx_zelda_transfer.py" "$SRC"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"

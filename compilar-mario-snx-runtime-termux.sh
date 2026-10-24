@@ -73,6 +73,9 @@ rm -rf "$EXTRA"
 mkdir -p "$EXTRA/lib/arm64-v8a" "$EXTRA/assets/licenses"
 if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-PERF.txt"
+  if [ "${SCARLETNX_ZELDA_NXNATIVE:-0}" = 1 ]; then
+    git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-NXNative.txt"
+  fi
 fi
 SNLIB="$EXTRA/lib/arm64-v8a"
 # Cross-check against the previous LASRecomp test's native library names.

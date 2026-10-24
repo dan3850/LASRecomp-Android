@@ -137,3 +137,97 @@ OFF path retains the earlier hashing behavior in the same APK. The remaining
 fronts are Android write tracking, measured Vulkan pass/copy reduction, and
 the multi-stage Ryujinx resource bridge. Missing shadows/lighting remain
 unresolved and are not claimed fixed by this CPU-side memory adaptation.
+
+## Second implementation: persistent Vulkan transfers
+
+The supplied `1f4d2a7` phone log also records substantial GPU intervals between
+render passes containing copies. For example, at 71.73 s, its 511-frame profile
+reports 7.33 ms/frame of copy-containing gaps (3.93 buffer-only, 1.92 including
+buffer/image transfers, 1.48 including image copies). These are measured
+intervals containing operations and possible GPU idle time, not an estimate of
+the time this patch can save. The session had detailed diagnostics and capture
+enabled. Its FPS is not a controlled baseline for the new port.
+
+The nxnative reference uses persistent pool buffers (`nvn_mtl.m:mtl_addr`,
+`blit_raw`, `mtl_sub_copy`) and reuses completed upload staging slots. Our
+`owned.c:vk_own_res_new` instead allocated a Vulkan buffer for each DMA, blit,
+VIC or video result, and `vk_copy_rows` always emitted batches of 64 regions,
+including fully contiguous surfaces. This adaptation implements the following
+using ScarletNX's Vulkan resources and existing completion machinery:
+
+- A bounded, exact-size pool of transfer-result buffers. A resource enters it
+  only after its final ownership reference is released **and** the existing
+  `vk_defer_call` frame completion runs. No live owner or in-flight buffer can
+  be taken from the pool. It holds at most 128 allocations / 64 MiB, accounts
+  actual VMA allocation sizes, ages idle entries out after 300 frames, and
+  releases idle storage during buffer-budget reclamation or before retrying a
+  failed allocation. It does not add a wait.
+- A new content generation for every use, including a buffer reused at the
+  same resource address. The optional `OwnHooks.identity` callback and
+  `vk_guest_peek` use it for owner-based hashes. Otherwise identical pointers
+  could make different GPU results appear unchanged. OFF retains the original
+  pointer identity exactly. This changes internal renderer structures only,
+  not the AOT's ABI 12 CPU/RtAPI contract.
+- Contiguous source and destination rows coalesced into one buffer copy.
+  Padded or otherwise strided copies retain their original regions. No copy
+  crosses padding or a layout boundary.
+- A complete pitch-linear DMA overwrite copied from its existing source
+  snapshot/staging directly into its result buffer, without reading/staging
+  the old destination or preparing scratch rows. Block-linear layouts,
+  component remaps, fills, preserved destination components and partial-row
+  spans retain the original implementation. Producer/consumer barriers,
+  publication through the GMMU, unmapped destination holes and memory-write
+  notifications remain in place.
+
+`tools/patch_scarletnx_zelda_transfer.py` applies this after the audit/hash-span
+patches and restores it before them, including the ownership callback.
+`SNX_VK_TRANSFER_REUSE=1` selects all three transfer changes. OFF keeps the
+original transfer paths in the same APK. No shader arithmetic, resolution,
+draw count, CPU/GPU clock or guest timing changes; no cache is deleted.
+
+Host verification executes the actual pinned allocation/refcount, DMA and
+row-copy functions with instrumented buffer/command and completion backends.
+All bytes match the old implementation for contiguous and padded rows,
+snapshots, overlapping guest source/destination addresses, pending source
+overlays and unmapped destination holes. A contiguous 720-row transfer changes
+from 12 copy commands to 1. Complete linear DMA avoids one destination-sized
+staging/read operation and scratch preparation. Tests also exercise retaining
+ownership across release, delayed completion, exact-size matching, pool limits,
+idle expiry, allocation/staging failure, OFF, invalid options, telemetry reset
+and new owner/hash identity at the same pointer. These are correctness and
+work-count results, not GPU benchmark results. The full patched C translation
+units also pass syntax checks with the pinned Vulkan, volk and VMA headers.
+The 21 audit tests pass; full patch-stack restoration is byte-exact.
+
+`SNX_TRANSFER_META_V1` records the effective option and cap;
+`SNX_TRANSFER_V1` records hits/misses, evictions, live pool size, row-copy calls
+before/after coalescing, complete linear DMA count/bytes, and destination
+staging bytes avoided. The analyzer accepts only complete matching windows,
+sums operation deltas, and keeps pool entries/bytes as last-window gauges.
+Pool hits and removed calls establish whether the new paths ran in the game;
+they do not establish an FPS gain by themselves.
+
+Build the transfer variant on the phone:
+
+```bash
+set -e
+cd "$HOME/LASRecomp-Android"
+git switch experimental/zelda-links-awakening-ryujinx-nativeaot
+git pull --ff-only origin experimental/zelda-links-awakening-ryujinx-nativeaot
+SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-nxnative-termux.sh
+```
+
+The wrapper verifies the revision and transfer marker in the signed APK and
+copies it to `Download/ZeldaRecomp/Zelda-SNX-NXNATIVE-TRANSFER.apk`.
+Its `Zelda-NXNative.txt` profile defaults **Reutilizar buffers e agrupar
+transferencias** to ON; a previously saved preference is respected. The
+ordinary audit variant defaults it to OFF. The existing AOT, saves and shader
+caches are reused. FSWZADD is explicitly OFF. No Android APK was compiled on
+this host, and no new on-device FPS result or graphical correction is claimed.
+
+Install as an update. Use capture OFF, LEVE, the native translator and the same
+Stable60 state. The transfer option alone can switch ON/OFF between fresh
+processes without rebuilding. The existing A/B analyzer command also reports
+the new transfer counters. Missing shadows, lighting and water remain a
+separate graphics issue; the multi-stage Ryujinx port and Android write-watch
+activation have not been implemented by this transfer change.

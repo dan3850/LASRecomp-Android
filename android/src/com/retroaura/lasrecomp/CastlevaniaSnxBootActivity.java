@@ -133,6 +133,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             addPerfOption(content, "zelda_known_complete", "Reutilizar esperas confirmadas");
             addPerfOption(content, "zelda_ryu_persist", "Cache Ryujinx entre execucoes");
             addPerfOption(content, "zelda_hash_span", "Verificacao de texturas por faixa");
+            addPerfOption(content, "zelda_transfer_reuse_v1", "Reutilizar buffers e agrupar transferencias", hasNxNativeBuild());
         }
 
         Button launch = new Button(this);
@@ -279,10 +280,20 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     }
 
     private void addPerfOption(LinearLayout content, String preference, String label) {
+        addPerfOption(content, preference, label, false);
+    }
+
+    private boolean hasNxNativeBuild() {
+        try (java.io.InputStream in = getAssets().open("licenses/Zelda-NXNative.txt")) {
+            return in.read() >= 0;
+        } catch (IOException e) { return false; }
+    }
+
+    private void addPerfOption(LinearLayout content, String preference, String label, boolean initial) {
         Button option = new Button(this);
-        option.setText(label + ": " + (getPreferences(MODE_PRIVATE).getBoolean(preference, false) ? "ON" : "OFF"));
+        option.setText(label + ": " + (getPreferences(MODE_PRIVATE).getBoolean(preference, initial) ? "ON" : "OFF"));
         option.setOnClickListener(v -> {
-            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean(preference, false);
+            boolean enabled = !getPreferences(MODE_PRIVATE).getBoolean(preference, initial);
             getPreferences(MODE_PRIVATE).edit().putBoolean(preference, enabled).apply();
             option.setText(label + ": " + (enabled ? "ON" : "OFF"));
             message("Aplicado na proxima execucao do jogo.");
@@ -511,6 +522,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_known_complete", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_known_complete", false));
             intent.putExtra("snx_ryu_persist", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_ryu_persist", false));
             intent.putExtra("snx_hash_span", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_hash_span", false));
+            intent.putExtra("snx_transfer_reuse", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_transfer_reuse_v1", hasNxNativeBuild()));
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);
