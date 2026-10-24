@@ -398,6 +398,16 @@ The repair's visual benefit, possible shader cost and any FPS difference
 remain unmeasured until matching device runs are supplied. Correctness takes
 priority over throughput with missing effects.
 
+Termux test portability follow-up: Bionic headers expose the POSIX `O_SYNC`
+file-open macro before the generated Maxwell enum, which also names its SYNC
+opcode `O_SYNC`. The standalone semantic test now includes `fcntl.h` and
+undefines that macro immediately before the enum in its disposable header
+copy. The cached ScarletNX source, generated opcode values and packaged
+runtime are unchanged. A regression reproduces the failing include order,
+then compiles and executes the real decoder to verify that Maxwell SYNC and
+its control-stack classification remain intact. All 14 audit tests pass on
+the host, including before/after shader semantics; no assertion is skipped.
+
 ## Implemented experiments (default OFF)
 
 ### Confirmed graphics completion

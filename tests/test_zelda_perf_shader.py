@@ -16,6 +16,14 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SRC = Path(os.environ.get('SCARLETNX_TEST_SRC', ROOT.parent / 'ScarletNX-audit'))
 PIN = '34853eeae5af132e320adbb0193f13344085bf89'
+# Only the disposable host-test copy uses this shim. Bionic/Termux headers
+# can expose the POSIX file-open flag before Maxwell's opcode enum is read.
+# Include fcntl first so a later include cannot reintroduce that macro.
+HOST_OPCODE_INCLUDE = '''#include <fcntl.h>
+#ifdef O_SYNC
+#undef O_SYNC
+#endif
+#include "maxwell_opcodes.h"'''
 
 
 def load(name, path):
@@ -178,6 +186,12 @@ class ShaderTests(unittest.TestCase):
                 target = cls.source / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(subprocess.check_output(['git', '-C', str(SRC), 'show', PIN + ':' + name]))
+        translator = cls.source / 'src/nx/gpu/shader/translator.h'
+        cls.original_translator = translator.read_text()
+        anchor = '#include "maxwell_opcodes.h"'
+        if cls.original_translator.count(anchor) != 1:
+            raise AssertionError('unknown pinned translator opcode include')
+        translator.write_text(cls.original_translator.replace(anchor, HOST_OPCODE_INCLUDE, 1))
         cls.shader = cls.source / 'src/nx/gpu/shader/spirv_translate.c'
         # Match the actual shared builder's pre-existing diagnostics and D7 patch.
         bindless = load('bindless_for_fswz', ROOT / 'tools/patch_scarletnx_bindless_diag.py')
@@ -195,6 +209,36 @@ class ShaderTests(unittest.TestCase):
         result = subprocess.run(command + ['-lm', '-pthread', '-o', str(binary)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return binary
+
+    def test_posix_sync_collision_reproduces_then_real_decoder_preserves_opcode(self):
+        # Force the phone's failing include order even on a glibc host.
+        probe = self.work / 'sync_probe.c'
+        probe.write_text('''#include <fcntl.h>
+static const int posix_sync_flag = O_SYNC;
+#include "nx/gpu/shader/translator.h"
+#include <assert.h>
+#ifdef O_SYNC
+#error POSIX macro still hides the Maxwell opcode
+#endif
+int main(void) {
+    const Op* op = decode(0xf0f800000000000full);
+    assert(posix_sync_flag > 0);
+    assert(op && op->id == O_SYNC && O_SYNC < O__COUNT);
+    assert(!strcmp(op->name, "SYNC") && CRS_KIND(op->id) == 0);
+    return 0;
+}
+''')
+        unshielded = self.work / 'unshielded/nx/gpu/shader/translator.h'
+        unshielded.parent.mkdir(parents=True, exist_ok=True)
+        unshielded.write_text(self.original_translator)
+        command = ['cc', '-std=gnu11', '-I' + str(self.source / 'src'), '-I' + str(self.work),
+                   str(probe), str(self.source / 'src/nx/gpu/shader/decode.c'), '-o', str(self.work / 'sync_probe')]
+        before = subprocess.run(command[:1] + ['-I' + str(self.work / 'unshielded')] + command[1:], capture_output=True, text=True)
+        self.assertNotEqual(before.returncode, 0)
+        self.assertIn('O_SYNC', before.stderr)
+        after = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(after.returncode, 0, after.stderr)
+        subprocess.run([str(self.work / 'sync_probe')], check=True)
 
     def test_operand_semantics_before_after_and_source_rollback(self):
         patch = load('zelda_fswz', ROOT / 'tools/patch_scarletnx_zelda_fswz.py')
@@ -224,6 +268,7 @@ class ShaderTests(unittest.TestCase):
                         self.assertEqual(validation.returncode, 0, validation.stderr)
             subprocess.run([str(fixed), f'{mask:x}', '0', '0', str(output)], check=True)
         self.assertEqual(patch.transform_shader(self.shader.read_text(), True), self.before)
+        self.shader.write_text(self.before)
 
 
 if __name__ == '__main__':
