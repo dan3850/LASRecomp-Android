@@ -142,6 +142,8 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             addPerfOption(content, "zelda_bind_reuse_v1", "Reutilizar bindings validados", hasBindingsBuild());
             addPerfOption(content, "zelda_vb_pool_v1", "Reutilizar buffers persistentes", hasPersistentBuffersBuild());
             addPerfOption(content, "zelda_depth_range_v1", "Preservar faixa de profundidade", hasDepthRangeBuild());
+            if (hasD24CopiesBuild())
+                addPerfOption(content, "zelda_d24_copies_v1", "Corrigir copias da profundidade D24", true);
             addPerfOption(content, "zelda_shadow_capture_v1", "Capturar sombras (3 amostras; teste visual)");
             Button exportShadows = new Button(this);
             exportShadows.setText("Exportar diagnostico de sombras (.zip)");
@@ -389,6 +391,12 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         } catch (IOException e) { return false; }
     }
 
+    private boolean hasD24CopiesBuild() {
+        try (java.io.InputStream in = getAssets().open("licenses/Zelda-D24Copies.txt")) {
+            return in.read() >= 0;
+        } catch (IOException e) { return false; }
+    }
+
     private void addPerfOption(LinearLayout content, String preference, String label, boolean initial) {
         Button option = new Button(this);
         option.setText(label + ": " + (getPreferences(MODE_PRIVATE).getBoolean(preference, initial) ? "ON" : "OFF"));
@@ -629,6 +637,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_bind_reuse", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_bind_reuse_v1", hasBindingsBuild()));
             intent.putExtra("snx_vb_pool", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_vb_pool_v1", hasPersistentBuffersBuild()));
             intent.putExtra("snx_depth_range", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_depth_range_v1", hasDepthRangeBuild()));
+            intent.putExtra("snx_d24_copies", hasD24CopiesBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_d24_copies_v1", true));
             if (hasEffectDepthBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_effect_depth_v1", false)) {
                 if (getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false) ||
                         getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false))

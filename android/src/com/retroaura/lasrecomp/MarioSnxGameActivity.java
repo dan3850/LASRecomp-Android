@@ -156,6 +156,8 @@ public final class MarioSnxGameActivity extends SDLActivity {
                 zelda && getIntent().getBooleanExtra("snx_vb_pool", false) ? "1" : "0");
         SDLActivity.nativeSetenv("SNX_VK_DEPTH_RANGE",
                 zelda && getIntent().getBooleanExtra("snx_depth_range", false) ? "1" : "0");
+        SDLActivity.nativeSetenv("SNX_VK_D24_PACK",
+                zelda && getIntent().getBooleanExtra("snx_d24_copies", false) ? "1" : "0");
         String shadowDir = zelda ? getIntent().getStringExtra("snx_shadow_capture_dir") : null;
         SDLActivity.nativeSetenv("SNX_SHADOW_CAPTURE_DIR", shadowDir == null ? "" : shadowDir);
         String effectDepthDir = zelda ? getIntent().getStringExtra("snx_effect_depth_dir") : null;

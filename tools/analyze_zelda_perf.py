@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|VB_POOL(?:_META)?|DEPTH_RANGE(?:_META|_STATE)?|LIGHT(?:_META|_STATE|_RT|_LIMIT)?|WW(?:_META|_EVENT)|SHADOW_CAPTURE|EFFECT_DEPTH_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|VB_POOL(?:_META)?|DEPTH_RANGE(?:_META|_STATE)?|D24_PACK(?:_META|_STATE)?|LIGHT(?:_META|_STATE|_RT|_LIMIT)?|WW(?:_META|_EVENT)|SHADOW_CAPTURE|EFFECT_DEPTH_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -64,6 +64,7 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     vb_meta = [r for k, r in selected['rows'] if k == 'SNX_VB_POOL_META_V1']
     depth_meta = [r for k, r in selected['rows'] if k == 'SNX_DEPTH_RANGE_META_V1']
     light_meta = [r for k, r in selected['rows'] if k == 'SNX_LIGHT_META_V1']
+    d24_meta = [r for k, r in selected['rows'] if k == 'SNX_D24_PACK_META_V1']
     all_windows = {r['window']: r for k, r in selected['rows'] if k == 'SNX_PERF_V1'}
     # Include only windows wholly inside the requested time range. No mix of
     # startup/warmup with gameplay, no partial-window FPS extrapolation.
@@ -72,6 +73,12 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
                and (duration_seconds is None or r['elapsed_s'] <= skip_seconds + duration_seconds)}
     valid = {}
     for w, r in windows.items():
+        if d24_meta:
+            d24_rows = [x for k, x in selected['rows'] if k == 'SNX_D24_PACK_V1' and x['window'] == w]
+            if len(d24_rows) != 1:
+                continue
+            if d24_rows[0]['enabled'] != d24_meta[-1]['enabled']:
+                raise ValueError('packed-depth mode changed within session')
         if light_meta:
             light_rows = [x for k, x in selected['rows'] if k == 'SNX_LIGHT_V1' and x['window'] == w]
             if len(light_rows) != 1:
@@ -162,6 +169,9 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     if depth_meta:
         result['metadata']['depth_range'] = depth_meta[-1]
         result['depth_range_states'] = [r for k, r in selected['rows'] if k == 'SNX_DEPTH_RANGE_STATE_V1']
+    if d24_meta:
+        result['metadata']['packed_depth'] = d24_meta[-1]
+        result['packed_depth_states'] = [r for k, r in selected['rows'] if k == 'SNX_D24_PACK_STATE_V1']
     if light_meta:
         result['metadata']['lighting_diagnostics'] = light_meta[-1]
     ww_meta = [r for k, r in selected['rows'] if k == 'SNX_WW_META_V1']
@@ -246,6 +256,11 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
             for name, value in r.items():
                 if name not in ('window', 'enabled'):
                     depth[name] = depth.get(name, 0) + value
+        if k == 'SNX_D24_PACK_V1':
+            packed = result.setdefault('packed_depth', {})
+            for name, value in r.items():
+                if name not in ('window', 'enabled'):
+                    packed[name] = packed.get(name, 0) + value
         if k == 'SNX_LIGHT_V1':
             lights = result.setdefault('lighting_diagnostics', {})
             for name, value in r.items():

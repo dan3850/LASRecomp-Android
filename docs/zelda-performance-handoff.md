@@ -89,9 +89,78 @@ override saved preferences.
 | `0e0dfa4` | Exact-size reuse of completed stable vertex/index/storage buffers, plus passive write-watch failure evidence. | 49 host audit tests, actual source/lifetime/error paths, full C syntax and ASan/UBSan. First phone log confirms reuse and pagemap open denied; clean Android OFF/ON comparison pending. |
 | `9be351c` | Preserve computed finite depth endpoints with the explicitly requested/advertised Vulkan extension, retaining original shaders and OFF fallback. | 53 host tests. User reports colors/water resolved and photos show partial shadows/blur; haze, shafts and residual shadow/light remain. Exact new capability log pending. |
 | `3d0b426` | Bounded raw/effective first-color raster/blend state and separately budgeted valid 2D color-RT inputs in existing GPU detailed mode. | Both new scene logs received: depth fix actually enabled, candidates/state/input views present. No demonstrated blend fault. |
-| Paired effect-depth evidence (locate with `git log -1 -- tools/patch_scarletnx_zelda_effect_depth.py`) | Independent default-OFF capture of actual attachment/sample depth planes for four observed fragment candidates, at most three paired snapshots. | 61 host tests, actual surface barriers/Java exporter, full C syntax, ASan/UBSan. New phone pixel evidence pending; this is not a new lighting repair. |
+| `5711117` paired effect-depth evidence | Independent default-OFF capture of actual attachment/sample depth planes for four observed fragment candidates, at most three paired snapshots. | Phone ZIP received: all three sampled planes are zero; attachments contain geometry. Actual producer relationship remains unproven. |
+| D24 packed-depth copies (locate with `git log -1 -- tools/patch_scarletnx_zelda_d24_pack.py`) | Qualified exact-bit D24/S8 export into the existing memory-transfer/ownership path, reversible runtime option. | 65 host tests; actual Vulkan component on llvmpipe, 23965272 pixels including both ZT layouts and GOB padding. Android visual/cost validation pending; no FPS gain claimed. |
 
-## Current stopping point: both lighting logs analyzed; paired depth-pixel evidence ready
+## Current stopping point: paired pixels received; exact D24 export implemented
+
+Read [`zelda-packed-depth-copies.md`](zelda-packed-depth-copies.md) first.
+The new ZIP **has arrived and is analyzed**, including outdoor and telephone
+house geometry. Do not request the same prior shaders/shadow/lighting logs or
+separate old scene captures again.
+
+- `Zelda-efeitos.zip` SHA256
+  `29bdbf04133b81617840e6b956c65b7e24eacff6c0bf99690214704703c5492d`;
+  separate `Zelda-SNX-boot.txt` SHA256
+  `d64c909f407d32f5ef7f57b8568e3311a0d3eb72c0f2090e5c203792f47de944`.
+  Its bytes match the ZIP log: one execution, revision `5711117`, native,
+  prior performance options and depth extension actually ON. Effect capture
+  ON and GPU detailed. FPS analyzer refuses capture comparisons as intended.
+- Session `000001a16f81d032`, frames 712/2002/2894, dimensions 1280x720,
+  1920x1080, 1536x864. Attachment `54c980000` contains scene geometry around
+  depth .995..1. Sampled `5504a0000` is **all zero in all three planes**,
+  respectively 921600/2073600/1327104 pixels. No NaN/out-of-range. Ignore
+  undefined high8 bits of X8_D24. First fragment `9f178ae97683fd4e`, next two
+  `86d5a3f915a6795f`. The metadata correctly leaves producer lineage unproven.
+- Pinned `surface.c:flush_bytes` excludes packed D24S8; `rt_pending_over`
+  inherits that exclusion. Both DMA/2D stage_range already use `vk_rt_overlay`,
+  so a valid GPU depth target can fail to feed a memory copy. This is a source
+  gap reproduced in a test, compatible with the phone pixels, not proof of
+  the exact guest packet connecting those two addresses.
+- `patch_scarletnx_zelda_d24_pack.py` applies **after EFFECT_DEPTH**, restores
+  **before EFFECT_DEPTH**. Runtime `SNX_VK_D24_PACK=1`; opt-in C code, asset
+  gated UI **Corrigir copias da profundidade D24**, default ON only in new
+  copies profile. OFF returns to original export policy; preserve depth ON.
+- Exact integer packing of Vulkan D24 depth and stencil aspects into ZT0x14
+  (depth high24/stencil low8) or ZT0x16 (depth low24/stencil high8), using the
+  internal TC pipeline plus existing GOB swizzle/row copies. Restricted to
+  unscaled one-mip/layer nonvolume real D24S8; BL widths multiple of4 and
+  aligned output, tight linear pitch. Other layouts/fallbacks unchanged.
+  Ownership/generation/merge/full integrity/sync remain. Recorder has no
+  added wait/submit; existing CPU observers can still require their waits.
+  More correct transfer work can cost bandwidth/time; no speedup promised.
+- Internal GLSL uses unique modes; scan actual embedded SPIR-V before enabling
+  to reject stale C-only rebuilds. Reuse CMake/Ninja generation and caches.
+  `SNX_D24_PACK_META_V1`, up to eight state rows/window, and `SNX_D24_PACK_V1`
+  give requested/supported/enabled, targets, converted pixels and failures.
+  Analyzer requires complete matching windows. No game/AOT recompilation.
+- New builder: `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-copias-profundidade-termux.sh`.
+  Output `Download/ZeldaRecomp/Zelda-SNX-COPIAS-PROFUNDIDADE.apk`;
+  once-only prior effects APK backup `Zelda-SNX-EFEITOS-ANTES-COPIAS.apk`.
+  Fresh process after changing the new option. Old performance states and
+  Stable60 unchanged; depth ON, Ryujinx OFF. Normal play/measurement LEVE,
+  all captures OFF. For new pixel confirmation only, effect capture ON,
+  shader/shadow captures OFF, same route through outside + telephone house;
+  export the new effects ZIP. This validates the new repair, not old evidence.
+- 65 audit tests, zero skips with real glslang/spirv-val; exhaustive actual
+  GLSL 33554432 depth cases + old upload roundtrip; qualification/limits,
+  padding, barriers, failure paths, exact full-stack rollback; ASan/UBSan
+  (leak scan unsupported under host proc restriction). Whole three affected
+  C units and Java/shell/Python syntax. Actual production Vulkan recorder,
+  TC, surface-use and swizzle on **software llvmpipe LLVM15** checked
+  23965272 pixels including bh0/1/4. No Adreno or Android APK run here.
+
+**Resume:** inspect new ON metadata (`shader_supported=1`, `enabled=1`,
+`packed>0`, `failures=0`) and sampled pixels/visuals. If zero exports, establish
+actual DMA/2D lineage and qualification; if exported but still blank, trace
+addresses/aliases/order. If depth is restored but effects absent, inspect
+remaining uniforms/art/color composition, not global brightness/blend or the
+rejected FSWZADD experiment. Device validation of haze/shafts/reflected light,
+residual shadows/local blur and this option's cost remains. Then separate
+capture-OFF LEVE A/B, hashing under EACCES and frame pacing. Preserve colors,
+water and all accepted performance work. Full steps/results in the linked doc.
+
+### Historical checkpoint: lighting logs analyzed; paired capture not yet received
 
 Read [`zelda-effect-depth-evidence.md`](zelda-effect-depth-evidence.md) first.
 The requested two scene logs **have arrived and are analyzed**. Do not ask
@@ -675,13 +744,14 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 | Full Ryujinx resource/stage bridge | Both inspected live adapters remain fragment-oriented; SSBO/storage-image support and vertex/compute integration still missing. Native ScarletNX already translates these stages, so this alone does not explain missing effects. |
 | CPU spin/yield policy | Candidate; integrate with ScarletNX's emulated core scheduler. nxnative's host-thread sleeps cannot be transplanted blindly. |
 | Frame pacing / physical display evidence | Existing pacing and FIFO presentation remain; actual scan-out feedback is not supplied by current FPS logs. |
-| Per-pass pixel capture and bandwidth/dependency analysis | First bounded shadow-depth capture is delivered; collect outdoor layers. Color/light/water pass captures and broader bandwidth analysis remain. |
+| Per-pass pixel capture and bandwidth/dependency analysis | Shadow and paired effect-depth ZIPs received/analyzed. D24 export correction now delivered; validate new sampled pixels and effect output on phone. Broader color-pass/bandwidth analysis remains. |
 | Direct NVN HLE architecture | nxnative bypasses the guest graphics driver. This repository has a separate legacy NVN/Vulkan backend; the current APK uses ScarletNX. A new bridge is a larger optional project, not a drop-in patch or replacement authorized by the current preservation rules. |
 
 After the depth delivery the user reports colors/water resolved; photos show
 partial projected shadows and blur. Atmospheric haze, indoor shafts/reflected
-light, residual shadows and localized blur differences remain. Fresh logs
-for the passive composition diagnostic are pending. Do not call an optimization a visual fix without
+light, residual shadows and localized blur differences remain. Both passive
+composition logs and paired pixels have arrived and are analyzed above.
+Do not call an optimization a visual fix without
 device comparison or decisive pixel/semantic evidence.
 
 Suggested investigation order (expected impact is a hypothesis, not a result):
@@ -695,7 +765,7 @@ Suggested investigation order (expected impact is a hypothesis, not a result):
 | Repeated bindings, uploads and pass breaks | Potentially medium/high if CPU reconstruction or tile traffic dominates; use existing profiler/counters. | Medium to high depending on dependency scope. | Medium/high. |
 | Shader prewarm/pipeline prediction | Mainly first-visit stutter; separate warm/cold-cache trials without deleting caches. | Medium; all variants must be correct. | Medium/high. |
 | CPU scheduler/frame pacing | Unknown until CPU waits and stream intervals establish the bottleneck. | High if timing/scheduler semantics change. | High. |
-| Missing visual effects / full bridge | Current priority: bounded shadow-depth capture is delivered; inspect its phone evidence, then lights and water. No FPS benefit assumed. | Low opt-in evidence; high for resource/stage changes. | Medium diagnosis / high repairs. |
+| Missing visual effects / full bridge | Current priority: validate new exact D24 export against zero sampled planes and missing haze/light. Colors/water accepted. No FPS benefit assumed. | Bounded reversible conversion; device validation needed. | Medium implementation/validation. |
 
 ## Sources and build/test procedure
 
@@ -723,7 +793,8 @@ default sibling `ScarletNX-audit`. Set `SPIRV_VAL` to a real executable
 explicitly. The actual source and fixtures exercise hashes, ownership,
 transfer bytes, fence lifetime, patch rollback and log parsing on the host.
 
-Termux update/build for the current buffers/WW profile, without clearing anything:
+Termux update/build for the older buffers/WW reference, without clearing anything
+(the current D24 profile commands are in the current stopping point above):
 
 ```bash
 set -e
@@ -738,7 +809,7 @@ and Stable60 state. Separate processes for OFF/ON; export 90-second logs and
 compare matching complete windows after warmup. Preserve the last good APK.
 Never compare capture+GPU-detailed sessions with LEVE and claim causality.
 
-The latest delivery completed 49 audit tests with zero skips and a real
+The historical buffers delivery completed 49 audit tests with zero skips and a real
 `spirv-val`, plus shell syntax, whitespace, Java exporter execution/changed
 activity syntax and three affected full patched C-unit syntax checks. The previous binding
 scope checked five C units. Settings for the C-unit checks were generated
