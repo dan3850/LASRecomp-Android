@@ -148,6 +148,8 @@ public final class MarioSnxGameActivity extends SDLActivity {
                 zelda && getIntent().getBooleanExtra("snx_uniform_stream", false) ? "1" : "0");
         SDLActivity.nativeSetenv("SNX_VK_CLEAR_LOAD",
                 zelda && getIntent().getBooleanExtra("snx_clear_load", false) ? "1" : "0");
+        SDLActivity.nativeSetenv("SNX_VK_UB_EXTENT",
+                zelda && getIntent().getBooleanExtra("snx_ub_extent", false) ? "1" : "0");
         // Each trial has a fresh child process. Neither variable needs a "0"
         // value: BUFFER_STATS checks presence and gpuprof warns on disabled "0".
         if (perfMode == 2) {

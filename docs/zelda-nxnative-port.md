@@ -261,3 +261,24 @@ All 29 host audit tests pass; Android Vulkan/FPS validation of this step is
 pending. Deferred clears, broad load/store elimination and pass reordering
 have not been implemented. Continue from the
 [handoff](zelda-performance-handoff.md), which lists the remaining fronts.
+
+## Fifth implementation: proven uniform prefixes
+
+The next uniform adaptation follows nxnative's `cb_extent.py`/`ubp_get`:
+prove the prefix a shader can read before preparing its binding. Native
+direct reads already have bounds, but fixed-address LDCs retain a 64-KiB
+range. A conservative proof over immutable SPIR-V can refine those cases,
+including modules loaded by the actual persistent cache path. Shader words,
+saved metadata, checks, guest writes and CPU/AOT ABI remain unchanged.
+
+`compilar-zelda-uniformes-alcance-termux.sh` preserves the preceding APKs and
+adds an independent option in `Zelda-SNX-UNIFORMES-ALCANCE.apk`. Unknown and
+dynamic accesses keep their original ranges. This is not the full deferred
+GPU-update system; ScarletNX already batches/publishes inline writes and the
+snapshot port removes the corresponding promotion-copy interruption.
+
+See [scope, source findings, validation and A/B](zelda-uniform-extents.md).
+All 33 host audit tests pass; 61 synthetic native programs and the real cache
+loader are exercised. Android FPS validation remains pending. The
+[handoff](zelda-performance-handoff.md) records exactly where to resume and
+all remaining adaptation candidates.

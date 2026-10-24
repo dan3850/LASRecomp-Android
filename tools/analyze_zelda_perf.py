@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -53,6 +53,7 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     transfer_meta = [r for k, r in selected['rows'] if k == 'SNX_TRANSFER_META_V1']
     uniform_meta = [r for k, r in selected['rows'] if k == 'SNX_UNIFORM_META_V1']
     clear_meta = [r for k, r in selected['rows'] if k == 'SNX_CLEAR_LOAD_META_V1']
+    extent_meta = [r for k, r in selected['rows'] if k == 'SNX_UB_EXTENT_META_V1']
     all_windows = {r['window']: r for k, r in selected['rows'] if k == 'SNX_PERF_V1'}
     # Include only windows wholly inside the requested time range. No mix of
     # startup/warmup with gameplay, no partial-window FPS extrapolation.
@@ -90,6 +91,12 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
                 continue
             if clears[0]['enabled'] != clear_meta[-1]['enabled']:
                 raise ValueError('clear-load mode changed within a session')
+        if extent_meta:
+            extents = [x for k, x in selected['rows'] if k == 'SNX_UB_EXTENT_V1' and x['window'] == w]
+            if len(extents) != 1:
+                continue
+            if extents[0]['enabled'] != extent_meta[-1]['enabled']:
+                raise ValueError('uniform-extent mode changed within a session')
         for name, s in streams.items():
             n = sum(len(x['us']) for k, x in selected['rows']
                     if k == 'SNX_FRAMES_V1' and x['window'] == w and x['stream'] == name)
@@ -114,6 +121,8 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
         result['metadata']['uniforms'] = uniform_meta[-1]
     if clear_meta:
         result['metadata']['clear_load'] = clear_meta[-1]
+    if extent_meta:
+        result['metadata']['uniform_extent'] = extent_meta[-1]
     graphics_meta = [r for k, r in selected['rows'] if k == 'SNX_GFX_META_V1']
     if graphics_meta:
         result['metadata']['graphics_diagnostics'] = graphics_meta[-1]
@@ -170,6 +179,11 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
             for name, value in r.items():
                 if name not in ('window', 'enabled'):
                     clears[name] = clears.get(name, 0) + value
+        if k == 'SNX_UB_EXTENT_V1':
+            extents = result.setdefault('uniform_extent', {})
+            for name, value in r.items():
+                if name not in ('window', 'enabled'):
+                    extents[name] = extents.get(name, 0) + value
     return result
 
 
@@ -203,6 +217,9 @@ def markdown(report, label):
     if 'clear_load' in report:
         lines += ['', 'Immediate full clears as load actions: `' + json.dumps(report['clear_load'], sort_keys=True) + '`',
                   'Folded commands retain their clear effects; pixel counts are initialized areas, not measured bandwidth savings or FPS.']
+    if 'uniform_extent' in report:
+        lines += ['', 'Proven uniform prefixes: `' + json.dumps(report['uniform_extent'], sort_keys=True) + '`',
+                  'Byte totals are requested binding ranges, not measured uploads, bandwidth savings or FPS. All shader instructions remain unchanged.']
     return '\n'.join(lines)
 
 

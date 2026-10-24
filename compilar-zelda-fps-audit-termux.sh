@@ -31,7 +31,7 @@ import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as z:
     runtime = z.read('lib/arm64-v8a/libscarletnx.so')
     if any(marker not in runtime for marker in [b'SNX_PERF_META_V1', b'SNX_GFX_BIND_V1', b'SNX_SHADER_CAPTURE_V1', b'SNX_RYU_CACHE_V1', b'SNX_HASH_SPAN_META_V1',
-                                               b'SNX_KNOWN_COMPLETE_V1', b'SNX_TRANSFER_META_V1', b'SNX_UNIFORM_META_V1', b'SNX_CLEAR_LOAD_META_V1', sys.argv[2].encode()]):
+                                               b'SNX_KNOWN_COMPLETE_V1', b'SNX_TRANSFER_META_V1', b'SNX_UNIFORM_META_V1', b'SNX_CLEAR_LOAD_META_V1', b'SNX_UB_EXTENT_META_V1', sys.argv[2].encode()]):
         raise SystemExit('ERRO: APK nao contem o runtime de medicao desta revisao')
     if (b'SNX_FSWZADD_V1' in runtime) != (sys.argv[3] == '1'):
         raise SystemExit('ERRO: APK nao corresponde ao modo FSWZADD solicitado')

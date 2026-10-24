@@ -82,6 +82,9 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   if [ "${SCARLETNX_ZELDA_CLEAR_LOAD:-0}" = 1 ]; then
     git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-Clears.txt"
   fi
+  if [ "${SCARLETNX_ZELDA_UB_EXTENT:-0}" = 1 ]; then
+    git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-UniformExtent.txt"
+  fi
 fi
 SNLIB="$EXTRA/lib/arm64-v8a"
 # Cross-check against the previous LASRecomp test's native library names.
