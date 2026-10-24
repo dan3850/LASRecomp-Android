@@ -21,16 +21,21 @@ checkpoint for another assistant if the conversation or credits end.
 
 ## Last known good reference
 
-**`9b405a615cfcad9c8c0720675ed4c0f9c3b68d63`** is the current user-approved
-performance reference. The user explicitly said this last change improved FPS
-substantially. That is qualitative device feedback: no controlled OFF/ON
-telemetry for this revision has been supplied. Do not invent a percentage or
-declare stable 60 FPS.
+**`d2121261bb83ed2edcbde0882431d1d2ce7bee0d`** is now the latest
+user-approved performance reference. After its uniform-snapshot delivery the
+user said: "Melhorou o caminho é continuar trazendo melhorias de lá" and
+authorized continuing nxnative adaptations. The earlier transfer revision
+`9b405a615cfcad9c8c0720675ed4c0f9c3b68d63` also received substantial positive
+feedback and remains a preserved reference. Both reports are qualitative;
+exact toggle states and controlled OFF/ON telemetry have not been provided.
+Do not invent percentages or declare stable 60 FPS.
 
-Build it with `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-nxnative-termux.sh`.
-Output: `Download/ZeldaRecomp/Zelda-SNX-NXNATIVE-TRANSFER.apk`.
-Keep `Reutilizar buffers e agrupar transferencias` ON, capture OFF, telemetry
-LEVE, the native translator, and the same Stable60 state for comparisons.
+Build the latest reference with
+`SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-uniformes-termux.sh`.
+Output: `Download/ZeldaRecomp/Zelda-SNX-UNIFORMES.apk`.
+Preserve that APK and `Zelda-SNX-NXNATIVE-TRANSFER.apk`. Keep transfer reuse
+and uniforms ON, capture OFF, telemetry LEVE, the native translator and the
+same Stable60 state when comparing the next independent option.
 
 ## Implemented and published
 
@@ -43,13 +48,15 @@ LEVE, the native translator, and the same Stable60 state for comparisons.
 | `72ccaec`, `6ed5cef` | Operand-exact FSWZADD experiment, then default OFF after negative phone feedback. | The user saw no visual fix and possible slowdown. Keep `SCARLETNX_ZELDA_FSWZADD=0`; preserve the separate experiment cache. |
 | `24250a6` | Optional range-qualified CPU reads for texture hashing. | All bytes still hashed; page-rounded GPU ownership and visibility checks preserved. Not a dirty-page tracker. |
 | `9b405a6` | Fence-retired transfer-buffer pool, contiguous row coalescing and eligible full linear DMA overwrites without old-destination staging. | New generation on every reused resource; bounded pool. Previous delivery reported 21 host tests passing. User subsequently reported a large improvement. |
-| Uniform-snapshot delivery after `98b7184` | Optional graphics-only immutable uniform snapshots, reuse after strict content checks within the same submission, and bypass of promotion copies. | 25 host tests pass; full patched `buffer.c`, `render.c`, `renderer.c` pass C syntax checks. Awaiting device FPS and graphics validation. Find its exact revision with `git log -1 -- tools/patch_scarletnx_zelda_uniform.py`. |
+| `d212126` | Optional graphics-only immutable uniform snapshots, reuse after strict content checks within the same submission, and bypass of promotion copies. | 25 host tests pass; full patched `buffer.c`, `render.c`, `renderer.c` pass C syntax checks. User subsequently reported improvement; controlled device metrics remain pending. |
 
-## Current stopping point: uniform snapshots ready for phone comparison
+## Current stopping point: next clear-load adaptation being investigated
 
-The first uniform adaptation is implemented and host-validated. It does not
-replace the user-approved `9b405a6` performance reference. No Android APK or
-new on-device FPS result was produced on the assistant's host.
+The first uniform adaptation is implemented, host-validated and now positively
+reviewed by the user. The next step is full clears at a new Vulkan pass's
+beginning, inspired by nxnative's clear load actions. It has not yet been
+implemented at this intermediate checkpoint. No Android APK or new measured
+on-device FPS result was produced on the assistant's host.
 
 Initial source findings on the pinned ScarletNX:
 
@@ -92,11 +99,13 @@ Initial source findings on the pinned ScarletNX:
   staging snapshot. Both hash all bytes on all five required checks. This
   establishes work removed in that case, not a phone FPS gain.
 
-**Resume:** obtain/inspect the user's matching OFF/ON device reports for this
-new option while retaining transfer reuse ON. Check counters and frame times;
-if streaming makes static uniforms slower across submissions, use OFF and
-refine the policy. Do not discard the approved transfer patch. The complete
-technical scope and comparison procedure are in
+**Resume:** audit `render.c:render_begin/vk_render_clear` for an immediate
+`VK_ATTACHMENT_LOAD_OP_CLEAR` alternative to eligible full attachment clears
+when a new pass is already needed. Preserve in-pass clears, GPU predicates,
+scissors, partial channel/aspect masks, layers, aliasing, metadata and barriers.
+Do not transplant cross-command lazy clears without complete observer tracking.
+Add actual-source pixel/command equivalence and bounded counters before
+publishing the next independent runtime option. The uniform scope remains in
 [`zelda-uniform-snapshots.md`](zelda-uniform-snapshots.md).
 
 ## Remaining work inventory
@@ -106,12 +115,12 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 
 | Front | Status / next task |
 |---|---|
-| Graphics uniform snapshots and small updates | First adaptation delivered; device validation pending. Full deferred GPU updates/partial uniform shadows remain separate work. |
+| Graphics uniform snapshots and small updates | First adaptation delivered and positively reviewed on device; controlled metrics pending. Full deferred GPU updates/partial uniform shadows remain separate work. |
 | Android dirty-page tracking | Not active in supplied device logs. ScarletNX already implements generation tables and async userfaultfd/PAGEMAP_SCAN. Diagnose support/permissions; a fault fallback needs CPU aliases, host writes and GPU ownership traps. |
 | Broader persistent/shared GPU pools | Only transfer-result pooling adapted. A whole-pool shared-memory path needs Vulkan/driver support, alias and lifetime proofs. |
 | Binding/state fast paths | Descriptor reuse already exists; evaluate skipping repeated reconstruction through validated generations. |
 | Texture upload batches / dynamic image versions | Existing staging, image reuse and GPU conversion are present. Profile remaining transitions and dependencies before extending them. |
-| Fold clears into render-pass load actions | Candidate; distinguish full clears from partial/masked clears and preserve command order. |
+| Fold clears into render-pass load actions | Current investigation; immediate new-pass full clears only, with conservative fallback. No implementation at this intermediate checkpoint. |
 | Attachment load/store elimination | Experimental. Needs complete reads/writes/alias/bindless tracking and CPU observers. |
 | Pass merging / tile-local feedback | Experimental; nxnative itself defaults its broad TBDR optimization set OFF because bindless defeats its dependency inference. Do not enable it blindly. |
 | More precise Vulkan barriers | Candidate; preserve producer/consumer visibility and required waits. |
