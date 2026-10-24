@@ -118,6 +118,40 @@ Then trace interior light culling/composition; then water's depth/normal/
 environment/reflection/composition. Keep corrections small and reversible.
 Performance binding/extent/clear A/B measurements are still pending separately.
 
+## Latest follow-up: remaining nxnative maturity advantages audited
+
+After the shadow diagnostic, the user asks what the more mature reference
+still has that can improve performance. This follow-up is an inventory, not
+authorization to call any unmeasured item a speedup or a delivered runtime
+patch. Read [`zelda-nxnative-maturity-gaps.md`](zelda-nxnative-maturity-gaps.md).
+
+- Rechecked GitHub: nxnative default-branch head was
+  `7861e7c1a9913e020600b1cc7f65132427e9cc50`. Read current `nvn_mtl.m`,
+  `nvn_dirty.c`, `nvn_pace.h` and `dm/gfx/README.md`. Earlier source references
+  at `3eb1d76` remain historical; this comparison updates these four files.
+- Strongest source gaps: available/reliable dirty-page tracking on Android;
+  broader lifetime-safe persistent buffers; resource/argument reuse before
+  repeated construction; dynamic texture versions; broader offline shader
+  variants/lookahead; residual partial uniform work; Android pacing/pixel
+  verification; proven additional attachment bandwidth reductions.
+- ScarletNX already implements dirty tracking, prewarm, async recording,
+  staging/descriptor/texture caches and batched GPU conversions. Do not
+  recreate them. Supplied logs had tracking inactive: first diagnose UAPI
+  build guards vs kernel/permissions/registration, retaining full checks.
+- Next bounded performance-port candidate remains general owned-buffer
+  allocation/release reuse beyond the delivered transfer pool. Measure its
+  remaining allocations/copies before changes. Broader generation shortcuts
+  need complete CPU/GPU/alias invalidation and resource lifetime proofs.
+- nxnative's Metal shared no-copy pools are not a guaranteed Android Vulkan
+  facility. Its broad TBDR pass optimization group is still OFF by default;
+  the bindless/observer gaps prevent treating it as a safe ready-made port.
+- The direct NVN interception architecture is a separate large optional
+  project. Keep the working ScarletNX/Stable60 path; do not replace it as an
+  incidental optimization. Missing shadows/lights/water and shadow capture
+  validation remain pending, independent of this performance inventory.
+- Documentation-only follow-up: no new runtime, APK, test/FPS claim or AOT
+  rebuild. Last code validation remains the 44-test shadow delivery above.
+
 ## Previous binding-state delivery; device A/B still pending
 
 The user said "Bora pra.proxima" after the extent delivery and authorized
