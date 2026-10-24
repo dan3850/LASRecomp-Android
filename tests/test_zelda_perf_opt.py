@@ -20,6 +20,9 @@ def module(name, path):
 OPT = module('perf_opt', ROOT / 'tools/patch_scarletnx_zelda_perf_opt.py')
 PERF = module('perf_base', ROOT / 'tools/patch_scarletnx_zelda_perf.py')
 LIVE = module('live_v1', ROOT / 'tools/ryujinx-nativeaot/patch_scarletnx_live_probe.py')
+FSWZ = module('zelda_fswz_stack', ROOT / 'tools/patch_scarletnx_zelda_fswz.py')
+D7 = module('d7_fswz_stack', ROOT / 'tools/patch_scarletnx_fswzadd.py')
+BINDLESS = module('bindless_fswz_stack', ROOT / 'tools/patch_scarletnx_bindless_diag.py')
 SRC = Path(os.environ.get('SCARLETNX_TEST_SRC', ROOT.parent / 'ScarletNX-audit'))
 PIN = '34853eeae5af132e320adbb0193f13344085bf89'
 
@@ -233,6 +236,7 @@ int main(int argc, char** argv) {
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             names = set(PERF.replacements()) | set(OPT.replacements())
+            names.add('src/nx/gpu/shader/spirv_translate.c')
             before = {}
             for name in names:
                 before[name] = subprocess.check_output(['git', '-C', str(SRC), 'show', PIN + ':' + name])
@@ -242,9 +246,15 @@ int main(int argc, char** argv) {
             LIVE.apply(root)
             PERF.apply(root, 'integration-test')
             OPT.apply(root)
-            once = {name: (root / name).read_bytes() for name in names}
             OPT.apply(root)
+            shader = root / 'src/nx/gpu/shader/spirv_translate.c'
+            shader.write_text(D7.apply(BINDLESS.transform(shader.read_text())))
+            FSWZ.apply(root)
+            once = {name: (root / name).read_bytes() for name in names}
+            FSWZ.apply(root)
             self.assertEqual(once, {name: (root / name).read_bytes() for name in names})
+            FSWZ.apply(root, True)
+            shader.write_text(BINDLESS.transform(D7.apply(shader.read_text(), True), True))
             OPT.apply(root, True)
             PERF.apply(root, revert=True)
             LIVE.apply(root, revert=True)

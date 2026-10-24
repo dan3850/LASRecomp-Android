@@ -92,7 +92,10 @@ Stable60 AOT symbol and uses
 by default. An existing `ZELDA_SNX_CODE_SO` override is respected. It does not
 invoke `scarletnx -r` or build game LLVM blocks.
 
-This audit APK uses `shader_cache/fps-audit-v1/`. The working APK's existing
+The current audit APK enables the operand-exact FSWZADD repair described below
+and uses `shader_cache/fps-audit-fswz-v1/`. The comparison build with
+`SCARLETNX_ZELDA_FSWZADD=0` uses the earlier `shader_cache/fps-audit-v1/`.
+The working APK's existing
 shader and driver files are not opened or overwritten. Its first run therefore
 warms a separate audit cache. Compare A/B in this same audit binary after
 warming the native cache, rather than comparing a cold audit APK with a warm
@@ -297,6 +300,103 @@ the three comparison scenes briefly, then export the shader ZIP and log
 before another launch. Capture adds translation and I/O overhead; it is for
 correctness diagnosis, not a performance comparison. Disable it afterward.
 No full AOT rebuild or cache deletion is needed.
+
+## Captured-shader finding and operand-exact FSWZADD repair
+
+The supplied `Zelda-shaders-SNXS.zip` contains 155 complete version-1 programs:
+70 vertex, 81 fragment and 4 compute. Its SHA-256 is
+`c4b28370299c2359d542c96194bf48476a291e0f397e24d84767bc2cc3f8a6f8`.
+Each header has the pinned 2,096-byte ShaderInfo. Captures are private audit
+inputs and are not committed; tests contain synthetic Maxwell programs only.
+
+| Offline check | Original translation | Repaired translation |
+|---|---:|---:|
+| Programs translated | 155 | 155 |
+| Unsupported / SPIR-V validation failures | 0 / 0 | 0 / 0 |
+| SPIR-V modules changed | — | 28 fragment programs |
+| Modules byte-identical to original | — | 127, including all vertex/compute programs |
+
+Validation used the real SPIRV-Tools `spirv-val --target-env vulkan1.3`.
+Structural validity did not catch the following arithmetic error.
+
+All 28 captured fragment programs that contain a depth-compare TEX also use
+FSWZADD: one A5 and one 99 per program (56 instructions). Their SrcA values
+come from SHFL.BFLY of SrcB across the corresponding axis. In the pinned
+translator, those FSWZADD forms unconditionally become `dFdx(SrcB)` or
+`dFdy(SrcB)`, ignoring SrcA. This is not their defined operation. The sign
+table in Ryujinx's `InstEmitWarp.Fswzadd`, GLSL `SwizzleAdd.glsl`, and SPIR-V
+`GenerateSwizzleAdd` selects x+y, y-x, x-y or y for selectors 0,1,2,3.
+For the captured A5/99 shuffle pairs, the previous derivative has the opposite
+sign; for unrelated operands, substituting a derivative is invalid altogether.
+
+`tools/patch_scarletnx_zelda_fswz.py` repairs the four already accepted masks
+(99,66,A5,5A), using both actual operands and the same subgroup lane numbering
+as the existing SHFL implementation. It does not add accepted forms or alter
+the older D7 experiment. It requests the existing subgroup capability before
+using the lane builtin, with the existing explicit refusal if unavailable.
+All 155 captured programs still translate. No draw, resource check, barrier,
+wait, guest timing, Stable60 code or AOT block is removed or changed.
+
+The host regression compiles the actual pinned shader translator before and
+after the repair. With SrcA=13.25 and SrcB=-7.5, mask 99 previously emitted
+zero in every lane; the repaired program produces -20.75,+20.75,-20.75,+20.75.
+Tests execute the emitted straight-line SPIR-V through the fragment output
+for all four masks, both independent operands and SHFL pairs, at four lane
+group bases. The small test evaluator rejects unhandled instructions and is
+not a general GPU emulator. All eight synthetic modules also pass spirv-val
+when available. This proves the arithmetic regression, not game pixels/FPS.
+
+The shader and driver files for repaired translation use the separate
+`shader_cache/fps-audit-fswz-v1/` directory. Earlier directories are preserved
+and cannot prewarm stale SPIR-V into the repaired runtime. The patch/cache
+change is transactional and restored first when leaving the shared build;
+the complete real-source stack is checked for byte-exact rollback. The signed
+APK check requires `SNX_FSWZADD_V1` exactly when the repair is requested.
+
+### Termux build and visual verification
+
+```bash
+set -e
+cd "$HOME/LASRecomp-Android"
+git switch experimental/zelda-links-awakening-ryujinx-nativeaot
+git pull --ff-only origin experimental/zelda-links-awakening-ryujinx-nativeaot
+SCARLETNX_BUILD_JOBS=2 SCARLETNX_ZELDA_FSWZADD=1 bash ./compilar-zelda-fps-audit-termux.sh
+```
+
+Install `Zelda-SNX-STABLE60-FPS-AUDIT.apk` as an update. The builder preserves
+the previous toggle APK once as `Zelda-SNX-STABLE60-ANTES-FSWZADD.apk` when
+present. It reuses the game AOT and build caches. Host audit result: 13 Zelda
+performance tests passed, plus the three existing D7 patch tests; no skips.
+The upstream shader regression passes with this repair on its original
+translator and its 68 emitted modules pass spirv-val. With the pre-existing
+bindless diagnostic patch included, one upstream assertion checks the old
+exact error string and fails identically before/after this repair; the shader
+is still refused. That configuration is not reported as an all-pass run.
+Shell syntax, patch reversal and whitespace checks also pass. No Android APK
+or live Zelda run was produced on this host.
+
+For the phone trial, fully end the game process, select LEVE and leave shader
+capture, live Ryujinx, confirmed waits and Ryujinx persistence OFF. Keep the
+Stable60 setting unchanged. Warm the new cache on the same three scenes,
+restart the game process, then record the same route for 90 seconds. Export
+the log (look for `SNX_FSWZADD_V1`) and compare ground shadows, telephone-house
+light shafts and the water against the earlier pictures. Screenshot capture
+should be outside the measured interval. Do not compare a cold first run
+against a warm earlier binary. A negative visual result remains useful: it
+would leave the proven arithmetic fix separate from unresolved depth contents,
+render-target/layer state and other lighting/water issues.
+
+To compare the earlier arithmetic without deleting anything:
+
+```bash
+SCARLETNX_BUILD_JOBS=2 SCARLETNX_ZELDA_FSWZADD=0 bash ./compilar-zelda-fps-audit-termux.sh
+```
+
+That is another incremental runtime build; it uses the earlier audit cache
+namespace. Alternatively reinstall the preserved pre-repair APK as an update.
+The repair's visual benefit, possible shader cost and any FPS difference
+remain unmeasured until matching device runs are supplied. Correctness takes
+priority over throughput with missing effects.
 
 ## Implemented experiments (default OFF)
 

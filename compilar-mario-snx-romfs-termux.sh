@@ -110,6 +110,12 @@ else
   # standard Mario runtime build that reuses this local ScarletNX checkout.
   python3 "$ROOT/tools/patch_scarletnx_fswzadd.py" "$SRC" --revert
 fi
+# Zelda correctness repair follows the older D7 patch and the audit cache patch.
+# The wrapper restores it first so this shared source can build other games.
+if [ "${SCARLETNX_ZELDA_FSWZADD:-0}" = 1 ]; then
+  [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ] || die "Zelda FSWZADD exige o build FPS audit com cache isolado"
+  python3 "$ROOT/tools/patch_scarletnx_zelda_fswz.py" "$SRC"
+fi
 # Termux's LLVM21 ships llvm-config plus shared LLVM, while its CMake
 # LLVMExports may name static .a components not installed on the phone.
 # Native Termux builds can query llvm-config; cross builds cannot.
