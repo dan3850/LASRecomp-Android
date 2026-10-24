@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -49,6 +49,7 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
         raise ValueError('session out of range')
     selected = sessions[index]
     cache = [r for k, r in selected['rows'] if k == 'SNX_RYU_CACHE_V1']
+    hash_meta = [r for k, r in selected['rows'] if k == 'SNX_HASH_SPAN_META_V1']
     all_windows = {r['window']: r for k, r in selected['rows'] if k == 'SNX_PERF_V1'}
     # Include only windows wholly inside the requested time range. No mix of
     # startup/warmup with gameplay, no partial-window FPS extrapolation.
@@ -62,6 +63,12 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
         vk = [x for k, x in selected['rows'] if k == 'SNX_VK_V1' and x['window'] == w]
         if len(streams) != 3 or len(costs) != 16 or len(vk) != 1:
             continue  # crash/export during a flush: do not count that partial window
+        if hash_meta:
+            spans = [x for k, x in selected['rows'] if k == 'SNX_HASH_SPAN_V1' and x['window'] == w]
+            if len(spans) != 1:
+                continue
+            if spans[0]['enabled'] != hash_meta[-1]['enabled']:
+                raise ValueError('hash-span mode changed within a session')
         for name, s in streams.items():
             n = sum(len(x['us']) for k, x in selected['rows']
                     if k == 'SNX_FRAMES_V1' and x['window'] == w and x['stream'] == name)
@@ -78,6 +85,8 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
               'displayed_fps': None, 'simulation_fps': None}
     if cache:
         result['metadata']['effective_cache'] = cache[-1]
+    if hash_meta:
+        result['metadata']['hash_span'] = hash_meta[-1]
     graphics_meta = [r for k, r in selected['rows'] if k == 'SNX_GFX_META_V1']
     if graphics_meta:
         result['metadata']['graphics_diagnostics'] = graphics_meta[-1]
@@ -112,6 +121,11 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
             for name, value in r.items():
                 if name != 'window':
                     graphics[name] = graphics.get(name, 0) + value
+        if k == 'SNX_HASH_SPAN_V1':
+            spans = result.setdefault('hash_span', {})
+            for name, value in r.items():
+                if name not in ('window', 'enabled'):
+                    spans[name] = spans.get(name, 0) + value
     return result
 
 
@@ -133,6 +147,9 @@ def markdown(report, label):
     if 'graphics' in report:
         lines += ['', 'Detailed graphics setup counters: `' + json.dumps(report['graphics'], sort_keys=True) + '`',
                   'Null bindings may be intentional; indexed entries count descriptor preparation, not actual shader samples.']
+    if 'hash_span' in report:
+        lines += ['', 'Range-qualified hash reads: `' + json.dumps(report['hash_span'], sort_keys=True) + '`',
+                  'direct_bytes still undergo the full original hash; they avoid staging copies, not content checks.']
     return '\n'.join(lines)
 
 

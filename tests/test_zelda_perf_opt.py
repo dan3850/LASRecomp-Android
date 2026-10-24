@@ -23,6 +23,7 @@ LIVE = module('live_v1', ROOT / 'tools/ryujinx-nativeaot/patch_scarletnx_live_pr
 FSWZ = module('zelda_fswz_stack', ROOT / 'tools/patch_scarletnx_zelda_fswz.py')
 D7 = module('d7_fswz_stack', ROOT / 'tools/patch_scarletnx_fswzadd.py')
 BINDLESS = module('bindless_fswz_stack', ROOT / 'tools/patch_scarletnx_bindless_diag.py')
+HASH_SPAN = module('hash_span_stack', ROOT / 'tools/patch_scarletnx_zelda_hash_span.py')
 SRC = Path(os.environ.get('SCARLETNX_TEST_SRC', ROOT.parent / 'ScarletNX-audit'))
 PIN = '34853eeae5af132e320adbb0193f13344085bf89'
 
@@ -247,6 +248,8 @@ int main(int argc, char** argv) {
             PERF.apply(root, 'integration-test')
             OPT.apply(root)
             OPT.apply(root)
+            HASH_SPAN.apply(root)
+            HASH_SPAN.apply(root)
             shader = root / 'src/nx/gpu/shader/spirv_translate.c'
             shader.write_text(D7.apply(BINDLESS.transform(shader.read_text())))
             FSWZ.apply(root)
@@ -254,11 +257,13 @@ int main(int argc, char** argv) {
             FSWZ.apply(root)
             self.assertEqual(once, {name: (root / name).read_bytes() for name in names})
             FSWZ.apply(root, True)
+            HASH_SPAN.apply(root, True)
             shader.write_text(BINDLESS.transform(D7.apply(shader.read_text(), True), True))
             OPT.apply(root, True)
             PERF.apply(root, revert=True)
             LIVE.apply(root, revert=True)
             self.assertEqual(before, {name: (root / name).read_bytes() for name in names})
+            self.assertFalse((root / 'src/nx/gpu/vk/snx_hash_span.h').exists())
 
     @unittest.skipUnless((SRC / '.git').exists() and shutil.which('cc'), 'pinned source and C compiler required')
     def test_native_capture_bypasses_real_prewarm_and_normal_policy_resumes(self):

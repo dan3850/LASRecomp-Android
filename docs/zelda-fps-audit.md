@@ -579,6 +579,12 @@ cached ScarletNX source are untouched.
 
 ## Higher-impact follow-up
 
+The first nxnative comparison/adaptation is now implemented as an opt-in
+range-qualified texture-hash read. It retains full content validation and
+provides OFF/ON trials in one APK. See
+[nxnative comparison, implementation and validation](zelda-nxnative-port.md).
+No RedMagic gain or missing-effect fix is claimed before device comparison.
+
 The most substantial architecture-preserving candidate is making written-page
 tracking and GPU ownership work efficiently with the actual Android kernel
 capabilities, **if** the log reports those paths unavailable and shows large

@@ -132,7 +132,7 @@ class ShaderPatchTests(unittest.TestCase):
         builder = (ROOT / 'compilar-zelda-fps-audit-termux.sh').read_text()
         gate = builder.split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
         revision = 'synthetic-revision'
-        markers = b'SNX_PERF_META_V1 SNX_GFX_BIND_V1 SNX_SHADER_CAPTURE_V1 SNX_RYU_CACHE_V1 SNX_KNOWN_COMPLETE_V1 synthetic-revision'
+        markers = b'SNX_PERF_META_V1 SNX_GFX_BIND_V1 SNX_SHADER_CAPTURE_V1 SNX_RYU_CACHE_V1 SNX_KNOWN_COMPLETE_V1 SNX_HASH_SPAN_META_V1 synthetic-revision'
         with tempfile.TemporaryDirectory() as d:
             archive = Path(d) / 'synthetic.apk'
             for fixed in (False, True):

@@ -132,6 +132,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             content.addView(perf);
             addPerfOption(content, "zelda_known_complete", "Reutilizar esperas confirmadas");
             addPerfOption(content, "zelda_ryu_persist", "Cache Ryujinx entre execucoes");
+            addPerfOption(content, "zelda_hash_span", "Verificacao de texturas por faixa");
         }
 
         Button launch = new Button(this);
@@ -509,6 +510,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_perf_mode", hasPerfBuild() ? getPreferences(MODE_PRIVATE).getInt("zelda_perf_mode", 0) : 0);
             intent.putExtra("snx_known_complete", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_known_complete", false));
             intent.putExtra("snx_ryu_persist", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_ryu_persist", false));
+            intent.putExtra("snx_hash_span", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_hash_span", false));
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);
