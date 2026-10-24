@@ -154,6 +154,8 @@ public final class MarioSnxGameActivity extends SDLActivity {
                 zelda && getIntent().getBooleanExtra("snx_bind_reuse", false) ? "1" : "0");
         SDLActivity.nativeSetenv("SNX_VK_VB_POOL",
                 zelda && getIntent().getBooleanExtra("snx_vb_pool", false) ? "1" : "0");
+        SDLActivity.nativeSetenv("SNX_VK_DEPTH_RANGE",
+                zelda && getIntent().getBooleanExtra("snx_depth_range", false) ? "1" : "0");
         String shadowDir = zelda ? getIntent().getStringExtra("snx_shadow_capture_dir") : null;
         SDLActivity.nativeSetenv("SNX_SHADOW_CAPTURE_DIR", shadowDir == null ? "" : shadowDir);
         // Each trial has a fresh child process. Neither variable needs a "0"

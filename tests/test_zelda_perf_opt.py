@@ -32,6 +32,7 @@ BIND_REUSE = module('bind_reuse_stack', ROOT / 'tools/patch_scarletnx_zelda_bind
 SHADOW_CAPTURE = module('shadow_capture_stack', ROOT / 'tools/patch_scarletnx_zelda_shadow_capture.py')
 WW_DIAG = module('ww_diag_stack', ROOT / 'tools/patch_scarletnx_zelda_ww_diag.py')
 VB_POOL = module('vb_pool_stack', ROOT / 'tools/patch_scarletnx_zelda_vb_pool.py')
+DEPTH_RANGE = module('depth_range_stack', ROOT / 'tools/patch_scarletnx_zelda_depth_range.py')
 SRC = Path(os.environ.get('SCARLETNX_TEST_SRC', ROOT.parent / 'ScarletNX-audit'))
 PIN = '34853eeae5af132e320adbb0193f13344085bf89'
 
@@ -247,7 +248,7 @@ int main(int argc, char** argv) {
             names = (set(PERF.replacements()) | set(OPT.replacements()) | set(TRANSFER.replacements()) |
                      set(UNIFORM.replacements()) | set(CLEAR_LOAD.replacements()) | set(UB_EXTENT.replacements()) |
                      set(BIND_REUSE.replacements()) | set(SHADOW_CAPTURE.replacements()) |
-                     set(WW_DIAG.replacements()) | set(VB_POOL.replacements()))
+                     set(WW_DIAG.replacements()) | set(VB_POOL.replacements()) | set(DEPTH_RANGE.replacements()))
             names.add('src/nx/gpu/shader/spirv_translate.c')
             before = {}
             for name in names:
@@ -277,6 +278,8 @@ int main(int argc, char** argv) {
             WW_DIAG.apply(root)
             VB_POOL.apply(root)
             VB_POOL.apply(root)
+            DEPTH_RANGE.apply(root)
+            DEPTH_RANGE.apply(root)
             shader = root / 'src/nx/gpu/shader/spirv_translate.c'
             shader.write_text(D7.apply(BINDLESS.transform(shader.read_text())))
             FSWZ.apply(root)
@@ -284,6 +287,7 @@ int main(int argc, char** argv) {
             FSWZ.apply(root)
             self.assertEqual(once, {name: (root / name).read_bytes() for name in names})
             FSWZ.apply(root, True)
+            DEPTH_RANGE.apply(root, True)
             VB_POOL.apply(root, True)
             WW_DIAG.apply(root, True)
             SHADOW_CAPTURE.apply(root, True)
@@ -307,6 +311,7 @@ int main(int argc, char** argv) {
             self.assertFalse((root / 'src/nx/gpu/vk/snx_shadow_capture.h').exists())
             self.assertFalse((root / 'src/nx/runtime/platform/snx_ww_diag.h').exists())
             self.assertFalse((root / 'src/nx/gpu/vk/snx_vb_pool.h').exists())
+            self.assertFalse((root / 'src/nx/gpu/vk/snx_depth_range.h').exists())
 
     @unittest.skipUnless((SRC / '.git').exists() and shutil.which('cc'), 'pinned source and C compiler required')
     def test_native_capture_bypasses_real_prewarm_and_normal_policy_resumes(self):

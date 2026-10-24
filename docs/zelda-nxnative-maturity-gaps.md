@@ -120,9 +120,10 @@ with header definitions. Broader resource-generation shortcuts still require
 complete invalidation evidence. Clean OFF/ON FPS comparison remains pending
 because both shader and shadow capture were enabled in this first log.
 
-Keep the visual track separate: the first phone log says three depth samples
-were saved; their exported shadow ZIP is still needed to choose the actual
-shadow repair. Lights and water follow. See
+Keep the visual track separate: the shadow ZIP has now arrived and its maps
+contain real geometry. It demonstrated a viewport-range mapping mismatch;
+the capability-gated correction in [`zelda-depth-range.md`](zelda-depth-range.md)
+is delivered for device OFF/ON testing. Lights, water/color and blur follow. See
 [`zelda-performance-handoff.md`](zelda-performance-handoff.md) for the current
 evidence and continuation point. No runtime changes or APK are delivered by
 this inventory. No new tests

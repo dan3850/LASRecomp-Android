@@ -18,6 +18,12 @@ OUT="$HOME/scarletnx-zelda-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ -f "$SRC/src/nx/gpu/vk/snx_depth_range.h" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_depth_range.py" "$SRC" --revert; then
+      echo "ERRO: falha restaurando faixa de profundidade Vulkan" >&2
+      restore_failed=1
+    fi
+  fi
   if [ -f "$SRC/src/nx/gpu/vk/snx_vb_pool.h" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_zelda_vb_pool.py" "$SRC" --revert; then
       echo "ERRO: falha restaurando pool de buffers persistentes" >&2
@@ -218,6 +224,7 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda_shadow_capture.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_ww_diag.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_vb_pool.py" "$SRC"
+  python3 "$ROOT/tools/patch_scarletnx_zelda_depth_range.py" "$SRC"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"

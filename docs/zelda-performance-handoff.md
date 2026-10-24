@@ -21,7 +21,14 @@ checkpoint for another assistant if the conversation or credits end.
 
 ## Last known good reference
 
-**`d2121261bb83ed2edcbde0882431d1d2ce7bee0d`** is now the latest
+**Latest qualitative device approval: `0e0dfa4`**, the persistent-buffer APK.
+Along with the shadow ZIP, the user said the FPS improved substantially but
+shadows, water/colors and some blur remain wrong. This is aggregate feedback,
+not an isolated measured pool speedup. Preserve that APK as the immediate
+reference for the viewport-depth correction; keep its performance options.
+`Zelda-SNX-BUFFERS-ANTES-PROFUNDIDADE.apk` is the new wrapper's once-only backup.
+
+**`d2121261bb83ed2edcbde0882431d1d2ce7bee0d`** remains an earlier explicitly
 user-approved performance reference. After its uniform-snapshot delivery the
 user said: "Melhorou o caminho é continuar trazendo melhorias de lá" and
 authorized continuing nxnative adaptations. The earlier transfer revision
@@ -36,7 +43,7 @@ nxnative-to-ScarletNX adaptation. This is positive aggregate feedback and
 authorization to continue, not isolated clear OFF/ON measurements. Keep the
 explicit uniform reference above, plus the newer `2cc5ce0` clear APK, available.
 
-Build the latest reference with
+Build that earlier uniform reference with
 `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-uniformes-termux.sh`.
 Output: `Download/ZeldaRecomp/Zelda-SNX-UNIFORMES.apk`.
 Preserve that APK and `Zelda-SNX-NXNATIVE-TRANSFER.apk`. Keep transfer reuse
@@ -50,6 +57,9 @@ rebuilding that reference from newer code. Preserve the newer
 When rebuilding older references from the current source, also keep the new
 **Reutilizar buffers persistentes** option OFF; a saved ON preference overrides
 an older profile's OFF default.
+Also set **Preservar faixa de profundidade OFF** when rebuilding any earlier
+comparison after saving that new option ON; older profile defaults do not
+override saved preferences.
 
 ## Implemented and published
 
@@ -68,8 +78,58 @@ an older profile's OFF default.
 | `3dd1d57` | Exact, adaptive lookup of resolved descriptor state ahead of the existing hash cache. | 37 host tests pass; actual cache/recorder, 50 scenes / 3,200 bindings, sanitizer and full C syntax checks. Android FPS validation pending. |
 | Shadow-depth evidence delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_shadow_capture.py`) | Optional bounded depth-aspect snapshots before shadow sampling, separate layer analysis and complete-session ZIP export. | Diagnostic only. First phone log reports three samples saved; exported pixels/ZIP pending. No visual fix or FPS gain claimed. |
 | `0e0dfa4` | Exact-size reuse of completed stable vertex/index/storage buffers, plus passive write-watch failure evidence. | 49 host audit tests, actual source/lifetime/error paths, full C syntax and ASan/UBSan. First phone log confirms reuse and pagemap open denied; clean Android OFF/ON comparison pending. |
+| Viewport-depth correction (locate with `git log -1 -- tools/patch_scarletnx_zelda_depth_range.py`) | Preserve computed finite depth endpoints with the explicitly requested/advertised Vulkan extension, retaining original shaders and OFF fallback. | 53 host tests, actual old/new viewport mapping and device selection, full C syntax and ASan/UBSan. Android extension support and visual repair pending. |
 
-## Current stopping point: first buffer/WW phone evidence received; clean A/B and shadow ZIP needed
+## Current stopping point: shadow pixels analyzed; reversible viewport-depth correction ready for device test
+
+Read [`zelda-depth-range.md`](zelda-depth-range.md) before the next change.
+The user supplied the requested `Zelda-sombras.zip`; do not ask for that same
+ZIP again or restart the earlier producer-versus-consumer audit.
+
+- The ZIP has three complete real D24 depth maps, with matching recorded
+  producer generations. Maps 1 and 3 contain recognizable outdoor geometry;
+  map 2 has a smaller silhouette. No sample is empty/constant. This does not
+  prove all producer coordinates, comparison inputs or final shadows correct.
+- The captured producer state has negative-W/positive-W clip mode, Z scale
+  1 and offset 0. Existing shader conversion `(z+w)/2` expects viewport range
+  -1..1, but `vk_render_viewport` clamps it to 0..1. The actual old function
+  maps the controlled depth 0.2 to 0.6. Preserving the endpoints maps it back
+  to 0.2 without changing clipping or shader code. A separate receiver depth
+  of 0.4 demonstrates an incorrect LESS shadow result under the old mapping.
+  These example coordinates are synthetic; phone receiver values are not captured.
+- `tools/patch_scarletnx_zelda_depth_range.py` applies after VB_POOL and
+  restores first. Runtime `SNX_VK_DEPTH_RANGE=1`, UI **Preservar faixa de
+  profundidade**, ON by default only in its new profile. The actual existing
+  extension enumeration must advertise `VK_EXT_depth_range_unrestricted`
+  before it is enabled. OFF/unsupported/nonfinite paths retain old behavior.
+  Original SPIR-V, cache keys/files, XY/origin, culling, bias, waits, copies,
+  all performance ports, Stable60 and AOT remain. No new readback/submit.
+- `SNX_DEPTH_RANGE_META_V1` distinguishes requested/supported/enabled.
+  `SNX_DEPTH_RANGE_STATE_V1` reports up to four outside-range states;
+  `SNX_DEPTH_RANGE_V1` counts viewport setups, not visible pixels or GPU time.
+  The old phone log does not establish this driver extension's availability.
+  If supported/enabled are zero, do not claim this repair ran on that device.
+- Build `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-profundidade-termux.sh`.
+  Output `Download/ZeldaRecomp/Zelda-SNX-PROFUNDIDADE.apk`; prior buffers APK
+  backed up once as `Zelda-SNX-BUFFERS-ANTES-PROFUNDIDADE.apk`. Install update,
+  keep both captures OFF, LEVE, native translator and every previous option
+  equal. Compare the new depth option OFF/ON in fresh processes at the same
+  outdoor spot, screenshots and logs. No new shader dump is required.
+- 53 host audit tests pass, zero skips with real SPIR-V validation; actual
+  device-selection snippet and old/new viewport functions cover 160 vectors,
+  supported/unsupported/OFF/error cases and original clipping conversion.
+  Entire patch stack restores byte-exactly. Signed-APK gates, analyzer,
+  ASan/UBSan, full C syntax of device/render/renderer, changed Java parsing
+  and shell syntax pass. No Android APK/game or physical GPU pixels tested here.
+
+**Resume:** inspect the new capability/state log and visual OFF/ON. If active
+but shadows remain missing, compare corrected depth with consumer coordinate/
+reference/bias evidence. Preserve the user-approved FPS improvement; do not
+repeat FSWZADD. Interior lighting, water/color and blur remain separate pending
+effects. The pagemap permission failure/content-check cost and clean performance
+A/B remain established memory work below; this depth repair does not resolve them.
+
+## Previous buffer/WW stopping point and phone evidence
 
 After the remaining nxnative maturity audit, the user said "Vamos la" and
 authorized continuing the memory/resource work. Read
@@ -161,13 +221,14 @@ some startup/error lines; totals below use its one `SNX PERF BEGIN` block,
   descriptive only; a later 5-second window reports 46.668 rendered frames/s
   despite only 2 ms pipeline making, and several others report about 60.
   `present_enqueue` is not physical Android display/scan-out feedback.
-- All three shadow samples report saved (frames 764, 1656, 2541, one layer
-  each); pixel files were not attached. Export **Exportar diagnostico de
-  sombras (.zip)** before another captured run replaces the latest session.
-  Saving depth data alone does not establish correct projected shadows.
+- That first log reported three saved samples (frames 764, 1656, 2541, one
+  layer each) without pixel files. The later shadow ZIP supplies those exact
+  pairs and is now analyzed in `zelda-depth-range.md`. Saving depth data alone
+  does not establish correct projected shadows.
 
-**Resume:** obtain the existing shadow ZIP for pixel analysis and separate
-fresh-process pool OFF/ON logs with both captures OFF and telemetry LEVE;
+The requested shadow ZIP has now been received/analyzed; see the current
+viewport-depth stopping point above. Separate fresh-process pool OFF/ON logs
+with both captures OFF and telemetry LEVE remain useful for performance;
 no rebuild is needed just to change those options. Then compare allocation
 counts with frame p95/p99. For memory work, audit a safe Android content-
 verification/invalidation path under the observed pagemap denial rather than
@@ -175,7 +236,7 @@ assuming headers can activate tracking. Dynamic textures, shader coverage,
 partial updates and pacing remain. Missing shadows/lights/water stay on the
 independent visual track below; the latest diagnostics have not fixed them.
 
-## Visual track: three depth samples reported saved; shadow ZIP/pixels needed
+## Earlier visual diagnostic: depth ZIP received; viewport correction now delivered
 
 The earlier user request prioritizes missing shadows, lights and water using
 nxnative as the reference. Read [`zelda-shadow-depth.md`](zelda-shadow-depth.md)
@@ -184,7 +245,8 @@ visual correction. The user subsequently authorized the buffer/WW step above.
 
 - Existing shader captures were already analyzed; do not re-run the rejected
   FSWZADD experiment. The supplied log has shadows ON and real 2048x2048 D24S8
-  2D-array shadow views. Existing traces show setup/bind activity, not pixels.
+  2D-array shadow views. Those earlier traces showed setup/bind activity; the
+  current ZIP supplies actual depth pixels, analyzed in `zelda-depth-range.md`.
 - nxnative explicitly handles NVN depth mode and lower-left origin; ScarletNX
   already has corresponding viewport, vertex-depth and facing logic. Native
   VS/CS translation also exists. Do not blindly copy synthetic HLE driver
@@ -209,10 +271,10 @@ visual correction. The user subsequently authorized the buffer/WW step above.
 - Build: `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-sombras-termux.sh`.
   Output `Download/ZeldaRecomp/Zelda-SNX-SOMBRAS.apk`. A once-only backup of
   the prior bindings APK is `Zelda-SNX-BINDINGS-ANTES-SOMBRAS.apk`.
-- Request one outdoor 60-second same-scene run with capture ON, LEVE, native
-  translator and shader capture OFF, then **Exportar diagnostico de sombras
-  (.zip)** plus a screenshot. Disable capture afterwards. No phone snapshot
-  from this delivery has yet been supplied; do not claim restored effects.
+- The requested capture ZIP has arrived, with nonconstant depth in all three
+  samples. Do not request the same initial run again. First test the new
+  viewport option visually OFF/ON with capture OFF; capture a later corrected
+  depth session only if more consumer/producer evidence is needed.
 - Host validation: 44 audit tests pass, zero skips, including the real Java
   exporter compiled for Java 8, native delayed capture/format tests and the
   byte-exact complete patch stack rollback. Real `spirv-val` remains enabled.
@@ -220,11 +282,9 @@ visual correction. The user subsequently authorized the buffer/WW step above.
   is unavailable under this host's `/proc` restriction. No Android APK or
   device/game run was performed here.
 
-**Resume:** inspect each captured layer's pixels and the matched producer
-registers/consumer descriptors. Empty/constant or wrong-layer/orientation maps
-lead to producer/rasterization/clear/layer investigation; plausible maps lead
-to consumer coordinates, depth reference and sampler comparison. Constants
-can be legitimate: establish the scene and intended layers before a repair.
+The layer inspection and producer/consumer matching are complete for the
+received ZIP. They demonstrated a viewport-depth mapping error, now covered
+by a reversible capability-gated correction above. Device confirmation remains.
 Then trace interior light culling/composition; then water's depth/normal/
 environment/reflection/composition. Keep corrections small and reversible.
 Performance binding/extent/clear A/B measurements are still pending separately.
@@ -495,9 +555,10 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 | Per-pass pixel capture and bandwidth/dependency analysis | First bounded shadow-depth capture is delivered; collect outdoor layers. Color/light/water pass captures and broader bandwidth analysis remain. |
 | Direct NVN HLE architecture | nxnative bypasses the guest graphics driver. This repository has a separate legacy NVN/Vulkan backend; the current APK uses ScarletNX. A new bridge is a larger optional project, not a drop-in patch or replacement authorized by the current preservation rules. |
 
-Missing projected shadows, interior light shafts and water differences remain
-unresolved. Supplied logs show shadow targets rendered and bound, not their
-correct pixel contents. Do not call an optimization a visual fix without
+Missing projected shadows, interior light shafts, water/color and blur
+differences remain unverified after the new depth correction. Supplied maps
+contain geometry and demonstrated a mapping mismatch; corrected Android pixel
+results are still pending. Do not call an optimization a visual fix without
 device comparison or decisive pixel/semantic evidence.
 
 Suggested investigation order (expected impact is a hypothesis, not a result):

@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|VB_POOL(?:_META)?|WW(?:_META|_EVENT)|SHADOW_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|VB_POOL(?:_META)?|DEPTH_RANGE(?:_META|_STATE)?|WW(?:_META|_EVENT)|SHADOW_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -59,6 +59,7 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     extent_meta = [r for k, r in selected['rows'] if k == 'SNX_UB_EXTENT_META_V1']
     binding_meta = [r for k, r in selected['rows'] if k == 'SNX_BIND_REUSE_META_V1']
     vb_meta = [r for k, r in selected['rows'] if k == 'SNX_VB_POOL_META_V1']
+    depth_meta = [r for k, r in selected['rows'] if k == 'SNX_DEPTH_RANGE_META_V1']
     all_windows = {r['window']: r for k, r in selected['rows'] if k == 'SNX_PERF_V1'}
     # Include only windows wholly inside the requested time range. No mix of
     # startup/warmup with gameplay, no partial-window FPS extrapolation.
@@ -67,6 +68,12 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
                and (duration_seconds is None or r['elapsed_s'] <= skip_seconds + duration_seconds)}
     valid = {}
     for w, r in windows.items():
+        if depth_meta:
+            depth_rows = [x for k, x in selected['rows'] if k == 'SNX_DEPTH_RANGE_V1' and x['window'] == w]
+            if len(depth_rows) != 1:
+                continue
+            if depth_rows[0]['enabled'] != depth_meta[-1]['enabled']:
+                raise ValueError('viewport-depth mode changed within session')
         if vb_meta:
             vb_rows = [x for k, x in selected['rows'] if k == 'SNX_VB_POOL_V1' and x['window'] == w]
             if len(vb_rows) != 1:
@@ -144,6 +151,9 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
         result['metadata']['binding_reuse'] = binding_meta[-1]
     if vb_meta:
         result['metadata']['persistent_buffers'] = vb_meta[-1]
+    if depth_meta:
+        result['metadata']['depth_range'] = depth_meta[-1]
+        result['depth_range_states'] = [r for k, r in selected['rows'] if k == 'SNX_DEPTH_RANGE_STATE_V1']
     ww_meta = [r for k, r in selected['rows'] if k == 'SNX_WW_META_V1']
     if ww_meta:
         result['metadata']['write_watch'] = ww_meta[-1]
@@ -221,6 +231,11 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
                     buffers[name] = value
                 elif name not in ('window', 'enabled'):
                     buffers[name] = buffers.get(name, 0) + value
+        if k == 'SNX_DEPTH_RANGE_V1':
+            depth = result.setdefault('depth_range', {})
+            for name, value in r.items():
+                if name not in ('window', 'enabled'):
+                    depth[name] = depth.get(name, 0) + value
     return result
 
 
@@ -266,6 +281,9 @@ def markdown(report, label):
     if 'write_watch_events' in report:
         lines += ['', 'Passive write-watch initialization/errors: `' + json.dumps(report['write_watch_events'], sort_keys=True) + '`',
                   'Build UAPI, syscall/API, registration, pagemap and scan failures are distinct. Policy and fallback checks are unchanged.']
+    if 'depth_range' in report:
+        lines += ['', 'Vulkan viewport depth: `' + json.dumps(report['depth_range'], sort_keys=True) + '`',
+                  'Unrestricted ranges require the enabled device extension. These counts do not establish restored shadows.']
     return '\n'.join(lines)
 
 

@@ -1,5 +1,10 @@
 # Zelda: first visual-correctness stage
 
+Current follow-up: the requested phone depth ZIP is now received and analyzed.
+Read [`zelda-depth-range.md`](zelda-depth-range.md) for its three nonconstant
+maps and the resulting reversible viewport-depth correction. The capture
+mechanism below remains diagnostic; final phone graphics are not yet verified.
+
 The current task is missing projected shadows, interior lighting and water
 appearance. Performance ports remain installed, with independent switches.
 This delivery is **evidence collection, not a claimed graphics fix**. Do not
@@ -151,5 +156,6 @@ The capture fixture also passes ASan/UBSan; host LeakSanitizer is unavailable
 under the existing `/proc` restriction.
 
 No full Android APK/AOT rebuild, driver execution or Zelda run is done on
-this host. Phone correctness, actual captures, pauses and graphical results
-remain unverified. Do not describe this diagnostic as a fix or speedup.
+this host. The user's exported phone depth pairs now verify that actual
+capture completed. Corrected graphical results remain pending device testing.
+Do not describe the capture diagnostic as a fix or speedup.
