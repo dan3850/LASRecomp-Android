@@ -15,7 +15,10 @@ typedef Buffer* VkBuffer;
 typedef struct {VkBuffer buf;u64 size;} VkOwnRes;
 typedef struct {u32 d[512];u8 s[512];} Image;
 typedef Image* VkImage;
-enum {VK_NULL_HANDLE = 0, VK_LRU_RT = 0, LRU_AGED = 1,
+/* Match Vulkan's C definition for the pointer handles modeled above.
+ * An enum-valued zero triggers Clang's non-literal-null conversion warning. */
+#define VK_NULL_HANDLE ((void*)0)
+enum {VK_LRU_RT = 0, LRU_AGED = 1,
       VK_FORMAT_D24_UNORM_S8_UINT = 129, VK_IMAGE_LAYOUT_UNDEFINED = 0,
       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL = 2, VK_PIPELINE_STAGE_2_COPY_BIT = 4,
       VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT = 8, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT = 16,

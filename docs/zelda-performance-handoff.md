@@ -93,7 +93,25 @@ override saved preferences.
 | `cf594a6` first D24 integration | Exact-bit D24/S8 export, but qualified targets also entered global CPU/writeback observers. | New phone ZIP: all three sampled depths now match attachments. User reports partial visual improvement, new artifacts, freezes and closing. **Not approved; superseded below.** |
 | Isolated D24 integration 2 (locate with `git log -1 -- tools/patch_scarletnx_zelda_d24_pack.py`) | GPU overlay only, original CPU policy, memory-freshness gate, private workspace and one-image conversion reuse; shared Android exit report. | 66 audit tests; 47930724 real Vulkan pixels on software llvmpipe including consecutive exports/new image version. New Android validation pending, default OFF with independent v2 preference. |
 
-## Current stopping point: D24 v1 regressed; integration 2 isolated and default OFF
+## Current stopping point: Termux D24 fixture compile fix; phone validation pending
+
+After `8a7304a`, the Termux audit stopped at the D24 C fixture before building
+the APK: Clang treats its `enum { VK_NULL_HANDLE = 0 }` as a nonliteral zero
+converted to the modeled `Buffer*`, and `-Werror` rejects it. This is a test
+mock definition error, not new runtime evidence. Reproduced the exact two
+diagnostics with Clang15 on the host. The fixture now uses Vulkan's actual
+C pointer-handle null macro, `#define VK_NULL_HANDLE ((void*)0)`. No runtime,
+shader, defaults, build/cache policy or integrity check is changed; `-Werror`
+and every assertion remain. The failing component passes with GCC13 and
+Clang15 after the fix. The full 66-test audit also passes with Clang15,
+zero skips, real glslangValidator and spirv-val (15.354 s on this host).
+
+Repeat the normal incremental builder below in Termux; it reruns the audit.
+Do not skip tests, clean caches or regenerate AOT to work around this error.
+The device outcome of integration2, its artifacts and crash/freeze cause
+are still pending. Keep the v2 default OFF and the earlier depth option ON.
+
+### Previous stopping point: D24 v1 regressed; integration 2 isolated and default OFF
 
 Read [`zelda-d24-regression.md`](zelda-d24-regression.md) first. User feedback:
 "meio que funcionou mas trouxe mais problemas graficos [...] fechando e
