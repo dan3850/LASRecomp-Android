@@ -66,10 +66,10 @@ an older profile's OFF default.
 | `2cc5ce0` | Optional eligible full clears as new-pass load actions, preserving same-pass reuse and conservative fallbacks. | 29 host tests pass; 40 old/new pixel-model scenes and full patched C syntax checks. Later aggregate user feedback was positive; isolated Android clear metrics remain pending. |
 | `38355f1` | Optional proven prefixes for graphics uniforms, analyzed from the same new/cached SPIR-V. | 33 host tests pass; 61 synthetic native programs, strict snapshot bytes, actual persistent loader and full patched C syntax checks. No Android FPS result for this option. |
 | `3dd1d57` | Exact, adaptive lookup of resolved descriptor state ahead of the existing hash cache. | 37 host tests pass; actual cache/recorder, 50 scenes / 3,200 bindings, sanitizer and full C syntax checks. Android FPS validation pending. |
-| Shadow-depth evidence delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_shadow_capture.py`) | Optional bounded depth-aspect snapshots before shadow sampling, separate layer analysis and complete-session ZIP export. | Diagnostic only. No visual fix or FPS gain claimed; Android captures pending. |
-| Persistent-buffer/WW delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_vb_pool.py`) | Exact-size reuse of completed stable vertex/index/storage buffers, plus passive write-watch failure evidence. | 49 host audit tests, actual source/lifetime/error paths, full C syntax and ASan/UBSan. Android OFF/ON metrics and WW cause pending. |
+| Shadow-depth evidence delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_shadow_capture.py`) | Optional bounded depth-aspect snapshots before shadow sampling, separate layer analysis and complete-session ZIP export. | Diagnostic only. First phone log reports three samples saved; exported pixels/ZIP pending. No visual fix or FPS gain claimed. |
+| `0e0dfa4` | Exact-size reuse of completed stable vertex/index/storage buffers, plus passive write-watch failure evidence. | 49 host audit tests, actual source/lifetime/error paths, full C syntax and ASan/UBSan. First phone log confirms reuse and pagemap open denied; clean Android OFF/ON comparison pending. |
 
-## Current stopping point: persistent-buffer pool and WW diagnosis delivered; phone A/B needed
+## Current stopping point: first buffer/WW phone evidence received; clean A/B and shadow ZIP needed
 
 After the remaining nxnative maturity audit, the user said "Vamos la" and
 authorized continuing the memory/resource work. Read
@@ -82,8 +82,8 @@ authorized continuing the memory/resource work. Read
 - `tools/patch_scarletnx_zelda_ww_diag.py` applies after shadow capture, followed
   by `tools/patch_scarletnx_zelda_vb_pool.py`; restore in reverse order. WW is
   passive only: no new UAPI macros, probes, permissions, protections, kernel
-  requests, tracking activation or relaxed hash checks. The phone cause is
-  still unknown. Sixteen fixed event slots preserve startup/errors without
+  requests, tracking activation or relaxed hash checks. The first new phone
+  log identifies a denied pagemap open, as recorded below. Sixteen fixed event slots preserve startup/errors without
   logging/allocating on those paths; renderer flushes them after PERF metadata.
 - `SNX_WW_META_V1` reports native compile-header capabilities.
   `SNX_WW_EVENT_V1` distinguishes build guards, explicit environment disable,
@@ -116,13 +116,66 @@ authorized continuing the memory/resource work. Read
   three full patched C-unit syntax checks and changed Java syntax pass.
   No Android APK/game/driver run or FPS improvement was measured here.
 
-**Resume:** inspect phone allocation/hit counts against frame p95/p99, plus
-the exact WW build/kernel/error evidence, before a tracker compatibility fix
-or broader resource-generation fast path. Dynamic textures, shader coverage,
+### First phone evidence from `0e0dfa4` (2026-10-24)
+
+Uploaded `Zelda-SNX-boot (1).txt`, SHA-256
+`5c9d7e6f6a156dce187a4f1267cefede037737a90799f8920fa41d77f93b4af3`.
+The raw private upload stays outside the repository. The exported file repeats
+some startup/error lines; totals below use its one `SNX PERF BEGIN` block,
+20 complete windows / 100.160987 seconds, without counting those duplicates.
+
+- Revision is `0e0dfa4c6a89470b095ccc74f03cbdbf2a715ac1`, native ScarletNX
+  translator (`ryujinx_requested=0`), pool ON. All prior performance options
+  report ON. There is no matched pool-OFF run in this upload.
+- The tracker has all four build capabilities. `api_ready` succeeds, then
+  `pagemap_open_failed` reports errno 13 (`EACCES`) opening
+  `/proc/self/pagemap`. The original code unregisters its WP range and uses
+  content verification. This is an application-context permission denial,
+  not missing UAPI declarations or a rejected userfaultfd API negotiation.
+  The log does not identify the precise policy responsible (for example,
+  no AVC evidence is supplied). Do not add header shims, bypass permissions
+  or treat this as successful write tracking.
+- Stable-buffer work counters: 10,964 requests, 7,184 pool hits (65.52%),
+  3,780 allocation calls, zero allocation/staging failures. The largest
+  *reported idle-pool gauge* is 1,452,800 bytes (not total live GPU memory
+  and not a guaranteed between-window peak). This confirms actual reuse in
+  this run; it does not establish a before/after frame-time gain.
+- Measured texture-hash call durations sum to 16,204.259 ms, checking
+  220,543,965,184 logical bytes (205.40 GiB). These are repeated content
+  checks, not unique resident texture bytes or physical DRAM traffic.
+  This is substantial remaining work and motivates auditing the denied-
+  tracking fallback and texture invalidation. Preserve all content checks
+  until an equally complete write/alias/CPU/GPU observer strategy is proven.
+- JIT wait/compile/failure counters are all zero in the exported windows;
+  startup queues 24 previously discovered PCs, which alone is not evidence
+  of a gameplay JIT bottleneck. Pipeline making totals 665 ms, waits 466 ms;
+  late individual frames report 132 ms and 182 ms waiting for pipelines.
+  Shader translation totals 42 ms. Neither explains every slow window.
+  Timeline/pace measurements overlap across threads and must not be added
+  together or interpreted as pure GPU execution time.
+- Shader capture is ON: `SNX_SHADER_CAPTURE_V1` explicitly bypasses
+  translated-shader persistence, while the separate Vulkan pipeline cache
+  loaded 4,537 KB. Do not claim all caches are absent or broken. Shadow
+  capture is also armed and saved three 16-MiB samples. The normal analyzer
+  correctly rejects this session for FPS comparison. Raw stream rates are
+  descriptive only; a later 5-second window reports 46.668 rendered frames/s
+  despite only 2 ms pipeline making, and several others report about 60.
+  `present_enqueue` is not physical Android display/scan-out feedback.
+- All three shadow samples report saved (frames 764, 1656, 2541, one layer
+  each); pixel files were not attached. Export **Exportar diagnostico de
+  sombras (.zip)** before another captured run replaces the latest session.
+  Saving depth data alone does not establish correct projected shadows.
+
+**Resume:** obtain the existing shadow ZIP for pixel analysis and separate
+fresh-process pool OFF/ON logs with both captures OFF and telemetry LEVE;
+no rebuild is needed just to change those options. Then compare allocation
+counts with frame p95/p99. For memory work, audit a safe Android content-
+verification/invalidation path under the observed pagemap denial rather than
+assuming headers can activate tracking. Dynamic textures, shader coverage,
 partial updates and pacing remain. Missing shadows/lights/water stay on the
 independent visual track below; the latest diagnostics have not fixed them.
 
-## Visual track: shadow-depth evidence delivered; outdoor phone capture needed
+## Visual track: three depth samples reported saved; shadow ZIP/pixels needed
 
 The earlier user request prioritizes missing shadows, lights and water using
 nxnative as the reference. Read [`zelda-shadow-depth.md`](zelda-shadow-depth.md)
@@ -425,7 +478,7 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 | Front | Status / next task |
 |---|---|
 | Graphics uniform snapshots and small updates | Snapshots positively reviewed on device; proven fixed-index prefixes now delivered with device metrics pending. Full deferred GPU updates/partial shadows and dynamic-index proof remain separate work. |
-| Android dirty-page tracking | Not active in supplied device logs; passive build/error diagnosis is now delivered. ScarletNX already implements generation tables and async userfaultfd/PAGEMAP_SCAN. Inspect the new APK log before a compatibility/fault fallback; preserve aliases, host writes and GPU ownership traps. |
+| Android dirty-page tracking | First `0e0dfa4` phone log: build capabilities present and API negotiation succeeds, but `/proc/self/pagemap` open fails with `EACCES`; original content checks remain. Audit the safe fallback/invalidation path under that actual restriction, preserving aliases, host writes and GPU ownership traps. Header compatibility is not the observed problem. |
 | Broader persistent/shared GPU pools | `VkOwnRes` pool and new exact-size stable-buffer retirement pool are delivered; new phone A/B pending. A whole-pool shared-memory path still needs Vulkan/driver support, alias and lifetime proofs. |
 | Binding/state fast paths | Exact adaptive descriptor lookup now delivered; device metrics pending. Full resource reconstruction remains unchanged. Broader dirty-generation fast paths still need observer proofs. |
 | Texture upload batches / dynamic image versions | Existing staging, image reuse and GPU conversion are present. Profile remaining transitions and dependencies before extending them. |

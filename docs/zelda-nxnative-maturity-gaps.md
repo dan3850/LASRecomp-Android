@@ -109,16 +109,23 @@ Ryujinx fragment translator supplies that architecture.
 
 ## Recommended next performance step and stopping point
 
-For diagnosis, first explain why the existing write tracker is inactive on
-the RedMagic build and measure time/bytes spent hashing. For the next bounded
-performance implementation, audit general owned-buffer allocation/release
-and extend retirement-safe pooling only where the current transfer pool and
-staging/cache reuse do not apply. Then consider generation-based resource
-shortcuts, supported by complete invalidation evidence.
+Follow-up `0e0dfa4` delivered the bounded stable vertex/index/storage buffer
+pool and passive tracker diagnosis. The first phone log confirms 7,184 pool
+hits in 10,964 requests. It also establishes present UAPI definitions and
+successful API negotiation followed by `/proc/self/pagemap` open denied
+with errno 13. Measured texture-hash calls sum to 16.204 seconds over about
+100 seconds of exported windows. Audit safe content verification/invalidation
+under that observed app permission restriction; do not attempt to solve it
+with header definitions. Broader resource-generation shortcuts still require
+complete invalidation evidence. Clean OFF/ON FPS comparison remains pending
+because both shader and shadow capture were enabled in this first log.
 
-Keep the visual track separate: the `491686e` shadow ZIP and screenshot are
-still needed to choose the actual shadow repair; lights and water follow.
-No new runtime changes or APK are delivered by this inventory. No new tests
+Keep the visual track separate: the first phone log says three depth samples
+were saved; their exported shadow ZIP is still needed to choose the actual
+shadow repair. Lights and water follow. See
+[`zelda-performance-handoff.md`](zelda-performance-handoff.md) for the current
+evidence and continuation point. No runtime changes or APK are delivered by
+this inventory. No new tests
 or full/AOT build are needed for these documentation-only changes. Future
 code work must run the appropriate existing and new checks and leave another
 continuation checkpoint. No measured Android improvement is claimed here.

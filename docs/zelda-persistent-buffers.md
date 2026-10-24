@@ -75,10 +75,12 @@ and at later complete windows. Nothing logs on every texture check.
 | `remap_failed` | A replacement mapping could not be registered; original code disables tracking. |
 | `scan_failed` | Original PAGEMAP_SCAN failed; caller retains its original fallback/content checks. |
 
-The root cause on the actual RedMagic APK remains unknown until its new log
-arrives. A Termux process is not substituted for the application's security
-context. Future work must respond to the observed stage rather than assume
-headers or kernel permissions are the cause.
+The first `0e0dfa4` RedMagic APK log now confirms all four build capabilities,
+successful API negotiation, then `pagemap_open_failed` with errno 13
+(`EACCES`). The original `/proc/self/pagemap` open is denied in the app's
+context; the exact policy responsible is not established by this log. A
+Termux process is not substituted for that context. Adding UAPI declarations
+cannot fix the observed failure. Preserve the original content checks.
 
 ## Counters and comparisons
 
@@ -91,6 +93,15 @@ Write-watch capabilities/events are included separately in the analyzed log.
 
 These are work counters, not FPS gains or milliseconds. A low/zero hit rate
 can make this option unhelpful. Keep the previous APK as the comparison.
+
+First phone evidence (`Zelda-SNX-boot (1).txt`, 20 complete windows):
+10,964 requests, 7,184 pool hits, 3,780 allocation calls and zero allocation/
+staging failures. This establishes real reuse, with no matched OFF run yet.
+Both shader and shadow capture were enabled: translated-shader persistence
+was bypassed, and three depth samples were saved. The analyzer correctly
+rejects this session for FPS comparison. See the current phone-evidence
+section of [`zelda-performance-handoff.md`](zelda-performance-handoff.md)
+for exact hash/pipeline work counts, upload identity and remaining tasks.
 
 ## Exact Termux build and device test
 
@@ -156,8 +167,9 @@ Three full patched C units pass syntax checks: `buffer.c`, `renderer.c` and
 validation and APK generation happen in Termux. No full game/AOT or Android
 APK build, device driver run, visual correction or FPS result is claimed.
 
-Resume with the phone OFF/ON logs: examine pool hits/allocation calls versus
-frame p95/p99 and the write-watch failure stage. Then choose a tracker fix
-supported by that evidence and/or resource-generation shortcuts. Dynamic
+Resume with clean phone OFF/ON logs and the already saved shadow ZIP: examine
+pool hits/allocation calls versus frame p95/p99. The first log establishes
+pagemap-open denial, so audit a safe fallback/invalidation strategy supported
+by that restriction and/or resource-generation shortcuts. Dynamic
 textures, broader shader preparation, partial updates and frame pacing remain
 later work. Shadow-map pixels, then lights/water, remain pending separately.
