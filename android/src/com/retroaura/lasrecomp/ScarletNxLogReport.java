@@ -46,11 +46,13 @@ final class ScarletNxLogReport {
         out.append("Castlevania ScarletNX — diagnostico de renderizacao\n");
         out.append("Resumo: linhas de shader extraidas de TODO o log, ");
         out.append("com inicio/fim preservados e limites de memoria.\n");
-        for (String name : new String[]{"mario-snx-launch.log", "mario-snx-native.log"}) {
+        for (String name : new String[]{"mario-snx-launch.log", "mario-snx-native.log", "mario-exit.log"}) {
             File file = new File(appFiles, name);
             if (!file.isFile()) continue;
             out.append("\n=== ").append(name).append(" ===\n");
-            window(out, file, 8000, true);
+            // Retained exit metadata is first, followed by an optional encoded
+            // trace. Keep the entire bounded report, rather than just its tail.
+            window(out, file, name.equals("mario-exit.log") ? 98304 : 8000, !name.equals("mario-exit.log"));
         }
 
         File state = new File(new File(new File(appFiles, "snx-games"), gameId), "state");

@@ -1,5 +1,11 @@
 # Copias exatas da profundidade D24: evidencia e teste no Android
 
+**Historico da primeira integracao (`cf594a6`), que regrediu no aparelho.**
+Os novos pares confirmam a profundidade, mas o usuario reportou defeitos e
+instabilidade. As instrucoes ON/default deste documento sao historicas;
+seguir [`zelda-d24-regression.md`](zelda-d24-regression.md) para a integracao
+restrita, preferencia v2 OFF e diagnostico de encerramentos.
+
 Checkpoint: 2026-10-24. Continuacao de `5711117`, preservando o Stable60, os
 ports de desempenho e a correcao de faixa de profundidade aprovada em `9be351c`.
 Esta entrega implementa uma lacuna concreta nas transferencias. A recuperacao

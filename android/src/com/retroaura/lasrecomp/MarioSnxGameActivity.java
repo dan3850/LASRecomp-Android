@@ -135,6 +135,8 @@ public final class MarioSnxGameActivity extends SDLActivity {
         }
         boolean zelda = new File(base).getName().equals("01006BB00C6F0000");
         int perfMode = zelda ? getIntent().getIntExtra("snx_perf_mode", 0) : 0;
+        if (zelda) ScarletNxExitInfo.state(this, "Zelda D24-integration=2 requested=" +
+                getIntent().getBooleanExtra("snx_d24_copies", false) + " perf=" + perfMode);
         SDLActivity.nativeSetenv("SNX_PERF", perfMode > 0 ? "1" : "0");
         SDLActivity.nativeSetenv("SNX_VK_KNOWN_COMPLETE",
                 zelda && getIntent().getBooleanExtra("snx_known_complete", false) ? "1" : "0");

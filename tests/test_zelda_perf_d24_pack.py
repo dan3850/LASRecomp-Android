@@ -63,17 +63,17 @@ class D24PackTests(unittest.TestCase):
             root = Path(d); gpu = source('src/nx/gpu/gpu.c')
             (root / 'block_offsets_actual.inc').write_text('\n'.join(HELPERS.function(gpu, n)
                 for n in ('static u64 bl_x(', 'static u64 bl_yz(', 'u64 bl_offset(')))
-            surface = source('src/nx/gpu/vk/surface.c')
-            old, new = PATCH.replacements()['src/nx/gpu/vk/surface.c'][1]
-            surface = surface.replace(old, new)
+            surface = patched('src/nx/gpu/vk/surface.c')
             (root / 'flush_bytes_actual.inc').write_text(HELPERS.function(surface, 'static u64 flush_bytes('))
+            (root / 'pending_actual.inc').write_text(HELPERS.function(surface, 'static u32 rt_pending_over('))
             run = subprocess.run(['cc', '-std=gnu11', '-O1', '-Wall', '-Wextra', '-Werror', '-I'+d,
                 '-I'+str(ROOT / 'tools/zelda-perf'), str(ROOT / 'tests/zelda_d24_pack_fixture.c'), '-o', str(root / 'surface')],
                 capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
             run = subprocess.run([str(root / 'surface')], capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr+run.stdout)
-            self.assertIn('old_blank_reproduced=1 depth_stencil_exact=1 guest_padding_preserved=1', run.stdout)
+            self.assertIn('cpu_policy_unchanged=1 depth_stencil_exact=1 guest_padding_preserved=1', run.stdout)
+            self.assertIn('stale_owned_preserved=1 ordered_overlay=1 reuse_invalidated=1', run.stdout)
             rows = [json.loads(l.split(' ', 1)[1]) for l in run.stdout.splitlines() if l.startswith('SNX_D24_PACK_META_V1')]
             self.assertEqual([r['enabled'] for r in rows], [0, 0, 1])
 
@@ -96,6 +96,7 @@ class D24PackTests(unittest.TestCase):
         script = (ROOT / 'compilar-zelda-copias-profundidade-termux.sh').read_text()
         gate = script.split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
         markers = ('SNX_D24_PACK_META_V1','SNX_D24_PACK_V1','SNX_D24_PACK_STATE_V1',
+                   '"integration":2,"gpu_overlay_only":1,"cpu_writeback":0,"isolated_work":1',
                    'SNX_EFFECT_DEPTH_PAIR_V1','SNX_DEPTH_RANGE_META_V1','SNX_VB_POOL_META_V1','revision')
         with tempfile.TemporaryDirectory() as d:
             apk = Path(d) / 'test.apk'

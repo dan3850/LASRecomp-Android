@@ -143,7 +143,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             addPerfOption(content, "zelda_vb_pool_v1", "Reutilizar buffers persistentes", hasPersistentBuffersBuild());
             addPerfOption(content, "zelda_depth_range_v1", "Preservar faixa de profundidade", hasDepthRangeBuild());
             if (hasD24CopiesBuild())
-                addPerfOption(content, "zelda_d24_copies_v1", "Corrigir copias da profundidade D24", true);
+                addPerfOption(content, "zelda_d24_copies_v2", "Copias D24 isoladas (teste)", false);
             addPerfOption(content, "zelda_shadow_capture_v1", "Capturar sombras (3 amostras; teste visual)");
             Button exportShadows = new Button(this);
             exportShadows.setText("Exportar diagnostico de sombras (.zip)");
@@ -637,7 +637,9 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_bind_reuse", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_bind_reuse_v1", hasBindingsBuild()));
             intent.putExtra("snx_vb_pool", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_vb_pool_v1", hasPersistentBuffersBuild()));
             intent.putExtra("snx_depth_range", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_depth_range_v1", hasDepthRangeBuild()));
-            intent.putExtra("snx_d24_copies", hasD24CopiesBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_d24_copies_v1", true));
+            // Version 1 regressed on device. Its saved ON must not enable this
+            // bounded integration automatically after an APK update.
+            intent.putExtra("snx_d24_copies", hasD24CopiesBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_d24_copies_v2", false));
             if (hasEffectDepthBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_effect_depth_v1", false)) {
                 if (getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false) ||
                         getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false))
@@ -662,6 +664,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     }
 
     private String readLogs() {
+        ScarletNxExitInfo.save(this);
         // Never export only the last 60 KB: early shader failures explain
         // missing objects and would otherwise disappear from the report.
         return ScarletNxLogReport.build(getFilesDir(), ID);

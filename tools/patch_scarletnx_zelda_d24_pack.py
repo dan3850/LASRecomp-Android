@@ -75,11 +75,20 @@ def replacements():
         'src/nx/gpu/vk/surface.c': [
             ('static u64 flush_bytes(const Surf* s) {',
              '#include "nx/gpu/vk/snx_d24_pack.h"\n\nstatic u64 flush_bytes(const Surf* s) {'),
-            ('s->f.depth ? !depth_copies_raw(s) : !s->f.raw',
-             's->f.depth ? !(depth_copies_raw(s) || snx_d24_pack_eligible(s)) : !s->f.raw'),
-            ('static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at) {',
-             'static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at) {\n'
-             '    if (snx_d24_pack_eligible(s)) return snx_d24_pack_record(cb, s, buf, at);'),
+            ('static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** out) {',
+             'static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** out, int d24_overlay) {'),
+            ('s->gva + rt_bytes(s) <= gva || !flush_bytes(s)) continue;',
+             's->gva + rt_bytes(s) <= gva ||\n'
+             '                !(flush_bytes(s) || (d24_overlay && snx_d24_pack_pending(s, gva, size)))) continue;'),
+            ('rt_pending_over(s->gva, size, local, 16, &list);',
+             'rt_pending_over(s->gva, size, local, 16, &list, 0);'),
+            ('count = rt_pending_over(gva, size, local, 16, &list);\n    for',
+             'count = rt_pending_over(gva, size, local, 16, &list, 1);\n    for'),
+            ('count = rt_pending_over(gva, size, local, 16, &list);\n        for',
+             'count = rt_pending_over(gva, size, local, 16, &list, 0);\n        for'),
+            ('if (flush_record(vk_cmd(), s, buf, at + (s->gva - gva))) {',
+             'if (snx_d24_pack_eligible(s) ? snx_d24_pack_record(vk_cmd(), s, buf, at + (s->gva - gva)) :\n'
+             '                flush_record(vk_cmd(), s, buf, at + (s->gva - gva))) {'),
         ],
         'src/nx/gpu/vk/texconv.c': [
             ('int vk_tc_nv12_uv(VkCommandBuffer cb,', PACK_C + 'int vk_tc_nv12_uv(VkCommandBuffer cb,'),

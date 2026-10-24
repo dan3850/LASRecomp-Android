@@ -1,8 +1,6 @@
 package com.retroaura.lasrecomp;
 
 import android.app.Activity;
-import android.app.ActivityManager;
-import android.app.ApplicationExitInfo;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.DocumentsContract;
@@ -152,67 +150,7 @@ public final class MarioBootActivity extends Activity {
 
     // A native abort or OOM kill may happen before the user can capture threads.
     // Android preserves the process-exit reason for the NEXT launch of this app.
-    private void savePreviousProcessExits() {
-        if (Build.VERSION.SDK_INT < 30) return;
-        try {
-            ActivityManager manager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
-            if (manager == null) return;
-            java.util.List<ApplicationExitInfo> history =
-                    manager.getHistoricalProcessExitReasons(getPackageName(), 0, 4);
-            try (FileOutputStream output = new FileOutputStream(
-                    new File(getFilesDir(), "mario-exit.log"), false)) {
-                if (history.isEmpty()) {
-                    output.write("Nenhum encerramento anterior registrado pelo Android.\n"
-                            .getBytes(StandardCharsets.UTF_8));
-                }
-                // The app's normal removal may be exit[0]; its native :snx
-                // SIGSEGV is then exit[1]. Capture the newest crashing game
-                // process rather than blindly reading the first history item.
-                boolean capturedSnxCrash = false;
-                for (int i = 0; i < history.size(); i++) {
-                    ApplicationExitInfo info = history.get(i);
-                    String heading = "exit[" + i + "] timestamp=" + info.getTimestamp()
-                            + " reason=" + info.getReason() + " status=" + info.getStatus()
-                            + " process=" + info.getProcessName()
-                            + " importance=" + info.getImportance()
-                            + " description=" + info.getDescription() + "\n";
-                    output.write(heading.getBytes(StandardCharsets.UTF_8));
-                    boolean isNativeSnxCrash =
-                            (getPackageName() + ":snx").equals(info.getProcessName()) &&
-                            info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE;
-                    if (!isNativeSnxCrash || capturedSnxCrash) continue;
-                    capturedSnxCrash = true;
-                    output.write(("--- Latest SNX native crash: exit[" + i + "] ---\n")
-                            .getBytes(StandardCharsets.UTF_8));
-                    // Android 11+ may supply a binary native tombstone protobuf.
-                    // Preserve its original bytes for later decoding, up to 48 KiB.
-                    try (InputStream trace = info.getTraceInputStream()) {
-                        if (trace == null) {
-                            output.write("Android did not retain a native tombstone for this exit.\n"
-                                    .getBytes(StandardCharsets.UTF_8));
-                            continue;
-                        }
-                        output.write("--- Android native tombstone (max 48 KiB) ---\n"
-                                .getBytes(StandardCharsets.UTF_8));
-                        byte[] chunk = new byte[4096];
-                        int total = 0, n;
-                        while (total < 49152 &&
-                                (n = trace.read(chunk, 0, Math.min(chunk.length, 49152 - total))) > 0) {
-                            output.write(chunk, 0, n);
-                            total += n;
-                        }
-                        output.write("\n--- end Android native tombstone ---\n"
-                                .getBytes(StandardCharsets.UTF_8));
-                    } catch (Exception traceError) {
-                        output.write(("SNX native tombstone unavailable: " + traceError + "\n")
-                                .getBytes(StandardCharsets.UTF_8));
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-            // An unavailable Android history API must not block the game.
-        }
-    }
+    private void savePreviousProcessExits() { ScarletNxExitInfo.save(this); }
 
 
     @Override public void onCreate(Bundle state) {
