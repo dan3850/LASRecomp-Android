@@ -4,6 +4,35 @@ Updated: 2026-10-24. Read this before continuing the experimental Zelda work.
 The user requested that every delivery list what remains and leave a durable
 checkpoint for another assistant if the conversation or credits end.
 
+## New color-output probe (device result pending)
+
+The 2026-10-24 follow-up logs `Zelda-SNX-boot (2).txt` and
+`Zelda-efeitos (2).zip` are from revision `12ecc32`. Three captured D24
+attachment/sample pairs agree; the user reports the interaction flash even
+with isolated D24 copies OFF. Therefore D24 is not a necessary cause of that
+flash. The existing detailed lighting state/RT tables hit their 64-entry
+limits in many windows, and none of their rows measures color values.
+
+The effect-capture profile now includes a bounded `SNX_COLOR_PROBE_V1`
+readback of Vulkan B10G11R11 color targets, after the observed scene-output,
+downsample and composite fragment passes in one frame. It samples up to three
+frames, 15 seconds apart, reports zero/bright/nonfinite pixel counts in the
+normal exported log, and leaves rendering unchanged when the existing effect
+capture switch is OFF. Capture ON inserts up to nine diagnostic pass breaks
+and GPU copies; do not use it for FPS comparisons. Shader hashes select only
+the observed postprocess path and may miss a changed variant. This is a
+**diagnostic code change**, not a claimed graphics fix. No Android compile or
+RedMagic result has yet confirmed the new probe. See
+[`zelda-color-probe.md`](zelda-color-probe.md) for the exact test and limits.
+
+Preserve the approved depth/color build and all caches. Next: compile the
+incremental effects profile, hold the telephone interaction across the
+roughly 15/30/45-second capture opportunities, export one new log, and
+compare measured bright/nonfinite counts across the three stage IDs in
+each frame. If the final output first spikes, inspect the corresponding
+composite shader/inputs; if earlier stage is already high, trace its
+producer/copy. Do not alter bloom blending based on CPU state alone.
+
 ## Target and rules
 
 - Repository: `dan3850/LASRecomp-Android`.

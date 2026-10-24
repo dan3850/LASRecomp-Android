@@ -16,7 +16,7 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     if z.read('assets/licenses/Zelda-EffectDepth.txt').decode().strip() != revision:
         raise SystemExit('ERRO: APK sem o perfil pareado desta revisao')
     runtime = z.read('lib/arm64-v8a/libscarletnx.so')
-    for marker in (b'SNX_EFFECT_DEPTH_CAPTURE_V1', b'SNX_EFFECT_DEPTH_PAIR_V1',
+    for marker in (b'SNX_EFFECT_DEPTH_CAPTURE_V1', b'SNX_EFFECT_DEPTH_PAIR_V1', b'SNX_COLOR_PROBE_V1',
                    b'SNX_DEPTH_RANGE_META_V1', b'SNX_VB_POOL_META_V1', revision.encode()):
         if marker not in runtime:
             raise SystemExit('ERRO: runtime sem o diagnostico/correcoes desta revisao')
@@ -25,5 +25,6 @@ PY
 cp -p "$REFERENCE" "$FOLDER/Zelda-SNX-EFEITOS-DEPTH-DIAG.apk"
 echo "APK: $FOLDER/Zelda-SNX-EFEITOS-DEPTH-DIAG.apk"
 echo "Capturar profundidade de luz/nevoa ON; capturas de sombras/shaders OFF; Registrar FPS LEVE."
-echo "Fique 60 segundos na casa do telefone, saia pelo menu e exporte profundidade de luz/nevoa (.zip)."
+echo "Interaja com o telefone/NPC perto de 15, 30 e 45 segundos; saia e exporte o ZIP de efeitos."
+echo "O log agora inclui SNX_COLOR_PROBE_V1: brilho HDR apos cena, desfoque e composicao."
 echo "Depois desligue a captura e inicie outro processo para jogar normalmente."

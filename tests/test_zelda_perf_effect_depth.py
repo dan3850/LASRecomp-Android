@@ -99,7 +99,7 @@ class EffectDepthTests(unittest.TestCase):
     def test_profile_gate_and_launcher_default_and_fps_exclusion(self):
         script = (ROOT / 'compilar-zelda-efeitos-termux.sh').read_text()
         gate = script.split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
-        markers = ('SNX_EFFECT_DEPTH_CAPTURE_V1', 'SNX_EFFECT_DEPTH_PAIR_V1', 'SNX_DEPTH_RANGE_META_V1', 'SNX_VB_POOL_META_V1', 'revision')
+        markers = ('SNX_EFFECT_DEPTH_CAPTURE_V1', 'SNX_EFFECT_DEPTH_PAIR_V1', 'SNX_COLOR_PROBE_V1', 'SNX_DEPTH_RANGE_META_V1', 'SNX_VB_POOL_META_V1', 'revision')
         with tempfile.TemporaryDirectory() as d:
             apk = Path(d) / 'test.apk'
             for missing in ('', 'asset', *markers):
