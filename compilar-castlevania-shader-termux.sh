@@ -18,6 +18,18 @@ OUT="$HOME/scarletnx-zelda-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ -f "$SRC/src/nx/gpu/vk/snx_vb_pool.h" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_vb_pool.py" "$SRC" --revert; then
+      echo "ERRO: falha restaurando pool de buffers persistentes" >&2
+      restore_failed=1
+    fi
+  fi
+  if [ -f "$SRC/src/nx/runtime/platform/snx_ww_diag.h" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_ww_diag.py" "$SRC" --revert; then
+      echo "ERRO: falha restaurando diagnostico de memoria alterada" >&2
+      restore_failed=1
+    fi
+  fi
   if [ -f "$SRC/src/nx/gpu/vk/snx_shadow_capture.h" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_zelda_shadow_capture.py" "$SRC" --revert; then
       echo "ERRO: falha restaurando captura de profundidade das sombras" >&2
@@ -204,6 +216,8 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda_ub_extent.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_bind_reuse.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_shadow_capture.py" "$SRC"
+  python3 "$ROOT/tools/patch_scarletnx_zelda_ww_diag.py" "$SRC"
+  python3 "$ROOT/tools/patch_scarletnx_zelda_vb_pool.py" "$SRC"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"

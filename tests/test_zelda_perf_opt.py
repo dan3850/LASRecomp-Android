@@ -30,6 +30,8 @@ CLEAR_LOAD = module('clear_load_stack', ROOT / 'tools/patch_scarletnx_zelda_clea
 UB_EXTENT = module('ub_extent_stack', ROOT / 'tools/patch_scarletnx_zelda_ub_extent.py')
 BIND_REUSE = module('bind_reuse_stack', ROOT / 'tools/patch_scarletnx_zelda_bind_reuse.py')
 SHADOW_CAPTURE = module('shadow_capture_stack', ROOT / 'tools/patch_scarletnx_zelda_shadow_capture.py')
+WW_DIAG = module('ww_diag_stack', ROOT / 'tools/patch_scarletnx_zelda_ww_diag.py')
+VB_POOL = module('vb_pool_stack', ROOT / 'tools/patch_scarletnx_zelda_vb_pool.py')
 SRC = Path(os.environ.get('SCARLETNX_TEST_SRC', ROOT.parent / 'ScarletNX-audit'))
 PIN = '34853eeae5af132e320adbb0193f13344085bf89'
 
@@ -244,7 +246,8 @@ int main(int argc, char** argv) {
             root = Path(d)
             names = (set(PERF.replacements()) | set(OPT.replacements()) | set(TRANSFER.replacements()) |
                      set(UNIFORM.replacements()) | set(CLEAR_LOAD.replacements()) | set(UB_EXTENT.replacements()) |
-                     set(BIND_REUSE.replacements()) | set(SHADOW_CAPTURE.replacements()))
+                     set(BIND_REUSE.replacements()) | set(SHADOW_CAPTURE.replacements()) |
+                     set(WW_DIAG.replacements()) | set(VB_POOL.replacements()))
             names.add('src/nx/gpu/shader/spirv_translate.c')
             before = {}
             for name in names:
@@ -270,6 +273,10 @@ int main(int argc, char** argv) {
             BIND_REUSE.apply(root)
             SHADOW_CAPTURE.apply(root)
             SHADOW_CAPTURE.apply(root)
+            WW_DIAG.apply(root)
+            WW_DIAG.apply(root)
+            VB_POOL.apply(root)
+            VB_POOL.apply(root)
             shader = root / 'src/nx/gpu/shader/spirv_translate.c'
             shader.write_text(D7.apply(BINDLESS.transform(shader.read_text())))
             FSWZ.apply(root)
@@ -277,6 +284,8 @@ int main(int argc, char** argv) {
             FSWZ.apply(root)
             self.assertEqual(once, {name: (root / name).read_bytes() for name in names})
             FSWZ.apply(root, True)
+            VB_POOL.apply(root, True)
+            WW_DIAG.apply(root, True)
             SHADOW_CAPTURE.apply(root, True)
             BIND_REUSE.apply(root, True)
             UB_EXTENT.apply(root, True)
@@ -296,6 +305,8 @@ int main(int argc, char** argv) {
             self.assertFalse((root / 'src/nx/gpu/vk/snx_ub_extent.h').exists())
             self.assertFalse((root / 'src/nx/gpu/vk/snx_bind_reuse.h').exists())
             self.assertFalse((root / 'src/nx/gpu/vk/snx_shadow_capture.h').exists())
+            self.assertFalse((root / 'src/nx/runtime/platform/snx_ww_diag.h').exists())
+            self.assertFalse((root / 'src/nx/gpu/vk/snx_vb_pool.h').exists())
 
     @unittest.skipUnless((SRC / '.git').exists() and shutil.which('cc'), 'pinned source and C compiler required')
     def test_native_capture_bypasses_real_prewarm_and_normal_policy_resumes(self):

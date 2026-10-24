@@ -139,6 +139,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             addPerfOption(content, "zelda_clear_load_v1", "Limpezas completas no inicio do passe", hasClearBuild());
             addPerfOption(content, "zelda_ub_extent_v1", "Alcance comprovado dos uniformes", hasUniformExtentBuild());
             addPerfOption(content, "zelda_bind_reuse_v1", "Reutilizar bindings validados", hasBindingsBuild());
+            addPerfOption(content, "zelda_vb_pool_v1", "Reutilizar buffers persistentes", hasPersistentBuffersBuild());
             addPerfOption(content, "zelda_shadow_capture_v1", "Capturar sombras (3 amostras; teste visual)");
             Button exportShadows = new Button(this);
             exportShadows.setText("Exportar diagnostico de sombras (.zip)");
@@ -338,6 +339,12 @@ public final class CastlevaniaSnxBootActivity extends Activity {
 
     private boolean hasBindingsBuild() {
         try (java.io.InputStream in = getAssets().open("licenses/Zelda-Bindings.txt")) {
+            return in.read() >= 0;
+        } catch (IOException e) { return false; }
+    }
+
+    private boolean hasPersistentBuffersBuild() {
+        try (java.io.InputStream in = getAssets().open("licenses/Zelda-PersistentBuffers.txt")) {
             return in.read() >= 0;
         } catch (IOException e) { return false; }
     }
@@ -580,6 +587,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_clear_load", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_clear_load_v1", hasClearBuild()));
             intent.putExtra("snx_ub_extent", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_ub_extent_v1", hasUniformExtentBuild()));
             intent.putExtra("snx_bind_reuse", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_bind_reuse_v1", hasBindingsBuild()));
+            intent.putExtra("snx_vb_pool", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_vb_pool_v1", hasPersistentBuffersBuild()));
             if (hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false)) {
                 File captures = new File(folder, "captures/shadow-depth-v1");
                 makeDir(captures);

@@ -88,6 +88,9 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   if [ "${SCARLETNX_ZELDA_BIND_REUSE:-0}" = 1 ]; then
     git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-Bindings.txt"
   fi
+  if [ "${SCARLETNX_ZELDA_VB_POOL:-0}" = 1 ]; then
+    git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-PersistentBuffers.txt"
+  fi
 fi
 SNLIB="$EXTRA/lib/arm64-v8a"
 # Cross-check against the previous LASRecomp test's native library names.

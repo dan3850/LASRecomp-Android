@@ -5,6 +5,13 @@ that can improve this Zelda port. This is a source audit and prioritization;
 it introduces no new runtime option, shader change, build or measured FPS.
 The shadow-depth delivery remains at `491686e`, awaiting phone captures.
 
+Follow-up: the user authorized implementation. The bounded stable-buffer
+pool and passive WW diagnosis are now delivered; read
+[`zelda-persistent-buffers.md`](zelda-persistent-buffers.md). This document's
+initial table is the pre-implementation comparison. In particular,
+`vk_own_res_new` pooling was already delivered by `9b405a6`; the new pool is
+for `make_own`, not another copy of that transfer-result pool.
+
 ## Sources and scope
 
 LASRecomp runtime/profile baseline: `491686ebe64bcc25ad6d289e4e82363d4690f3a7`.

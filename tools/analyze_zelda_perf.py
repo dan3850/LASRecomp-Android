@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|SHADOW_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|VB_POOL(?:_META)?|WW(?:_META|_EVENT)|SHADOW_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -58,6 +58,7 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     clear_meta = [r for k, r in selected['rows'] if k == 'SNX_CLEAR_LOAD_META_V1']
     extent_meta = [r for k, r in selected['rows'] if k == 'SNX_UB_EXTENT_META_V1']
     binding_meta = [r for k, r in selected['rows'] if k == 'SNX_BIND_REUSE_META_V1']
+    vb_meta = [r for k, r in selected['rows'] if k == 'SNX_VB_POOL_META_V1']
     all_windows = {r['window']: r for k, r in selected['rows'] if k == 'SNX_PERF_V1'}
     # Include only windows wholly inside the requested time range. No mix of
     # startup/warmup with gameplay, no partial-window FPS extrapolation.
@@ -66,6 +67,12 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
                and (duration_seconds is None or r['elapsed_s'] <= skip_seconds + duration_seconds)}
     valid = {}
     for w, r in windows.items():
+        if vb_meta:
+            vb_rows = [x for k, x in selected['rows'] if k == 'SNX_VB_POOL_V1' and x['window'] == w]
+            if len(vb_rows) != 1:
+                continue
+            if vb_rows[0]['enabled'] != vb_meta[-1]['enabled']:
+                raise ValueError('persistent buffer mode changed within session')
         streams = {x['stream']: x for k, x in selected['rows'] if k == 'SNX_STREAM_V1' and x['window'] == w}
         costs = {x['metric']: x for k, x in selected['rows'] if k == 'SNX_COST_V1' and x['window'] == w}
         vk = [x for k, x in selected['rows'] if k == 'SNX_VK_V1' and x['window'] == w]
@@ -135,6 +142,12 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
         result['metadata']['uniform_extent'] = extent_meta[-1]
     if binding_meta:
         result['metadata']['binding_reuse'] = binding_meta[-1]
+    if vb_meta:
+        result['metadata']['persistent_buffers'] = vb_meta[-1]
+    ww_meta = [r for k, r in selected['rows'] if k == 'SNX_WW_META_V1']
+    if ww_meta:
+        result['metadata']['write_watch'] = ww_meta[-1]
+        result['write_watch_events'] = [r for k, r in selected['rows'] if k == 'SNX_WW_EVENT_V1']
     graphics_meta = [r for k, r in selected['rows'] if k == 'SNX_GFX_META_V1']
     if graphics_meta:
         result['metadata']['graphics_diagnostics'] = graphics_meta[-1]
@@ -201,6 +214,13 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
             for name, value in r.items():
                 if name not in ('window', 'enabled'):
                     bindings[name] = bindings.get(name, 0) + value
+        if k == 'SNX_VB_POOL_V1':
+            buffers = result.setdefault('persistent_buffers', {})
+            for name, value in r.items():
+                if name in ('pool_entries', 'pool_bytes'):
+                    buffers[name] = value
+                elif name not in ('window', 'enabled'):
+                    buffers[name] = buffers.get(name, 0) + value
     return result
 
 
@@ -240,6 +260,12 @@ def markdown(report, label):
     if 'binding_reuse' in report:
         lines += ['', 'Exact reuse of resolved bindings: `' + json.dumps(report['binding_reuse'], sort_keys=True) + '`',
                   'Fast hits bypass descriptor hash lookups; resource checks still run. Mix-call counts are CPU work counts, not GPU time or FPS.']
+    if 'persistent_buffers' in report:
+        lines += ['', 'Persistent vertex/index/storage buffers: `' + json.dumps(report['persistent_buffers'], sort_keys=True) + '`',
+                  'Pool hits avoid new allocations; all original data copies and content checks remain. Counts are not measured FPS gains.']
+    if 'write_watch_events' in report:
+        lines += ['', 'Passive write-watch initialization/errors: `' + json.dumps(report['write_watch_events'], sort_keys=True) + '`',
+                  'Build UAPI, syscall/API, registration, pagemap and scan failures are distinct. Policy and fallback checks are unchanged.']
     return '\n'.join(lines)
 
 

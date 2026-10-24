@@ -47,6 +47,9 @@ and the uniform-extent option OFF for the reference trial; a saved ON
 preference overrides the profile default. Keep binding reuse OFF too when
 rebuilding that reference from newer code. Preserve the newer
 `38355f1` extent APK as the immediate comparison for the binding delivery.
+When rebuilding older references from the current source, also keep the new
+**Reutilizar buffers persistentes** option OFF; a saved ON preference overrides
+an older profile's OFF default.
 
 ## Implemented and published
 
@@ -64,12 +67,67 @@ rebuilding that reference from newer code. Preserve the newer
 | `38355f1` | Optional proven prefixes for graphics uniforms, analyzed from the same new/cached SPIR-V. | 33 host tests pass; 61 synthetic native programs, strict snapshot bytes, actual persistent loader and full patched C syntax checks. No Android FPS result for this option. |
 | `3dd1d57` | Exact, adaptive lookup of resolved descriptor state ahead of the existing hash cache. | 37 host tests pass; actual cache/recorder, 50 scenes / 3,200 bindings, sanitizer and full C syntax checks. Android FPS validation pending. |
 | Shadow-depth evidence delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_shadow_capture.py`) | Optional bounded depth-aspect snapshots before shadow sampling, separate layer analysis and complete-session ZIP export. | Diagnostic only. No visual fix or FPS gain claimed; Android captures pending. |
+| Persistent-buffer/WW delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_vb_pool.py`) | Exact-size reuse of completed stable vertex/index/storage buffers, plus passive write-watch failure evidence. | 49 host audit tests, actual source/lifetime/error paths, full C syntax and ASan/UBSan. Android OFF/ON metrics and WW cause pending. |
 
-## Current stopping point: shadow-depth evidence delivered; outdoor phone capture needed
+## Current stopping point: persistent-buffer pool and WW diagnosis delivered; phone A/B needed
 
-The user now asks to prioritize missing shadows, lights and water, using
-nxnative as the reference. **Continue visual diagnosis before another general
-performance port.** Read [`zelda-shadow-depth.md`](zelda-shadow-depth.md).
+After the remaining nxnative maturity audit, the user said "Vamos la" and
+authorized continuing the memory/resource work. Read
+[`zelda-persistent-buffers.md`](zelda-persistent-buffers.md).
+
+- Audit correction: `9b405a6` already pools every `VkOwnRes` allocation through
+  `vk_own_res_new`; it is not merely a DMA-site cache. Do not repeat that port.
+  The new scope is `buffer.c`'s `make_own` vertex/index/storage allocation and
+  `drop_own` release. Staging rings, transfer pooling and snapshots remain.
+- `tools/patch_scarletnx_zelda_ww_diag.py` applies after shadow capture, followed
+  by `tools/patch_scarletnx_zelda_vb_pool.py`; restore in reverse order. WW is
+  passive only: no new UAPI macros, probes, permissions, protections, kernel
+  requests, tracking activation or relaxed hash checks. The phone cause is
+  still unknown. Sixteen fixed event slots preserve startup/errors without
+  logging/allocating on those paths; renderer flushes them after PERF metadata.
+- `SNX_WW_META_V1` reports native compile-header capabilities.
+  `SNX_WW_EVENT_V1` distinguishes build guards, explicit environment disable,
+  syscall/API negotiation, registration, pagemap open, remap and scan errors.
+  A failed optional minor attempt can precede a successful existing fallback;
+  read the sequence. No Termux probe stands in for APK permissions.
+- Pool runtime `SNX_VK_VB_POOL=1`, UI **Reutilizar buffers persistentes**.
+  Default ON only in the new buffer profile, honoring saved preferences.
+  OFF + fresh process preserves original allocation/destruction policy.
+  Exact sizes/unchanged usage, original frame-retirement completion, 64 idle
+  entries/32 MiB actual VMA bytes and 300-frame expiry. Memory pressure can
+  reclaim idle buffers. Metadata/staging/allocation failures retain safe
+  original paths. Hashes, copies, barriers and `buf_get` remain unchanged.
+- `SNX_VB_POOL_META_V1` / `SNX_VB_POOL_V1` count real allocation attempts,
+  successes/failures, hits and lifetime transitions; bytes/entries are gauges.
+  The analyzer requires complete same-mode windows and keeps WW evidence.
+  Neither allocation counts nor host models establish a phone FPS gain.
+- Build `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-buffers-termux.sh`;
+  output `Download/ZeldaRecomp/Zelda-SNX-BUFFERS.apk`. Prior bindings APK has
+  a once-only `Zelda-SNX-BINDINGS-ANTES-BUFFERS.apk` backup; other references,
+  shader caches, Stable60 and AOT stay. FSWZADD remains OFF.
+- Device test: capture shadows/shaders OFF, LEVE, equal route/configuration;
+  separate 90-second fresh-process Buffers OFF/ON runs, then export both logs.
+  They provide both pool/frame measurements and actual tracker failure stage.
+- 49 audit tests pass, zero skips, real `spirv-val`; actual source under
+  delayed GPU/retirement models preserves data through 50 scenes/150 copies.
+  The controlled ON model uses 3 allocations/147 hits vs 150 allocations OFF,
+  with identical copies/pass ends/bytes. Eighteen before/after POSIX scenario
+  pairs preserve syscalls, callbacks and fallback/error results. ASan/UBSan,
+  three full patched C-unit syntax checks and changed Java syntax pass.
+  No Android APK/game/driver run or FPS improvement was measured here.
+
+**Resume:** inspect phone allocation/hit counts against frame p95/p99, plus
+the exact WW build/kernel/error evidence, before a tracker compatibility fix
+or broader resource-generation fast path. Dynamic textures, shader coverage,
+partial updates and pacing remain. Missing shadows/lights/water stay on the
+independent visual track below; the latest diagnostics have not fixed them.
+
+## Visual track: shadow-depth evidence delivered; outdoor phone capture needed
+
+The earlier user request prioritizes missing shadows, lights and water using
+nxnative as the reference. Read [`zelda-shadow-depth.md`](zelda-shadow-depth.md)
+when continuing that independent track; performance changes do not prove a
+visual correction. The user subsequently authorized the buffer/WW step above.
 
 - Existing shader captures were already analyzed; do not re-run the rejected
   FSWZADD experiment. The supplied log has shadows ON and real 2048x2048 D24S8
@@ -118,7 +176,7 @@ Then trace interior light culling/composition; then water's depth/normal/
 environment/reflection/composition. Keep corrections small and reversible.
 Performance binding/extent/clear A/B measurements are still pending separately.
 
-## Latest follow-up: remaining nxnative maturity advantages audited
+## Previous maturity audit: remaining nxnative advantages
 
 After the shadow diagnostic, the user asks what the more mature reference
 still has that can improve performance. This follow-up is an inventory, not
@@ -367,8 +425,8 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 | Front | Status / next task |
 |---|---|
 | Graphics uniform snapshots and small updates | Snapshots positively reviewed on device; proven fixed-index prefixes now delivered with device metrics pending. Full deferred GPU updates/partial shadows and dynamic-index proof remain separate work. |
-| Android dirty-page tracking | Not active in supplied device logs. ScarletNX already implements generation tables and async userfaultfd/PAGEMAP_SCAN. Diagnose support/permissions; a fault fallback needs CPU aliases, host writes and GPU ownership traps. |
-| Broader persistent/shared GPU pools | Only transfer-result pooling adapted. A whole-pool shared-memory path needs Vulkan/driver support, alias and lifetime proofs. |
+| Android dirty-page tracking | Not active in supplied device logs; passive build/error diagnosis is now delivered. ScarletNX already implements generation tables and async userfaultfd/PAGEMAP_SCAN. Inspect the new APK log before a compatibility/fault fallback; preserve aliases, host writes and GPU ownership traps. |
+| Broader persistent/shared GPU pools | `VkOwnRes` pool and new exact-size stable-buffer retirement pool are delivered; new phone A/B pending. A whole-pool shared-memory path still needs Vulkan/driver support, alias and lifetime proofs. |
 | Binding/state fast paths | Exact adaptive descriptor lookup now delivered; device metrics pending. Full resource reconstruction remains unchanged. Broader dirty-generation fast paths still need observer proofs. |
 | Texture upload batches / dynamic image versions | Existing staging, image reuse and GPU conversion are present. Profile remaining transitions and dependencies before extending them. |
 | Fold clears into render-pass load actions | First immediate new-pass full-clear adaptation delivered; Android A/B pending. Partial, layered and deferred-clear extensions remain unimplemented. |
@@ -418,7 +476,7 @@ libraries, game binaries, keys or private shader captures into the repository.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_zelda_perf*.py' -v
-bash -n compilar-castlevania-shader-termux.sh compilar-mario-snx-runtime-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh compilar-zelda-uniformes-termux.sh compilar-zelda-clears-termux.sh compilar-zelda-uniformes-alcance-termux.sh compilar-zelda-bindings-termux.sh compilar-zelda-sombras-termux.sh
+bash -n compilar-castlevania-shader-termux.sh compilar-mario-snx-runtime-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh compilar-zelda-uniformes-termux.sh compilar-zelda-clears-termux.sh compilar-zelda-uniformes-alcance-termux.sh compilar-zelda-bindings-termux.sh compilar-zelda-sombras-termux.sh compilar-zelda-buffers-termux.sh
 git diff --check
 ```
 
@@ -428,14 +486,14 @@ default sibling `ScarletNX-audit`. Set `SPIRV_VAL` to a real executable
 explicitly. The actual source and fixtures exercise hashes, ownership,
 transfer bytes, fence lifetime, patch rollback and log parsing on the host.
 
-Termux update/build for the current shadow diagnostic, without clearing anything:
+Termux update/build for the current buffers/WW profile, without clearing anything:
 
 ```bash
 set -e
 cd "$HOME/LASRecomp-Android"
 git switch experimental/zelda-links-awakening-ryujinx-nativeaot
 git pull --ff-only origin experimental/zelda-links-awakening-ryujinx-nativeaot
-SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-sombras-termux.sh
+SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-buffers-termux.sh
 ```
 
 Use a warm cache and the same save, route, camera, resolution, refresh, cooling
@@ -443,9 +501,9 @@ and Stable60 state. Separate processes for OFF/ON; export 90-second logs and
 compare matching complete windows after warmup. Preserve the last good APK.
 Never compare capture+GPU-detailed sessions with LEVE and claim causality.
 
-The latest delivery completed 44 audit tests with zero skips and a real
-`spirv-val`, plus shell syntax, whitespace, Java exporter execution and the
-two newly affected full patched C-unit syntax checks. The previous binding
+The latest delivery completed 49 audit tests with zero skips and a real
+`spirv-val`, plus shell syntax, whitespace, Java exporter execution/changed
+activity syntax and three affected full patched C-unit syntax checks. The previous binding
 scope checked five C units. Settings for the C-unit checks were generated
 from the pinned specification; LLVM option-table generation is unnecessary
 for those units.
