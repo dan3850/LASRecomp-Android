@@ -2,6 +2,13 @@
 
 Updated 2026-10-24, after device feedback on the `9be351c` depth delivery.
 
+**Follow-up:** both requested `3d0b426` scene logs have now arrived. The depth
+extension is actually enabled, composition candidates and real depth inputs
+are observed, and no blend fault is demonstrated. Read
+[`zelda-effect-depth-evidence.md`](zelda-effect-depth-evidence.md) for the
+measured results, precise limits and new optional paired depth-pixel capture.
+The original request for these same two logs below is historical, completed.
+
 ## Current device evidence
 
 The user reports that colors and water are now resolved. The supplied images

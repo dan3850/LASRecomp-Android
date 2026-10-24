@@ -18,6 +18,12 @@ OUT="$HOME/scarletnx-zelda-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ -f "$SRC/src/nx/gpu/vk/snx_effect_depth.h" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_effect_depth.py" "$SRC" --revert; then
+      echo "ERRO: falha restaurando captura pareada de profundidade" >&2
+      restore_failed=1
+    fi
+  fi
   if [ -f "$SRC/src/nx/gpu/vk/snx_lighting_diag.h" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_zelda_lighting_diag.py" "$SRC" --revert; then
       echo "ERRO: falha restaurando diagnostico de iluminacao" >&2
@@ -232,6 +238,7 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda_vb_pool.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_depth_range.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_lighting_diag.py" "$SRC"
+  python3 "$ROOT/tools/patch_scarletnx_zelda_effect_depth.py" "$SRC"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"

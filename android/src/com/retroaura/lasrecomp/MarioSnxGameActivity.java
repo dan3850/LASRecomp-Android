@@ -158,6 +158,8 @@ public final class MarioSnxGameActivity extends SDLActivity {
                 zelda && getIntent().getBooleanExtra("snx_depth_range", false) ? "1" : "0");
         String shadowDir = zelda ? getIntent().getStringExtra("snx_shadow_capture_dir") : null;
         SDLActivity.nativeSetenv("SNX_SHADOW_CAPTURE_DIR", shadowDir == null ? "" : shadowDir);
+        String effectDepthDir = zelda ? getIntent().getStringExtra("snx_effect_depth_dir") : null;
+        SDLActivity.nativeSetenv("SNX_EFFECT_DEPTH_DIR", effectDepthDir == null ? "" : effectDepthDir);
         // Each trial has a fresh child process. Neither variable needs a "0"
         // value: BUFFER_STATS checks presence and gpuprof warns on disabled "0".
         if (perfMode == 2) {

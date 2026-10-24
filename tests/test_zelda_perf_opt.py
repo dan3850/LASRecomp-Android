@@ -34,6 +34,7 @@ WW_DIAG = module('ww_diag_stack', ROOT / 'tools/patch_scarletnx_zelda_ww_diag.py
 VB_POOL = module('vb_pool_stack', ROOT / 'tools/patch_scarletnx_zelda_vb_pool.py')
 DEPTH_RANGE = module('depth_range_stack', ROOT / 'tools/patch_scarletnx_zelda_depth_range.py')
 LIGHTING = module('lighting_stack', ROOT / 'tools/patch_scarletnx_zelda_lighting_diag.py')
+EFFECT_DEPTH = module('effect_depth_stack', ROOT / 'tools/patch_scarletnx_zelda_effect_depth.py')
 SRC = Path(os.environ.get('SCARLETNX_TEST_SRC', ROOT.parent / 'ScarletNX-audit'))
 PIN = '34853eeae5af132e320adbb0193f13344085bf89'
 
@@ -250,7 +251,7 @@ int main(int argc, char** argv) {
                      set(UNIFORM.replacements()) | set(CLEAR_LOAD.replacements()) | set(UB_EXTENT.replacements()) |
                      set(BIND_REUSE.replacements()) | set(SHADOW_CAPTURE.replacements()) |
                      set(WW_DIAG.replacements()) | set(VB_POOL.replacements()) | set(DEPTH_RANGE.replacements()) |
-                     set(LIGHTING.replacements()))
+                     set(LIGHTING.replacements()) | set(EFFECT_DEPTH.replacements()))
             names.add('src/nx/gpu/shader/spirv_translate.c')
             before = {}
             for name in names:
@@ -284,6 +285,8 @@ int main(int argc, char** argv) {
             DEPTH_RANGE.apply(root)
             LIGHTING.apply(root)
             LIGHTING.apply(root)
+            EFFECT_DEPTH.apply(root)
+            EFFECT_DEPTH.apply(root)
             shader = root / 'src/nx/gpu/shader/spirv_translate.c'
             shader.write_text(D7.apply(BINDLESS.transform(shader.read_text())))
             FSWZ.apply(root)
@@ -291,6 +294,7 @@ int main(int argc, char** argv) {
             FSWZ.apply(root)
             self.assertEqual(once, {name: (root / name).read_bytes() for name in names})
             FSWZ.apply(root, True)
+            EFFECT_DEPTH.apply(root, True)
             LIGHTING.apply(root, True)
             DEPTH_RANGE.apply(root, True)
             VB_POOL.apply(root, True)

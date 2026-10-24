@@ -14,12 +14,23 @@ final class ShadowCaptureExport {
     private ShadowCaptureExport() { }
 
     static int write(File captures, OutputStream output, String log) throws IOException {
+        return write(captures, output, log, "shadow", "shadows",
+                "Ative Capturar sombras, inicie o jogo e fique na cena por 60 segundos.");
+    }
+
+    static int writeEffects(File captures, OutputStream output, String log) throws IOException {
+        return write(captures, output, log, "effect", "effects",
+                "Ative Capturar profundidade de luz/nevoa e fique na cena por 60 segundos.");
+    }
+
+    private static int write(File captures, OutputStream output, String log, String prefix,
+                             String folder, String missing) throws IOException {
         File[] sessions = captures.listFiles((dir, name) -> name.matches("[0-9a-f]{16}"));
         if (sessions == null || sessions.length == 0)
-            throw new IOException("Ative Capturar sombras, inicie o jogo e fique na cena por 60 segundos.");
+            throw new IOException(missing);
         Arrays.sort(sessions, (a, b) -> b.getName().compareTo(a.getName()));
         File session = sessions[0];
-        File[] metadata = session.listFiles((dir, name) -> name.matches("shadow-[1-3]\\.json"));
+        File[] metadata = session.listFiles((dir, name) -> name.matches(prefix + "-[1-3]\\.json"));
         if (metadata == null || metadata.length == 0)
             throw new IOException("A ultima sessao ainda nao tem amostras completas. Aguarde na cena e saia pelo menu.");
         Arrays.sort(metadata, (a, b) -> a.getName().compareTo(b.getName()));
@@ -36,7 +47,7 @@ final class ShadowCaptureExport {
             for (File meta : metadata) {
                 for (String extension : new String[]{".json", ".depth"}) {
                     File file = new File(session, meta.getName().replace(".json", extension));
-                    zip.putNextEntry(new ZipEntry("shadows/" + session.getName() + "/" + file.getName()));
+                    zip.putNextEntry(new ZipEntry(folder + "/" + session.getName() + "/" + file.getName()));
                     long remaining = extension.equals(".json") ? 16384 : 64L * 1024 * 1024;
                     try (FileInputStream in = new FileInputStream(file)) {
                         int n;

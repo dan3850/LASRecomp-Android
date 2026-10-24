@@ -52,6 +52,21 @@ public final class ShadowCaptureExportFixture {
             large.setLength(64L * 1024 * 1024 + 1);
         }
         refuses(root);
+        // Effects use another namespace and cannot accidentally export the
+        // older shadows, including their oversized file above.
+        ByteArrayOutputStream effects = new ByteArrayOutputStream();
+        try { ShadowCaptureExport.writeEffects(root, effects, "log"); throw new AssertionError("accepted absent effects"); }
+        catch (IOException expected) { check(effects.size() == 0); }
+        Files.write(new File(latest, "effect-1.json").toPath(), "{}".getBytes("UTF-8"));
+        Files.write(new File(latest, "effect-1.depth").toPath(), new byte[]{4, 3, 2, 1});
+        check(ShadowCaptureExport.writeEffects(root, effects, "effect log") == 1);
+        Set<String> effectNames = new HashSet<>();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(effects.toByteArray()))) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) effectNames.add(entry.getName());
+        }
+        check(effectNames.size() == 3 && effectNames.contains("effects/0000000000000002/effect-1.depth") &&
+              effectNames.contains("effects/0000000000000002/effect-1.json") && effectNames.contains("Zelda-SNX-boot.txt"));
         System.out.println("SHADOW_EXPORT_OK latest_only=1 complete_pairs=1 bounded=1 bytes_preserved=1");
     }
 }

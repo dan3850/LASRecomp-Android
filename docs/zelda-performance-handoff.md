@@ -88,9 +88,68 @@ override saved preferences.
 | Shadow-depth evidence delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_shadow_capture.py`) | Optional bounded depth-aspect snapshots before shadow sampling, separate layer analysis and complete-session ZIP export. | Three phone depth maps received/analyzed, with actual geometry. Diagnostic itself is not a fix or FPS gain. |
 | `0e0dfa4` | Exact-size reuse of completed stable vertex/index/storage buffers, plus passive write-watch failure evidence. | 49 host audit tests, actual source/lifetime/error paths, full C syntax and ASan/UBSan. First phone log confirms reuse and pagemap open denied; clean Android OFF/ON comparison pending. |
 | `9be351c` | Preserve computed finite depth endpoints with the explicitly requested/advertised Vulkan extension, retaining original shaders and OFF fallback. | 53 host tests. User reports colors/water resolved and photos show partial shadows/blur; haze, shafts and residual shadow/light remain. Exact new capability log pending. |
-| Lighting composition evidence (locate with `git log -1 -- tools/patch_scarletnx_zelda_lighting_diag.py`) | Bounded raw/effective first-color raster/blend state and separately budgeted valid 2D color-RT inputs in existing GPU detailed mode. | 57 host audit tests, actual observer/Java exporter, full C syntax and ASan/UBSan. Passive evidence, no new fog/shaft fix. |
+| `3d0b426` | Bounded raw/effective first-color raster/blend state and separately budgeted valid 2D color-RT inputs in existing GPU detailed mode. | Both new scene logs received: depth fix actually enabled, candidates/state/input views present. No demonstrated blend fault. |
+| Paired effect-depth evidence (locate with `git log -1 -- tools/patch_scarletnx_zelda_effect_depth.py`) | Independent default-OFF capture of actual attachment/sample depth planes for four observed fragment candidates, at most three paired snapshots. | 61 host tests, actual surface barriers/Java exporter, full C syntax, ASan/UBSan. New phone pixel evidence pending; this is not a new lighting repair. |
 
-## Current stopping point: colors/water improved; passive lighting evidence ready for two scene logs
+## Current stopping point: both lighting logs analyzed; paired depth-pixel evidence ready
+
+Read [`zelda-effect-depth-evidence.md`](zelda-effect-depth-evidence.md) first.
+The requested two scene logs **have arrived and are analyzed**. Do not ask
+the user to repeat the same GPU detailed logs or old shader/shadow ZIP.
+
+- Both revision `3d0b426`, all prior performance options ON (Ryujinx live/cache
+  OFF), new depth extension requested/supported/enabled. Shader/shadow capture
+  not armed. Pagemap open still EACCES. JIT counters zero. Vulkan pipeline
+  cache loaded (4450 KB); the inactive Ryujinx persistence flag is not the
+  native cache's enabled state.
+- Native render rates after the first 10 seconds are 60.000 over 20.033 s
+  outside and 59.404 over 50.081 s in the house. These GPU detailed sessions
+  include scene movement and are not baseline comparisons, game simulation,
+  physical display FPS or proof of a gain/stable 60 everywhere.
+- Full window state/RT records: outdoor 384/360, house 663/636. State limits
+  reached in 6/6 and 5/12 windows. Partial final graphics windows exist; do
+  not count them as complete performance windows. Only parse the one PERF
+  block to avoid repeated startup/tail rows.
+- House additive/alpha composition states are coherent in the recorded
+  scope; no blend/alpha/gamma change is established. Candidates
+  `86d5a3f915a6795f`, `2957c0d7d6264a3a`, `7444fc6ce498b4bf` and outdoor
+  `9f178ae97683fd4e` read noncomparison scene-depth copies at slot 0. They
+  already match the private shader corpus. Data/age/producer and actual
+  light pixels remain unknown. A real view does not prove correct contents.
+- New `patch_scarletnx_zelda_effect_depth.py` applies after LIGHTING and
+  restores first. OFF does no inspection. ON captures a distinct active
+  depth attachment plus the sampled depth, same actual dimensions/format,
+  one mip/layer, D24/D32 only. One combined <=64 MiB mapped buffer pending,
+  at most 3 pairs >=15 s apart, existing barriers and retirement callback,
+  no extra explicit waits/submits/guest writes/shader changes. Relationship
+  remains explicitly **unproven**, not a claimed source/destination lineage.
+- Builder `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-efeitos-termux.sh`;
+  output `Download/ZeldaRecomp/Zelda-SNX-EFEITOS-DEPTH-DIAG.apk`, prior
+  lighting APK saved once as `Zelda-SNX-ILUMINACAO-ANTES-EFEITOS.apk`.
+  New asset-gated **Capturar profundidade de luz/nevoa (3 pares)** OFF by
+  default. For capture: turn it ON, shadow/shader captures OFF, FPS LEVE,
+  depth preservation ON and existing performance options. Stay 60 s in
+  the house; export its new ZIP. A fresh outdoor session can supply the
+  second ZIP. Return capture OFF and restart for normal play.
+- New analyzer `tools/analyze_zelda_effect_depth.py` validates paired plane
+  offsets/bytes, bounded same-session ZIPs and undefined D24 bits. It prints
+  per-plane depths/differences and optional previews, never "difference=bug".
+  The FPS analyzer rejects armed effect capture. Separate bounded export
+  namespace preserves old shadow captures and newest-session semantics.
+- 61 host audit tests pass (zero skips with real SPIR-V validation), actual
+  surface-use lifetime/failure tests, whole stack exact rollback, Java
+  export, ASan/UBSan, full C syntax, Java parsing and shell/Python checks.
+  No Android APK or actual GPU pixel result is available on this host.
+
+**Resume:** inspect the new paired pixels. If plausible, inspect candidate
+uniform/projection/art-texture/color outputs. If unexpectedly different,
+establish actual copy lineage before changing synchronization/lifetimes.
+Keep colors/water accepted as resolved. Remaining: haze, interior shafts/
+reflected light, residual shadows/local blur, then separate copy-gap/hash
+performance work with proper LEVE A/B. No speculative FSWZADD or global
+brightness/blend adjustment.
+
+### Previous stopping point, superseded by the scene logs above
 
 Read [`zelda-lighting-composition.md`](zelda-lighting-composition.md).
 The user supplied three post-depth-delivery photos and reports colors/water
@@ -135,7 +194,7 @@ reclassify the whole shadow system/blur as absent or water as still broken.
   renderer C syntax pass. Actual Java exporter preserves 139 generated rows,
   including 1,254-byte rows, intact. No new Android APK/game result claimed.
 
-**Resume:** inspect fresh capability/state/input logs from the corrected build;
+**Historical next step (completed above):** inspect fresh capability/state/input logs from the corrected build;
 old detailed logs predate it. Identify the actual haze/shaft or residual-shadow
 consumer and its state/inputs before changing blending, shaders or depth again.
 Use already captured matching shader programs; request only missing evidence.

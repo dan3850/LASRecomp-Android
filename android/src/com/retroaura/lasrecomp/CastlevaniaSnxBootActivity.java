@@ -41,6 +41,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     private static final int IMPORT_RYUJINX_BRIDGE = 305;
     private static final int IMPORT_GAME_MODULE = 306;
     private static final int EXPORT_SHADOWS = 307;
+    private static final int EXPORT_EFFECT_DEPTH = 308;
     private volatile boolean importingModule;
     private TextView status;
     private Uri selectedXci;
@@ -152,6 +153,19 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                 startActivityForResult(i, EXPORT_SHADOWS);
             });
             content.addView(exportShadows);
+            if (hasEffectDepthBuild()) {
+                addPerfOption(content, "zelda_effect_depth_v1", "Capturar profundidade de luz/nevoa (3 pares)");
+                Button exportEffects = new Button(this);
+                exportEffects.setText("Exportar profundidade de luz/nevoa (.zip)");
+                exportEffects.setOnClickListener(v -> {
+                    Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("application/zip");
+                    i.putExtra(Intent.EXTRA_TITLE, "Zelda-efeitos.zip");
+                    startActivityForResult(i, EXPORT_EFFECT_DEPTH);
+                });
+                content.addView(exportEffects);
+            }
         }
 
         Button launch = new Button(this);
@@ -275,6 +289,19 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                         runOnUiThread(() -> message("Falha exportando sombras: " + error.getMessage()));
                     }
                 }, "snx-shadow-export").start();
+            } else if (request == EXPORT_EFFECT_DEPTH) {
+                final Uri output = uri;
+                message("Exportando os pares de profundidade da ultima sessao...");
+                new Thread(() -> {
+                    try (OutputStream out = getContentResolver().openOutputStream(output, "w")) {
+                        if (out == null) throw new IOException("Nao abriu o destino");
+                        File captures = new File(getFilesDir(), "snx-games/" + ID + "/captures/effect-depth-v1");
+                        int count = ShadowCaptureExport.writeEffects(captures, out, readLogs());
+                        runOnUiThread(() -> message("Exportados " + count + " pares. Desligue a captura para jogar normalmente."));
+                    } catch (Exception error) {
+                        runOnUiThread(() -> message("Falha exportando profundidade dos efeitos: " + error.getMessage()));
+                    }
+                }, "snx-effect-depth-export").start();
             } else if (request == EXPORT_LOG) {
                 final Uri output = uri;
                 message("Gerando relatorio completo de falhas de shader...");
@@ -352,6 +379,12 @@ public final class CastlevaniaSnxBootActivity extends Activity {
 
     private boolean hasDepthRangeBuild() {
         try (java.io.InputStream in = getAssets().open("licenses/Zelda-DepthRange.txt")) {
+            return in.read() >= 0;
+        } catch (IOException e) { return false; }
+    }
+
+    private boolean hasEffectDepthBuild() {
+        try (java.io.InputStream in = getAssets().open("licenses/Zelda-EffectDepth.txt")) {
             return in.read() >= 0;
         } catch (IOException e) { return false; }
     }
@@ -596,6 +629,16 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_bind_reuse", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_bind_reuse_v1", hasBindingsBuild()));
             intent.putExtra("snx_vb_pool", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_vb_pool_v1", hasPersistentBuffersBuild()));
             intent.putExtra("snx_depth_range", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_depth_range_v1", hasDepthRangeBuild()));
+            if (hasEffectDepthBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_effect_depth_v1", false)) {
+                if (getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false) ||
+                        getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false))
+                    throw new IOException("Desligue Capturar sombras e Capturar shaders para capturar luz/nevoa.");
+                File captures = new File(folder, "captures/effect-depth-v1");
+                makeDir(captures);
+                File session = new File(captures, String.format(Locale.ROOT, "%016x", System.currentTimeMillis()));
+                if (!session.mkdir()) throw new IOException("Nao criou a sessao de profundidade dos efeitos");
+                intent.putExtra("snx_effect_depth_dir", session.getAbsolutePath());
+            }
             if (hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false)) {
                 File captures = new File(folder, "captures/shadow-depth-v1");
                 makeDir(captures);

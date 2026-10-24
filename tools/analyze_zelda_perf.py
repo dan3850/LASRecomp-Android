@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|VB_POOL(?:_META)?|DEPTH_RANGE(?:_META|_STATE)?|LIGHT(?:_META|_STATE|_RT|_LIMIT)?|WW(?:_META|_EVENT)|SHADOW_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|VB_POOL(?:_META)?|DEPTH_RANGE(?:_META|_STATE)?|LIGHT(?:_META|_STATE|_RT|_LIMIT)?|WW(?:_META|_EVENT)|SHADOW_CAPTURE|EFFECT_DEPTH_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -48,6 +48,9 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     if index < 0 or index >= len(sessions):
         raise ValueError('session out of range')
     selected = sessions[index]
+    if any(k == 'SNX_EFFECT_DEPTH_CAPTURE_V1' and r.get('status') in ('armed', 'queued', 'saved', 'save_failed')
+           for k, r in selected['rows']):
+        raise ValueError('Effect depth capture was armed: visual diagnostics are not an FPS comparison. Disable capture and restart.')
     if any(k == 'SNX_SHADOW_CAPTURE_V1' and r.get('status') in ('armed', 'queued', 'saved', 'save_failed')
            for k, r in selected['rows']):
         raise ValueError('Shadow depth capture was armed: visual diagnostics are not an FPS comparison. Disable capture and restart.')
