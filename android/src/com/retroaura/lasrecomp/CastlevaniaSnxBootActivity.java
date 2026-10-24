@@ -40,6 +40,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
     private static final int EXPORT_SHADERS = 304;
     private static final int IMPORT_RYUJINX_BRIDGE = 305;
     private static final int IMPORT_GAME_MODULE = 306;
+    private static final int EXPORT_SHADOWS = 307;
     private volatile boolean importingModule;
     private TextView status;
     private Uri selectedXci;
@@ -138,6 +139,17 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             addPerfOption(content, "zelda_clear_load_v1", "Limpezas completas no inicio do passe", hasClearBuild());
             addPerfOption(content, "zelda_ub_extent_v1", "Alcance comprovado dos uniformes", hasUniformExtentBuild());
             addPerfOption(content, "zelda_bind_reuse_v1", "Reutilizar bindings validados", hasBindingsBuild());
+            addPerfOption(content, "zelda_shadow_capture_v1", "Capturar sombras (3 amostras; teste visual)");
+            Button exportShadows = new Button(this);
+            exportShadows.setText("Exportar diagnostico de sombras (.zip)");
+            exportShadows.setOnClickListener(v -> {
+                Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("application/zip");
+                i.putExtra(Intent.EXTRA_TITLE, "Zelda-sombras.zip");
+                startActivityForResult(i, EXPORT_SHADOWS);
+            });
+            content.addView(exportShadows);
         }
 
         Button launch = new Button(this);
@@ -248,6 +260,19 @@ public final class CastlevaniaSnxBootActivity extends Activity {
                         runOnUiThread(() -> message("Falha exportando shaders: " + error.getMessage()));
                     }
                 }, "snx-shader-export").start();
+            } else if (request == EXPORT_SHADOWS) {
+                final Uri output = uri;
+                message("Exportando a ultima sessao de sombras e seu log...");
+                new Thread(() -> {
+                    try (OutputStream out = getContentResolver().openOutputStream(output, "w")) {
+                        if (out == null) throw new IOException("Nao abriu o destino");
+                        File captures = new File(getFilesDir(), "snx-games/" + ID + "/captures/shadow-depth-v1");
+                        int count = ShadowCaptureExport.write(captures, out, readLogs());
+                        runOnUiThread(() -> message("Exportadas " + count + " amostras de sombras. Desligue a captura para medir FPS."));
+                    } catch (Exception error) {
+                        runOnUiThread(() -> message("Falha exportando sombras: " + error.getMessage()));
+                    }
+                }, "snx-shadow-export").start();
             } else if (request == EXPORT_LOG) {
                 final Uri output = uri;
                 message("Gerando relatorio completo de falhas de shader...");
@@ -555,6 +580,13 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_clear_load", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_clear_load_v1", hasClearBuild()));
             intent.putExtra("snx_ub_extent", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_ub_extent_v1", hasUniformExtentBuild()));
             intent.putExtra("snx_bind_reuse", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_bind_reuse_v1", hasBindingsBuild()));
+            if (hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false)) {
+                File captures = new File(folder, "captures/shadow-depth-v1");
+                makeDir(captures);
+                File session = new File(captures, String.format(Locale.ROOT, "%016x", System.currentTimeMillis()));
+                if (!session.mkdir()) throw new IOException("Nao criou a sessao de sombras");
+                intent.putExtra("snx_shadow_capture_dir", session.getAbsolutePath());
+            }
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);

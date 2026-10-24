@@ -18,6 +18,12 @@ OUT="$HOME/scarletnx-zelda-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ -f "$SRC/src/nx/gpu/vk/snx_shadow_capture.h" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_shadow_capture.py" "$SRC" --revert; then
+      echo "ERRO: falha restaurando captura de profundidade das sombras" >&2
+      restore_failed=1
+    fi
+  fi
   if [ -f "$SRC/src/nx/gpu/vk/snx_bind_reuse.h" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_zelda_bind_reuse.py" "$SRC" --revert; then
       echo "ERRO: falha restaurando reutilizacao dos bindings validados" >&2
@@ -197,6 +203,7 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda_clear_load.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_ub_extent.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_bind_reuse.py" "$SRC"
+  python3 "$ROOT/tools/patch_scarletnx_zelda_shadow_capture.py" "$SRC"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"

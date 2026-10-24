@@ -62,9 +62,63 @@ rebuilding that reference from newer code. Preserve the newer
 | `d212126` | Optional graphics-only immutable uniform snapshots, reuse after strict content checks within the same submission, and bypass of promotion copies. | 25 host tests pass; full patched `buffer.c`, `render.c`, `renderer.c` pass C syntax checks. User subsequently reported improvement; controlled device metrics remain pending. |
 | `2cc5ce0` | Optional eligible full clears as new-pass load actions, preserving same-pass reuse and conservative fallbacks. | 29 host tests pass; 40 old/new pixel-model scenes and full patched C syntax checks. Later aggregate user feedback was positive; isolated Android clear metrics remain pending. |
 | `38355f1` | Optional proven prefixes for graphics uniforms, analyzed from the same new/cached SPIR-V. | 33 host tests pass; 61 synthetic native programs, strict snapshot bytes, actual persistent loader and full patched C syntax checks. No Android FPS result for this option. |
-| `binding-reuse-v1` delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_bind_reuse.py`) | Exact, adaptive lookup of resolved descriptor state ahead of the existing hash cache. | 37 host tests pass; actual cache/recorder, 50 scenes / 3,200 bindings, sanitizer and full C syntax checks. Android FPS validation pending. |
+| `3dd1d57` | Exact, adaptive lookup of resolved descriptor state ahead of the existing hash cache. | 37 host tests pass; actual cache/recorder, 50 scenes / 3,200 bindings, sanitizer and full C syntax checks. Android FPS validation pending. |
+| Shadow-depth evidence delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_shadow_capture.py`) | Optional bounded depth-aspect snapshots before shadow sampling, separate layer analysis and complete-session ZIP export. | Diagnostic only. No visual fix or FPS gain claimed; Android captures pending. |
 
-## Current stopping point: validated binding-state lookup delivered; device A/B pending
+## Current stopping point: shadow-depth evidence delivered; outdoor phone capture needed
+
+The user now asks to prioritize missing shadows, lights and water, using
+nxnative as the reference. **Continue visual diagnosis before another general
+performance port.** Read [`zelda-shadow-depth.md`](zelda-shadow-depth.md).
+
+- Existing shader captures were already analyzed; do not re-run the rejected
+  FSWZADD experiment. The supplied log has shadows ON and real 2048x2048 D24S8
+  2D-array shadow views. Existing traces show setup/bind activity, not pixels.
+- nxnative explicitly handles NVN depth mode and lower-left origin; ScarletNX
+  already has corresponding viewport, vertex-depth and facing logic. Native
+  VS/CS translation also exists. Do not blindly copy synthetic HLE driver
+  constant tables or treat missing full Ryujinx stages as the proven cause.
+- `tools/patch_scarletnx_zelda_shadow_capture.py` applies after binding reuse
+  and restores first. Runtime `SNX_SHADOW_CAPTURE_DIR` is a new private session
+  path passed only on opt-in. **Capturar sombras (3 amostras; teste visual)**
+  defaults OFF. Independent of shader capture and all performance switches.
+- Capture at first eligible nonindexed real shadow-depth sampling from 15 s
+  after init, then at least 15 s apart, three maximum. All base-level array
+  layers at actual scaled dimensions; one pending buffer <=64 MiB. Original
+  image use is restored and the original sample transition still runs. No
+  extra explicit GPU wait/submit, shader edit, guest write or cache change.
+- Normal frame-retirement callback invalidates and saves private raw depth +
+  metadata. JSON is committed last; newest-session ZIP export never mixes
+  stale successes into an empty current run. Raw Vulkan D24 depth copies are
+  X8_D24, not guest interleaved D24S8. The analyzer masks undefined high bits.
+- This diagnostic adds transfer/pass/disk costs; no FPS comparison while ON.
+  The FPS analyzer rejects armed sessions. OFF + a fresh process reverses
+  runtime diagnostic work without another build. Existing reference APKs and
+  all performance ports/Stable60/AOT/caches remain available.
+- Build: `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-sombras-termux.sh`.
+  Output `Download/ZeldaRecomp/Zelda-SNX-SOMBRAS.apk`. A once-only backup of
+  the prior bindings APK is `Zelda-SNX-BINDINGS-ANTES-SOMBRAS.apk`.
+- Request one outdoor 60-second same-scene run with capture ON, LEVE, native
+  translator and shader capture OFF, then **Exportar diagnostico de sombras
+  (.zip)** plus a screenshot. Disable capture afterwards. No phone snapshot
+  from this delivery has yet been supplied; do not claim restored effects.
+- Host validation: 44 audit tests pass, zero skips, including the real Java
+  exporter compiled for Java 8, native delayed capture/format tests and the
+  byte-exact complete patch stack rollback. Real `spirv-val` remains enabled.
+  Full patched `render.c`/`renderer.c` syntax and ASan/UBSan pass. LeakSanitizer
+  is unavailable under this host's `/proc` restriction. No Android APK or
+  device/game run was performed here.
+
+**Resume:** inspect each captured layer's pixels and the matched producer
+registers/consumer descriptors. Empty/constant or wrong-layer/orientation maps
+lead to producer/rasterization/clear/layer investigation; plausible maps lead
+to consumer coordinates, depth reference and sampler comparison. Constants
+can be legitimate: establish the scene and intended layers before a repair.
+Then trace interior light culling/composition; then water's depth/normal/
+environment/reflection/composition. Keep corrections small and reversible.
+Performance binding/extent/clear A/B measurements are still pending separately.
+
+## Previous binding-state delivery; device A/B still pending
 
 The user said "Bora pra.proxima" after the extent delivery and authorized
 continuing nxnative ports. No isolated extent or new binding FPS log arrived.
@@ -110,7 +164,7 @@ can bypass the two descriptor hashes. Read
   ASan/UBSan pass; host LeakSanitizer is unavailable under the `/proc` task
   restriction. No Java/Android APK, driver or game run was performed here.
 
-**Resume:** inspect binding OFF/ON phone evidence if available, with every
+**Performance resume after visual work:** inspect binding OFF/ON phone evidence if available, with every
 other option equal, capture OFF and LEVE. Compare fast_hits/original_lookups,
 frame p95/p99 and existing profiles. A low hit rate can outweigh the saved
 hashing; do not call work counters an FPS gain. Do not reimplement this lookup.
@@ -293,7 +347,7 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 | Full Ryujinx resource/stage bridge | Both inspected live adapters remain fragment-oriented; SSBO/storage-image support and vertex/compute integration still missing. Native ScarletNX already translates these stages, so this alone does not explain missing effects. |
 | CPU spin/yield policy | Candidate; integrate with ScarletNX's emulated core scheduler. nxnative's host-thread sleeps cannot be transplanted blindly. |
 | Frame pacing / physical display evidence | Existing pacing and FIFO presentation remain; actual scan-out feedback is not supplied by current FPS logs. |
-| Per-pass pixel capture and bandwidth/dependency analysis | Extend existing `gpuprof.c` and bounded diagnostics for targeted shadow/light/water investigation. |
+| Per-pass pixel capture and bandwidth/dependency analysis | First bounded shadow-depth capture is delivered; collect outdoor layers. Color/light/water pass captures and broader bandwidth analysis remain. |
 | Direct NVN HLE architecture | nxnative bypasses the guest graphics driver. This repository has a separate legacy NVN/Vulkan backend; the current APK uses ScarletNX. A new bridge is a larger optional project, not a drop-in patch or replacement authorized by the current preservation rules. |
 
 Missing projected shadows, interior light shafts and water differences remain
@@ -312,7 +366,7 @@ Suggested investigation order (expected impact is a hypothesis, not a result):
 | Repeated bindings, uploads and pass breaks | Potentially medium/high if CPU reconstruction or tile traffic dominates; use existing profiler/counters. | Medium to high depending on dependency scope. | Medium/high. |
 | Shader prewarm/pipeline prediction | Mainly first-visit stutter; separate warm/cold-cache trials without deleting caches. | Medium; all variants must be correct. | Medium/high. |
 | CPU scheduler/frame pacing | Unknown until CPU waits and stream intervals establish the bottleneck. | High if timing/scheduler semantics change. | High. |
-| Missing visual effects / full bridge | Correctness priority; no FPS benefit assumed. Capture targeted pass pixels/resources. | High for resource/stage integration. | High. |
+| Missing visual effects / full bridge | Current priority: bounded shadow-depth capture is delivered; inspect its phone evidence, then lights and water. No FPS benefit assumed. | Low opt-in evidence; high for resource/stage changes. | Medium diagnosis / high repairs. |
 
 ## Sources and build/test procedure
 
@@ -330,7 +384,7 @@ libraries, game binaries, keys or private shader captures into the repository.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_zelda_perf*.py' -v
-bash -n compilar-castlevania-shader-termux.sh compilar-mario-snx-runtime-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh compilar-zelda-uniformes-termux.sh compilar-zelda-clears-termux.sh compilar-zelda-uniformes-alcance-termux.sh compilar-zelda-bindings-termux.sh
+bash -n compilar-castlevania-shader-termux.sh compilar-mario-snx-runtime-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh compilar-zelda-uniformes-termux.sh compilar-zelda-clears-termux.sh compilar-zelda-uniformes-alcance-termux.sh compilar-zelda-bindings-termux.sh compilar-zelda-sombras-termux.sh
 git diff --check
 ```
 
@@ -340,14 +394,14 @@ default sibling `ScarletNX-audit`. Set `SPIRV_VAL` to a real executable
 explicitly. The actual source and fixtures exercise hashes, ownership,
 transfer bytes, fence lifetime, patch rollback and log parsing on the host.
 
-Termux update/build, without clearing anything:
+Termux update/build for the current shadow diagnostic, without clearing anything:
 
 ```bash
 set -e
 cd "$HOME/LASRecomp-Android"
 git switch experimental/zelda-links-awakening-ryujinx-nativeaot
 git pull --ff-only origin experimental/zelda-links-awakening-ryujinx-nativeaot
-SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-bindings-termux.sh
+SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-sombras-termux.sh
 ```
 
 Use a warm cache and the same save, route, camera, resolution, refresh, cooling
@@ -355,10 +409,11 @@ and Stable60 state. Separate processes for OFF/ON; export 90-second logs and
 compare matching complete windows after warmup. Preserve the last good APK.
 Never compare capture+GPU-detailed sessions with LEVE and claim causality.
 
-The latest delivery completed 37 audit tests with zero skips and a real
-`spirv-val`, plus shell syntax, whitespace and the five full patched C-unit
-syntax checks described in the binding scope. Settings for the C-unit checks
-were generated from the pinned specification; LLVM option-table generation
-is unnecessary for those units.
+The latest delivery completed 44 audit tests with zero skips and a real
+`spirv-val`, plus shell syntax, whitespace, Java exporter execution and the
+two newly affected full patched C-unit syntax checks. The previous binding
+scope checked five C units. Settings for the C-unit checks were generated
+from the pinned specification; LLVM option-table generation is unnecessary
+for those units.
 No full game/AOT rebuild was performed. A future test failure on Termux must
 be fixed and recorded rather than dismissed because these host checks pass.
