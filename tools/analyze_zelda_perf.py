@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|VB_POOL(?:_META)?|DEPTH_RANGE(?:_META|_STATE)?|WW(?:_META|_EVENT)|SHADOW_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|VB_POOL(?:_META)?|DEPTH_RANGE(?:_META|_STATE)?|LIGHT(?:_META|_STATE|_RT|_LIMIT)?|WW(?:_META|_EVENT)|SHADOW_CAPTURE|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -60,6 +60,7 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     binding_meta = [r for k, r in selected['rows'] if k == 'SNX_BIND_REUSE_META_V1']
     vb_meta = [r for k, r in selected['rows'] if k == 'SNX_VB_POOL_META_V1']
     depth_meta = [r for k, r in selected['rows'] if k == 'SNX_DEPTH_RANGE_META_V1']
+    light_meta = [r for k, r in selected['rows'] if k == 'SNX_LIGHT_META_V1']
     all_windows = {r['window']: r for k, r in selected['rows'] if k == 'SNX_PERF_V1'}
     # Include only windows wholly inside the requested time range. No mix of
     # startup/warmup with gameplay, no partial-window FPS extrapolation.
@@ -68,6 +69,10 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
                and (duration_seconds is None or r['elapsed_s'] <= skip_seconds + duration_seconds)}
     valid = {}
     for w, r in windows.items():
+        if light_meta:
+            light_rows = [x for k, x in selected['rows'] if k == 'SNX_LIGHT_V1' and x['window'] == w]
+            if len(light_rows) != 1:
+                continue
         if depth_meta:
             depth_rows = [x for k, x in selected['rows'] if k == 'SNX_DEPTH_RANGE_V1' and x['window'] == w]
             if len(depth_rows) != 1:
@@ -154,6 +159,8 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     if depth_meta:
         result['metadata']['depth_range'] = depth_meta[-1]
         result['depth_range_states'] = [r for k, r in selected['rows'] if k == 'SNX_DEPTH_RANGE_STATE_V1']
+    if light_meta:
+        result['metadata']['lighting_diagnostics'] = light_meta[-1]
     ww_meta = [r for k, r in selected['rows'] if k == 'SNX_WW_META_V1']
     if ww_meta:
         result['metadata']['write_watch'] = ww_meta[-1]
@@ -236,6 +243,15 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
             for name, value in r.items():
                 if name not in ('window', 'enabled'):
                     depth[name] = depth.get(name, 0) + value
+        if k == 'SNX_LIGHT_V1':
+            lights = result.setdefault('lighting_diagnostics', {})
+            for name, value in r.items():
+                if name == 'window':
+                    continue
+                if name in ('state_limited', 'color_rt_limited'):
+                    name += '_windows'
+                    value = int(bool(value))
+                lights[name] = lights.get(name, 0) + value
     return result
 
 
@@ -284,6 +300,9 @@ def markdown(report, label):
     if 'depth_range' in report:
         lines += ['', 'Vulkan viewport depth: `' + json.dumps(report['depth_range'], sort_keys=True) + '`',
                   'Unrestricted ranges require the enabled device extension. These counts do not establish restored shadows.']
+    if 'lighting_diagnostics' in report:
+        lines += ['', 'Detailed composition evidence: `' + json.dumps(report['lighting_diagnostics'], sort_keys=True) + '`',
+                  'State/descriptor preparation does not prove executed draws or nonempty color pixels. Detail limits are reported.']
     return '\n'.join(lines)
 
 

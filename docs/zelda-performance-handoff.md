@@ -21,7 +21,16 @@ checkpoint for another assistant if the conversation or credits end.
 
 ## Last known good reference
 
-**Latest qualitative device approval: `0e0dfa4`**, the persistent-buffer APK.
+**Latest visual reference: the `9be351c` depth delivery.** The user now reports
+colors and water resolved. New photos show tree/character shadows and some
+depth-of-field blur; the user still reports missing shadow/reflected light,
+outdoor haze and interior window shafts. Preserve `Zelda-SNX-PROFUNDIDADE.apk`
+and its current options. The lighting-diagnostic wrapper backs it up once as
+`Zelda-SNX-PROFUNDIDADE-ANTES-ILUMINACAO.apk`. No new revision/toggle/capability
+log or controlled FPS comparison accompanied those photos; their 57/60/59
+phone overlays alone do not establish stable 60 FPS or full visual parity.
+
+**Earlier qualitative FPS approval: `0e0dfa4`**, the persistent-buffer APK.
 Along with the shadow ZIP, the user said the FPS improved substantially but
 shadows, water/colors and some blur remain wrong. This is aggregate feedback,
 not an isolated measured pool speedup. Preserve that APK as the immediate
@@ -76,11 +85,66 @@ override saved preferences.
 | `2cc5ce0` | Optional eligible full clears as new-pass load actions, preserving same-pass reuse and conservative fallbacks. | 29 host tests pass; 40 old/new pixel-model scenes and full patched C syntax checks. Later aggregate user feedback was positive; isolated Android clear metrics remain pending. |
 | `38355f1` | Optional proven prefixes for graphics uniforms, analyzed from the same new/cached SPIR-V. | 33 host tests pass; 61 synthetic native programs, strict snapshot bytes, actual persistent loader and full patched C syntax checks. No Android FPS result for this option. |
 | `3dd1d57` | Exact, adaptive lookup of resolved descriptor state ahead of the existing hash cache. | 37 host tests pass; actual cache/recorder, 50 scenes / 3,200 bindings, sanitizer and full C syntax checks. Android FPS validation pending. |
-| Shadow-depth evidence delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_shadow_capture.py`) | Optional bounded depth-aspect snapshots before shadow sampling, separate layer analysis and complete-session ZIP export. | Diagnostic only. First phone log reports three samples saved; exported pixels/ZIP pending. No visual fix or FPS gain claimed. |
+| Shadow-depth evidence delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_shadow_capture.py`) | Optional bounded depth-aspect snapshots before shadow sampling, separate layer analysis and complete-session ZIP export. | Three phone depth maps received/analyzed, with actual geometry. Diagnostic itself is not a fix or FPS gain. |
 | `0e0dfa4` | Exact-size reuse of completed stable vertex/index/storage buffers, plus passive write-watch failure evidence. | 49 host audit tests, actual source/lifetime/error paths, full C syntax and ASan/UBSan. First phone log confirms reuse and pagemap open denied; clean Android OFF/ON comparison pending. |
-| Viewport-depth correction (locate with `git log -1 -- tools/patch_scarletnx_zelda_depth_range.py`) | Preserve computed finite depth endpoints with the explicitly requested/advertised Vulkan extension, retaining original shaders and OFF fallback. | 53 host tests, actual old/new viewport mapping and device selection, full C syntax and ASan/UBSan. Android extension support and visual repair pending. |
+| `9be351c` | Preserve computed finite depth endpoints with the explicitly requested/advertised Vulkan extension, retaining original shaders and OFF fallback. | 53 host tests. User reports colors/water resolved and photos show partial shadows/blur; haze, shafts and residual shadow/light remain. Exact new capability log pending. |
+| Lighting composition evidence (locate with `git log -1 -- tools/patch_scarletnx_zelda_lighting_diag.py`) | Bounded raw/effective first-color raster/blend state and separately budgeted valid 2D color-RT inputs in existing GPU detailed mode. | 57 host audit tests, actual observer/Java exporter, full C syntax and ASan/UBSan. Passive evidence, no new fog/shaft fix. |
 
-## Current stopping point: shadow pixels analyzed; reversible viewport-depth correction ready for device test
+## Current stopping point: colors/water improved; passive lighting evidence ready for two scene logs
+
+Read [`zelda-lighting-composition.md`](zelda-lighting-composition.md).
+The user supplied three post-depth-delivery photos and reports colors/water
+resolved, while asking about haze, shadow/reflected light and indoor shafts.
+Projected shadows and foreground blur are visibly present in part. Do not
+reclassify the whole shadow system/blur as absent or water as still broken.
+
+- Keep the improved `9be351c` visual reference, all performance ports and
+  **Preservar faixa de profundidade ON**. Existing shadow ZIP/source analysis
+  is complete; do not ask for the same initial shader/depth captures again.
+- The original detailed diagnostic suppresses ordinary valid 2D color reads
+  and does not log blend/constants/alpha/stencil/viewport state. It cannot
+  establish the failing composition input or state. Preserve its original
+  pass/binding budgets while adding independent bounded evidence.
+- `tools/patch_scarletnx_zelda_lighting_diag.py` applies after DEPTH_RANGE and
+  restores first. No new visual toggle: uses the existing GPU DETALHADA mode.
+  LEVE/OFF returns before observer inspection. Raw state plus effective blend
+  and selected depth range are recorded, as are valid nonindexed 2D color RT
+  inputs. No resource resolution, shader/render/cache/sync change or GPU work.
+- `SNX_LIGHT_STATE_V1` records up to 64 exact state families per window,
+  printing the first target example and first bound color slot. Target
+  identity/dimensions are not the signature: this is not a complete render
+  graph. `SNX_LIGHT_RT_V1` has a separate 64-entry budget and full TIC/TSC.
+  Existing depth/non-2D/missing-view tracing remains. Limits/refused lines and
+  attempt counts are explicit; setup/descriptor evidence does not prove pixels.
+- Audit rejected a blind nxnative `bfac` port: its NVN API constant-color/
+  alpha IDs 0x61..0x64 are not the Maxwell register encodings. Official NVIDIA
+  register mappings already present here include D3D 0x0e/0x0f and OGL
+  0xc001..0xc004. No observed raw 0x61 defect or blend change is established.
+- Build `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-iluminacao-termux.sh`;
+  output `Download/ZeldaRecomp/Zelda-SNX-ILUMINACAO-DIAG.apk`. The depth APK
+  is backed up once; AOT/Gradle/CMake/Ninja/shader caches are reused. Install
+  update, capture shaders/shadows OFF, native translator, current options.
+- Select GPU DETALHADA. Stay about 45 seconds in the telephone house, exit
+  normally, export `Zelda-luz-casa.txt`. In a fresh process repeat at the forest
+  haze comparison spot and export `Zelda-nevoa.txt`. Then return logging to
+  LEVE for normal play. No FPS comparison between detailed and LEVE runs.
+- 57 host audit tests pass, zero skips with real spirv-val; actual observer
+  inputs remain byte-identical, OFF has no inspection/logs, changes stay
+  distinct, separate bounds/reset hold, signed-APK gates and whole-stack
+  apply-twice/byte-exact rollback pass. Native ASan/UBSan and full render/
+  renderer C syntax pass. Actual Java exporter preserves 139 generated rows,
+  including 1,254-byte rows, intact. No new Android APK/game result claimed.
+
+**Resume:** inspect fresh capability/state/input logs from the corrected build;
+old detailed logs predate it. Identify the actual haze/shaft or residual-shadow
+consumer and its state/inputs before changing blending, shaders or depth again.
+Use already captured matching shader programs; request only missing evidence.
+If setup looks plausible, bounded color-pixel evidence may still be needed.
+Colors/water are accepted as improved; do not undo them. Remaining visual work:
+haze, indoor shafts/reflected light, residual shadowing and localized blur
+differences. Memory/hash work and clean FPS A/B remain independent.
+
+## Previous depth stopping point: maps analyzed and viewport correction delivered
 
 Read [`zelda-depth-range.md`](zelda-depth-range.md) before the next change.
 The user supplied the requested `Zelda-sombras.zip`; do not ask for that same
@@ -555,10 +619,10 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 | Per-pass pixel capture and bandwidth/dependency analysis | First bounded shadow-depth capture is delivered; collect outdoor layers. Color/light/water pass captures and broader bandwidth analysis remain. |
 | Direct NVN HLE architecture | nxnative bypasses the guest graphics driver. This repository has a separate legacy NVN/Vulkan backend; the current APK uses ScarletNX. A new bridge is a larger optional project, not a drop-in patch or replacement authorized by the current preservation rules. |
 
-Missing projected shadows, interior light shafts, water/color and blur
-differences remain unverified after the new depth correction. Supplied maps
-contain geometry and demonstrated a mapping mismatch; corrected Android pixel
-results are still pending. Do not call an optimization a visual fix without
+After the depth delivery the user reports colors/water resolved; photos show
+partial projected shadows and blur. Atmospheric haze, indoor shafts/reflected
+light, residual shadows and localized blur differences remain. Fresh logs
+for the passive composition diagnostic are pending. Do not call an optimization a visual fix without
 device comparison or decisive pixel/semantic evidence.
 
 Suggested investigation order (expected impact is a hypothesis, not a result):

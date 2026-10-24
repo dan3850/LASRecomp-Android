@@ -5,6 +5,13 @@ current build, with missing shadows and unchanged water/colors/blur. Preserve
 that performance reference. This step corrects one demonstrated numerical
 mapping error; restored Android graphics still need device confirmation.
 
+Later device feedback on this delivery: the user reports colors and water
+resolved. New photos show some tree/character shadows and foreground blur;
+haze, interior window shafts and residual shadow/reflected light remain.
+No fresh capability/toggle log accompanied the photos. Preserve this visual
+reference and continue with [`zelda-lighting-composition.md`](zelda-lighting-composition.md)
+rather than repeat the original depth audit or rework the improved water.
+
 ## Evidence actually received
 
 `Zelda-sombras.zip` SHA-256:

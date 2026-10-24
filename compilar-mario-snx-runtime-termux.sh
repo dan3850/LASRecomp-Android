@@ -94,6 +94,9 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   if [ "${SCARLETNX_ZELDA_DEPTH_RANGE:-0}" = 1 ]; then
     git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-DepthRange.txt"
   fi
+  if [ "${SCARLETNX_ZELDA_LIGHT_DIAG:-0}" = 1 ]; then
+    git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-LightDiagnostics.txt"
+  fi
 fi
 SNLIB="$EXTRA/lib/arm64-v8a"
 # Cross-check against the previous LASRecomp test's native library names.
