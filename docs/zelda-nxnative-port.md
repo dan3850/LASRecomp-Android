@@ -231,3 +231,17 @@ processes without rebuilding. The existing A/B analyzer command also reports
 the new transfer counters. Missing shadows, lighting and water remain a
 separate graphics issue; the multi-stage Ryujinx port and Android write-watch
 activation have not been implemented by this transfer change.
+
+## Third implementation: strict graphics-uniform snapshots
+
+The next optional adaptation avoids promotion copies for graphics uniforms
+and can reuse identical immutable staging snapshots within their original
+submission, while preserving the strict content checks and pending GPU-result
+paths. The approved transfer profile remains available. The new build wrapper
+is `compilar-zelda-uniformes-termux.sh`; it preserves the transfer APK and
+produces `Zelda-SNX-UNIFORMES.apk` with a separate runtime ON/OFF option.
+
+See [scope, validation and comparison](zelda-uniform-snapshots.md) and the
+[continuation checkpoint](zelda-performance-handoff.md). This first step does
+not defer guest-visible writes or implement all of nxnative's uniform update
+machinery. Device FPS validation is pending; host tests are not an FPS claim.

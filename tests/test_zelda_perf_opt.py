@@ -25,6 +25,7 @@ D7 = module('d7_fswz_stack', ROOT / 'tools/patch_scarletnx_fswzadd.py')
 BINDLESS = module('bindless_fswz_stack', ROOT / 'tools/patch_scarletnx_bindless_diag.py')
 HASH_SPAN = module('hash_span_stack', ROOT / 'tools/patch_scarletnx_zelda_hash_span.py')
 TRANSFER = module('transfer_stack', ROOT / 'tools/patch_scarletnx_zelda_transfer.py')
+UNIFORM = module('uniform_stack', ROOT / 'tools/patch_scarletnx_zelda_uniform.py')
 SRC = Path(os.environ.get('SCARLETNX_TEST_SRC', ROOT.parent / 'ScarletNX-audit'))
 PIN = '34853eeae5af132e320adbb0193f13344085bf89'
 
@@ -237,7 +238,7 @@ int main(int argc, char** argv) {
     def test_entire_patch_stack_on_real_pinned_source_restores_every_byte(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            names = set(PERF.replacements()) | set(OPT.replacements()) | set(TRANSFER.replacements())
+            names = set(PERF.replacements()) | set(OPT.replacements()) | set(TRANSFER.replacements()) | set(UNIFORM.replacements())
             names.add('src/nx/gpu/shader/spirv_translate.c')
             before = {}
             for name in names:
@@ -253,6 +254,8 @@ int main(int argc, char** argv) {
             HASH_SPAN.apply(root)
             TRANSFER.apply(root)
             TRANSFER.apply(root)
+            UNIFORM.apply(root)
+            UNIFORM.apply(root)
             shader = root / 'src/nx/gpu/shader/spirv_translate.c'
             shader.write_text(D7.apply(BINDLESS.transform(shader.read_text())))
             FSWZ.apply(root)
@@ -260,6 +263,7 @@ int main(int argc, char** argv) {
             FSWZ.apply(root)
             self.assertEqual(once, {name: (root / name).read_bytes() for name in names})
             FSWZ.apply(root, True)
+            UNIFORM.apply(root, True)
             TRANSFER.apply(root, True)
             HASH_SPAN.apply(root, True)
             shader.write_text(BINDLESS.transform(D7.apply(shader.read_text(), True), True))
@@ -269,6 +273,7 @@ int main(int argc, char** argv) {
             self.assertEqual(before, {name: (root / name).read_bytes() for name in names})
             self.assertFalse((root / 'src/nx/gpu/vk/snx_hash_span.h').exists())
             self.assertFalse((root / 'src/nx/gpu/vk/snx_transfer.h').exists())
+            self.assertFalse((root / 'src/nx/gpu/vk/snx_uniform.h').exists())
 
     @unittest.skipUnless((SRC / '.git').exists() and shutil.which('cc'), 'pinned source and C compiler required')
     def test_native_capture_bypasses_real_prewarm_and_normal_policy_resumes(self):

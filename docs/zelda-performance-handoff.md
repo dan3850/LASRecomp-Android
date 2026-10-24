@@ -43,11 +43,13 @@ LEVE, the native translator, and the same Stable60 state for comparisons.
 | `72ccaec`, `6ed5cef` | Operand-exact FSWZADD experiment, then default OFF after negative phone feedback. | The user saw no visual fix and possible slowdown. Keep `SCARLETNX_ZELDA_FSWZADD=0`; preserve the separate experiment cache. |
 | `24250a6` | Optional range-qualified CPU reads for texture hashing. | All bytes still hashed; page-rounded GPU ownership and visibility checks preserved. Not a dirty-page tracker. |
 | `9b405a6` | Fence-retired transfer-buffer pool, contiguous row coalescing and eligible full linear DMA overwrites without old-destination staging. | New generation on every reused resource; bounded pool. Previous delivery reported 21 host tests passing. User subsequently reported a large improvement. |
+| Uniform-snapshot delivery after `98b7184` | Optional graphics-only immutable uniform snapshots, reuse after strict content checks within the same submission, and bypass of promotion copies. | 25 host tests pass; full patched `buffer.c`, `render.c`, `renderer.c` pass C syntax checks. Awaiting device FPS and graphics validation. Find its exact revision with `git log -1 -- tools/patch_scarletnx_zelda_uniform.py`. |
 
-## Work in progress at this checkpoint
+## Current stopping point: uniform snapshots ready for phone comparison
 
-The user authorized the next adaptation: uniforms and small transfers. No new
-runtime optimization beyond `9b405a6` has been implemented at this checkpoint.
+The first uniform adaptation is implemented and host-validated. It does not
+replace the user-approved `9b405a6` performance reference. No Android APK or
+new on-device FPS result was produced on the assistant's host.
 
 Initial source findings on the pinned ScarletNX:
 
@@ -58,18 +60,44 @@ Initial source findings on the pinned ScarletNX:
 - `buffer.c:buf_get` promotes content stable on two checks through `make_own`.
   `make_own` allocates device storage, stages bytes, ends the render pass,
   copies and inserts a barrier. Strict constant reads use this path too.
-- A promising bounded adaptation is reusable immutable staging snapshots for
-  graphics uniforms: keep strict checks and pending GPU-result composition;
-  investigate avoiding promotion copies and reusing an identical snapshot
-  within its proven lifetime. Do not defer guest-visible writes or bypass
-  GPU owners. This is a candidate, not a finished or benchmarked change.
+- `tools/patch_scarletnx_zelda_uniform.py` now adds graphics-only
+  `vk_buf_get_uniform`, leaving normal vertex and strict compute reads on
+  their old policy. Graphics uniforms <=64 KiB keep strict checks and pending
+  GPU-result handling but use existing immutable staging rather than promote
+  through a copy that ends rendering. An identical staging snapshot can be
+  reused only in its original submission, rechecked after guest reads.
+- This is not the complete nxnative deferred-uniform-write machinery. Inline
+  writes remain immediately guest-visible through the original APIs. Complete
+  deferred GPU updates and partial shadows are still potential later work.
+- Runtime option: `SNX_VK_UNIFORM_STREAM=1`; UI:
+  `Uniformes em snapshots reutilizaveis`. Defaults ON only in the new uniform
+  variant, OFF in the ordinary audit/transfer variant unless the user has
+  explicitly saved a preference. Transfer reuse remains enabled in the new
+  variant; FSWZADD stays OFF. Every trial uses a fresh game process.
+- `compilar-zelda-uniformes-termux.sh` produces
+  `Download/ZeldaRecomp/Zelda-SNX-UNIFORMES.apk`, validates current assets and
+  runtime markers, and does not overwrite `Zelda-SNX-NXNATIVE-TRANSFER.apk`.
+  It saves an additional before-uniforms backup when the reference exists.
+- `SNX_UNIFORM_META_V1` and `SNX_UNIFORM_V1` report strict mode, requests,
+  reused snapshots/bytes, promotion bypass decisions and staging bytes.
+  The analyzer requires complete matching windows. A bypass decision is not
+  a measurement of successful counterfactual allocations or milliseconds.
+- Actual-source fixtures preserve old draws' bytes across updates, check full
+  hashes, epochs/submissions (including a submit during a guest read), pending
+  graphics/composed/compute results, shared vertex/UBO cache entries, strict
+  compute policy, noncontiguous reads, temporary/staging/allocation failure,
+  oversized/zero ranges, OFF/invalid options, signed asset gates and rollback.
+- In a controlled five-check 16-byte to 64-KiB uniform case, the old path has
+  one dedicated-buffer copy/pass end; the new path has none and reuses the
+  staging snapshot. Both hash all bytes on all five required checks. This
+  establishes work removed in that case, not a phone FPS gain.
 
-Resume by reading those functions and the existing actual-source C fixtures.
-If implemented, test byte equivalence, preceding draw snapshots after updates,
-pending GPU outputs, epoch/submission changes, allocation failures, OFF mode,
-and exact application/restoration of the full source patch stack. Add bounded
-window counters so the phone can show whether copies/pass breaks were avoided.
-Update this section with the actual result before delivering the next commit.
+**Resume:** obtain/inspect the user's matching OFF/ON device reports for this
+new option while retaining transfer reuse ON. Check counters and frame times;
+if streaming makes static uniforms slower across submissions, use OFF and
+refine the policy. Do not discard the approved transfer patch. The complete
+technical scope and comparison procedure are in
+[`zelda-uniform-snapshots.md`](zelda-uniform-snapshots.md).
 
 ## Remaining work inventory
 
@@ -78,7 +106,7 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 
 | Front | Status / next task |
 |---|---|
-| Graphics uniform snapshots and small updates | In progress; see the exact source findings above. |
+| Graphics uniform snapshots and small updates | First adaptation delivered; device validation pending. Full deferred GPU updates/partial uniform shadows remain separate work. |
 | Android dirty-page tracking | Not active in supplied device logs. ScarletNX already implements generation tables and async userfaultfd/PAGEMAP_SCAN. Diagnose support/permissions; a fault fallback needs CPU aliases, host writes and GPU ownership traps. |
 | Broader persistent/shared GPU pools | Only transfer-result pooling adapted. A whole-pool shared-memory path needs Vulkan/driver support, alias and lifetime proofs. |
 | Binding/state fast paths | Descriptor reuse already exists; evaluate skipping repeated reconstruction through validated generations. |
@@ -117,7 +145,7 @@ libraries, game binaries, keys or private shader captures into the repository.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_zelda_perf*.py' -v
-bash -n compilar-castlevania-shader-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh
+bash -n compilar-castlevania-shader-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh compilar-zelda-uniformes-termux.sh
 git diff --check
 ```
 
@@ -134,10 +162,17 @@ set -e
 cd "$HOME/LASRecomp-Android"
 git switch experimental/zelda-links-awakening-ryujinx-nativeaot
 git pull --ff-only origin experimental/zelda-links-awakening-ryujinx-nativeaot
-SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-nxnative-termux.sh
+SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-uniformes-termux.sh
 ```
 
 Use a warm cache and the same save, route, camera, resolution, refresh, cooling
 and Stable60 state. Separate processes for OFF/ON; export 90-second logs and
 compare matching complete windows after warmup. Preserve the last good APK.
 Never compare capture+GPU-detailed sessions with LEVE and claim causality.
+
+The latest delivery completed 25 audit tests with zero skips and a real
+`spirv-val`, plus shell syntax, whitespace and the three full patched C-unit
+syntax checks. Settings for the C-unit checks were generated from the pinned
+specification; LLVM option-table generation is unnecessary for those units.
+No full game/AOT rebuild was performed. A future test failure on Termux must
+be fixed and recorded rather than dismissed because these host checks pass.
