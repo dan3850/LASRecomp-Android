@@ -11,14 +11,14 @@ typedef struct {
     u64 bytes, shader, gva;
     u32 frame, width, height, stage, sample;
 } SnxColorProbe;
-static int snx_color_probe_on;
-static u32 snx_color_probe_frames, snx_color_probe_frame, snx_color_probe_mask;
+static int snx_color_probe_on, snx_color_probe_pending;
+static u32 snx_color_probe_frames, snx_color_probe_frame;
 static u64 snx_color_probe_due;
 
 void snx_color_probe_init(void) {
     if (!snx_effect_depth_on) return;
     snx_color_probe_on = 1;
-    snx_color_probe_due = plat_ns() + 15000000000ull;
+    snx_color_probe_due = plat_ns() + 30000000000ull; /* wait for stable game startup */
     LOG("SNX_COLOR_PROBE_V1 {\"status\":\"armed\",\"frames\":3,\"stages\":3,\"format\":122,\"max_bytes\":%llu,\"extra_waits\":0}\n",
         (unsigned long long)SNX_COLOR_PROBE_MAX_BYTES);
 }
@@ -48,27 +48,30 @@ static void snx_color_probe_saved(void* arg) {
         (unsigned long long)pixels, (unsigned long long)zeros, (unsigned long long)bright,
         (unsigned long long)nonfinite, max_exponent);
     vmaDestroyBuffer(g_vk.vma, p->buffer, p->allocation);
+    snx_color_probe_pending = 0; /* only one outstanding GPU readback */
     free(p);
 }
 
 static void snx_color_probe_after_draw(const VkSh* fs, Surf* color, u32 writes) {
-    if (!snx_color_probe_on || !fs || !color || !(writes & 1)) return;
-    if (snx_color_probe_mask && snx_color_probe_frame != g_vk_present)
-        snx_color_probe_mask = 0;
-    if (!snx_color_probe_mask && snx_color_probe_frames >= 3) return;
+    /* The earlier probe broke up to three passes in one frame. Keep capture
+     * entirely out of startup and serialize the readback with the already
+     * active scene-depth capture. Never break a pass without a valid draw. */
+    if (!snx_color_probe_on || snx_color_probe_pending || snx_effect_depth_pending ||
+        !fs || !color || !(writes & 1) ||
+        g_vk_present < 180 || snx_color_probe_frames >= 3 ||
+        plat_ns() < snx_color_probe_due ||
+        g_vk_present == snx_color_probe_frame) return;
     u32 stage = fs->hash == 0xe3d1871b2f5cda65ull ? 0 :
                 fs->hash == 0xf889217164842d03ull ? 1 :
                 fs->hash == 0x23e50e818480973cull ? 2 : 3;
-    if (stage == 3) return;
-    if (!snx_color_probe_mask && (stage != 0 || plat_ns() < snx_color_probe_due)) return;
-    /* Start at scene output, then follow only this frame. */
-    if (snx_color_probe_mask & (1u << stage)) return;
+    if (stage != snx_color_probe_frames) return;
     if (color->f.vk != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || !color->img ||
         !color->sw || !color->sh || color->sw > 4096 || color->sh > 4096 ||
         color->layers != 1 || color->depth3d > 1 || color->levels != 1 ||
         color->layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
     u64 bytes = (u64)color->sw * color->sh * 4;
     if (bytes > SNX_COLOR_PROBE_MAX_BYTES || bytes > g_vk.alloc_cap) return;
+    snx_color_probe_due = plat_ns() + 1000000000ull; /* throttle failed allocations */
     SnxColorProbe* p = calloc(1, sizeof *p);
     if (!p) return;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bytes,
@@ -84,11 +87,10 @@ static void snx_color_probe_after_draw(const VkSh* fs, Surf* color, u32 writes) 
     if (!info.pMappedData) {
         vmaDestroyBuffer(g_vk.vma, p->buffer, p->allocation); free(p); return;
     }
-    if (!snx_color_probe_mask) {
-        snx_color_probe_frame = g_vk_present;
-        snx_color_probe_frames++;
-        snx_color_probe_due = plat_ns() + 15000000000ull;
-    }
+    snx_color_probe_frame = g_vk_present;
+    snx_color_probe_frames++;
+    snx_color_probe_pending = 1;
+    snx_color_probe_due = plat_ns() + 1000000ull; /* next stage: later presented frame */
     p->mapped = info.pMappedData; p->bytes = bytes; p->shader = fs->hash;
     p->gva = color->gva; p->frame = g_vk_present; p->width = color->sw;
     p->height = color->sh; p->stage = stage; p->sample = snx_color_probe_frames;
@@ -112,7 +114,6 @@ static void snx_color_probe_after_draw(const VkSh* fs, Surf* color, u32 writes) 
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                            .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     rec_CmdPipelineBarrier2(cb, &di);
-    snx_color_probe_mask |= 1u << stage;
     vk_defer_call(snx_color_probe_saved, p);
     LOG("SNX_COLOR_PROBE_V1 {\"status\":\"queued\",\"sample\":%u,\"frame\":%u,\"stage\":%u}\n",
         p->sample, p->frame, stage);

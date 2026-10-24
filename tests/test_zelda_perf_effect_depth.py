@@ -59,6 +59,18 @@ class EffectDepthTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(run.stdout.count('"status":"save_failed"'), 3)
 
+    def test_color_probe_startup_serialization_guards(self):
+        color = (ROOT / 'tools/zelda-perf/color_probe.h').read_text()
+        self.assertIn('g_vk_present < 180', color)
+        self.assertIn('snx_color_probe_pending || snx_effect_depth_pending', color)
+        self.assertIn('snx_color_probe_pending = 1;', color)
+        self.assertIn('snx_color_probe_pending = 0;', color)
+        self.assertIn('stage != snx_color_probe_frames', color)
+        self.assertNotIn('snx_color_probe_mask', color)
+        render_patch = PATCH.replacements()['src/nx/gpu/vk/render.c']
+        self.assertIn('!snx_color_probe_pending', render_patch[1][1])
+        self.assertIn('snx_color_probe_after_draw(fs, rt[0], writes);', render_patch[2][1])
+
     def test_parser_checks_planar_layout_masks_d24_and_bounds_archive(self):
         raw = struct.pack('<8I', *([0xff800000]*4 + [0x11800000]*4))
         result = ANALYZER.analyze_pair(metadata(), raw)

@@ -22,14 +22,19 @@ maximum encoded exponent. This metric identifies a jump between stages; it
 does not identify the exact visual region or prove which shader is wrong.
 Different target sizes mean counts should be compared as proportions.
 
-From 15 seconds after launch it captures at most three frames, at least
-15 seconds apart. Only one output per stage per frame is captured. Each
-buffer is capped at 16 MiB and the existing device allocation cap. Buffer
-reads occur after ordinary frame retirement; no extra submit or wait. The
-image's layout/stage/access is restored after the copy. Failed allocations or
-ineligible targets retain normal drawing. The switch OFF does no new
-readback, pass break or allocation. ON may add up to nine pass breaks and
-disk-log work, so use LEVE telemetry and do not compare FPS from the run.
+Safety update after the user reported that the game does not open with
+effect capture ON: the HDR probe now waits at least 30 seconds and 180
+presented frames before its first GPU readback. It captures stages 0, 1 and
+2 in *separate presented frames*, sequentially, with only one GPU buffer
+pending. It cannot run while a paired depth readback is pending; depth
+capture also waits for the color buffer to retire. Each output is at most
+16 MiB and respects the device allocation cap. The capture retains the
+existing ordered recorder, image-layout restoration and normal frame
+retirement callback, with no new explicit submit/wait. The OFF path does
+nothing. Because the stages no longer come from the same frame, compare
+their statistics only as provisional evidence, not proof of a specific
+producer. This change is a conservative boot-risk mitigation, not a
+confirmed fix for the reported failure or a graphics repair.
 
 Incremental Termux build, keeping caches and the accepted APK:
 
@@ -45,8 +50,8 @@ Install `Download/ZeldaRecomp/Zelda-SNX-EFEITOS-DEPTH-DIAG.apk` as an
 update. Keep **Preservar faixa de profundidade ON**, isolated D24 in
 whichever state reproduced the flash, shader/shadow capture OFF, and
 **Capturar profundidade de luz/nevoa ON**. Restart the game process, enter
-the telephone scene, and repeat the interaction around 15, 30 and 45 seconds
-after launch. Exit normally, then export the existing effects ZIP or game
+the telephone scene, and keep the telephone/NPC interaction on screen around 30 seconds
+and while the three serialized stages are collected. Exit normally, then export the existing effects ZIP or game
 log. The rows to inspect are `SNX_COLOR_PROBE_V1` with status
 `queued` and `measured`, grouped by `sample` and `frame`.
 Missing stages are missing evidence, not zero brightness.

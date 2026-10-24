@@ -20,7 +20,7 @@ def replacements():
             ('#include "nx/gpu/vk/snx_shadow_capture.h"',
              '#include "nx/gpu/vk/snx_shadow_capture.h"\n#include "nx/gpu/vk/snx_effect_depth.h"\n#include "nx/gpu/vk/snx_color_probe.h"'),
             ('        const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */',
-             '        if (snx_effect_depth_on && view && !st->shadow && want == VK_IMAGE_VIEW_TYPE_2D)\n'
+             '        if (snx_effect_depth_on && !snx_color_probe_pending && view && !st->shadow && want == VK_IMAGE_VIEW_TYPE_2D)\n'
              '            snx_effect_depth_capture(s, stage, i, zt, t, x->tic, x->tsc, r);\n'
              '        const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */'),
             ('    if (snx_shadow_enabled) snx_shadow_note(zt, vs, fs, r, ch->render_pred);',
