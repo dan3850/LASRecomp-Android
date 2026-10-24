@@ -137,6 +137,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             addPerfOption(content, "zelda_uniform_stream_v1", "Uniformes em snapshots reutilizaveis", hasUniformBuild());
             addPerfOption(content, "zelda_clear_load_v1", "Limpezas completas no inicio do passe", hasClearBuild());
             addPerfOption(content, "zelda_ub_extent_v1", "Alcance comprovado dos uniformes", hasUniformExtentBuild());
+            addPerfOption(content, "zelda_bind_reuse_v1", "Reutilizar bindings validados", hasBindingsBuild());
         }
 
         Button launch = new Button(this);
@@ -306,6 +307,12 @@ public final class CastlevaniaSnxBootActivity extends Activity {
 
     private boolean hasUniformExtentBuild() {
         try (java.io.InputStream in = getAssets().open("licenses/Zelda-UniformExtent.txt")) {
+            return in.read() >= 0;
+        } catch (IOException e) { return false; }
+    }
+
+    private boolean hasBindingsBuild() {
+        try (java.io.InputStream in = getAssets().open("licenses/Zelda-Bindings.txt")) {
             return in.read() >= 0;
         } catch (IOException e) { return false; }
     }
@@ -547,6 +554,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             intent.putExtra("snx_uniform_stream", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_uniform_stream_v1", hasUniformBuild()));
             intent.putExtra("snx_clear_load", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_clear_load_v1", hasClearBuild()));
             intent.putExtra("snx_ub_extent", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_ub_extent_v1", hasUniformExtentBuild()));
+            intent.putExtra("snx_bind_reuse", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_bind_reuse_v1", hasBindingsBuild()));
             startActivity(intent);
         } catch (Exception error) {
             message("Nao iniciou: " + error);

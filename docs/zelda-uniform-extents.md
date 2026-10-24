@@ -30,8 +30,8 @@ private captures, game binary or shader-library asset is copied.
 ## Proof and fallback policy
 
 `SNX_VK_UB_EXTENT=1` enables the independent option **Alcance comprovado dos
-uniformes**. The runtime and ordinary profiles default it OFF. Only the new
-extent profile defaults it ON; saved preferences are respected.
+uniformes**. The runtime and ordinary profiles default it OFF. Extent and
+binding profiles default it ON; saved preferences are respected.
 
 The proof accepts a deliberately narrow layout: one Uniform block containing
 one 4096-element array of four 32-bit scalar components, offset zero and stride

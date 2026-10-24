@@ -44,7 +44,9 @@ and uniforms ON, capture OFF, telemetry LEVE, the native translator and the
 same Stable60 state when comparing the next independent option. If rebuilding
 the uniform profile from newer code, explicitly keep the clear option OFF
 and the uniform-extent option OFF for the reference trial; a saved ON
-preference overrides the profile default.
+preference overrides the profile default. Keep binding reuse OFF too when
+rebuilding that reference from newer code. Preserve the newer
+`38355f1` extent APK as the immediate comparison for the binding delivery.
 
 ## Implemented and published
 
@@ -59,9 +61,65 @@ preference overrides the profile default.
 | `9b405a6` | Fence-retired transfer-buffer pool, contiguous row coalescing and eligible full linear DMA overwrites without old-destination staging. | New generation on every reused resource; bounded pool. Previous delivery reported 21 host tests passing. User subsequently reported a large improvement. |
 | `d212126` | Optional graphics-only immutable uniform snapshots, reuse after strict content checks within the same submission, and bypass of promotion copies. | 25 host tests pass; full patched `buffer.c`, `render.c`, `renderer.c` pass C syntax checks. User subsequently reported improvement; controlled device metrics remain pending. |
 | `2cc5ce0` | Optional eligible full clears as new-pass load actions, preserving same-pass reuse and conservative fallbacks. | 29 host tests pass; 40 old/new pixel-model scenes and full patched C syntax checks. Later aggregate user feedback was positive; isolated Android clear metrics remain pending. |
-| `uniform-extent-v1` delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_ub_extent.py`) | Optional proven prefixes for graphics uniforms, analyzed from the same new/cached SPIR-V. | 33 host tests pass; 61 synthetic native programs, strict snapshot bytes, actual persistent loader and full patched C syntax checks. No Android FPS result for this option. |
+| `38355f1` | Optional proven prefixes for graphics uniforms, analyzed from the same new/cached SPIR-V. | 33 host tests pass; 61 synthetic native programs, strict snapshot bytes, actual persistent loader and full patched C syntax checks. No Android FPS result for this option. |
+| `binding-reuse-v1` delivery (locate with `git log -1 -- tools/patch_scarletnx_zelda_bind_reuse.py`) | Exact, adaptive lookup of resolved descriptor state ahead of the existing hash cache. | 37 host tests pass; actual cache/recorder, 50 scenes / 3,200 bindings, sanitizer and full C syntax checks. Android FPS validation pending. |
 
-## Current stopping point: proven uniform prefixes delivered; device A/B pending
+## Current stopping point: validated binding-state lookup delivered; device A/B pending
+
+The user said "Bora pra.proxima" after the extent delivery and authorized
+continuing nxnative ports. No isolated extent or new binding FPS log arrived.
+This delivery adapts nxnative's encoded-argument reuse idea conservatively:
+all ScarletNX resource resolution still runs; repeated exact resolved state
+can bypass the two descriptor hashes. Read
+[`zelda-binding-reuse.md`](zelda-binding-reuse.md) before continuing.
+
+- Implemented in `tools/patch_scarletnx_zelda_bind_reuse.py` and
+  `tools/zelda-perf/bind_reuse.h`. Apply after uniform-extent; restore before it.
+- Runtime `SNX_VK_BIND_REUSE=1`; UI **Reutilizar bindings validados**.
+  Defaults ON only in the binding profile; saved preferences override it.
+  OFF and a fresh game process reverses this step independently.
+- Existing descriptor cache, `cb_get`, texture/view/sampler reuse, async set
+  recording, pool retention and `g_dyn` suppression already existed. Do not
+  implement them again. The entire `stage_set` body remains byte-identical.
+  Strict reads, pending GPU writes, uploads, storage/feedback state and
+  barriers are resolved before the new lookup.
+- Ten bounded layout states compare every write header and descriptor value,
+  excluding padding/temporary pointer addresses. Only the original frame
+  lifetime is accepted. Unknown/chained/oversized shapes keep the old cache;
+  failed creation or a frame change during creation is not retained.
+- An entry warms only after two original lookups of its layout/frame return
+  the same set. Changing uniforms pay no repeated complete-key copy. Exact
+  comparisons stop at the first mismatch; a hit avoids only hashing/lookup.
+  This is the first binding adaptation, not broad generation-based skipping
+  of resource-state construction. No shader/cache/AOT ABI or draw change.
+- `SNX_BIND_REUSE_META_V1` / `SNX_BIND_REUSE_V1` count lookups, fast_hits,
+  original_lookups, key_refusals, key_bytes_built, hash_mix_calls_bypassed and
+  states_saved. Key refusals are rejected key attempts, not all unsupported
+  requests. Counts are CPU work evidence, not milliseconds/GPU time/FPS.
+- `compilar-zelda-bindings-termux.sh` produces `Zelda-SNX-BINDINGS.apk`,
+  validates five current profile assets/runtime markers and preserves the
+  extent/clear/uniform/transfer APKs. An existing extent APK gets a once-only
+  `Zelda-SNX-UNIFORMES-ALCANCE-ANTES-BINDINGS.apk` backup. Existing AOT/build
+  and shader caches are reused; FSWZADD remains OFF.
+- 37 audit tests pass, zero skips, with a real `spirv-val`. The actual cache,
+  recorder packets/callbacks, stand-in resolver and pool-reset path replay
+  3,200 bindings across 50 synchronous/asynchronous scenes. Contents remain
+  equal after caller data is overwritten. Exact removed hash-call counts,
+  adaptive misses, array counts/fields, frame recycling/creation change and
+  failures are exercised. Five full patched C units pass syntax checks.
+  ASan/UBSan pass; host LeakSanitizer is unavailable under the `/proc` task
+  restriction. No Java/Android APK, driver or game run was performed here.
+
+**Resume:** inspect binding OFF/ON phone evidence if available, with every
+other option equal, capture OFF and LEVE. Compare fast_hits/original_lookups,
+frame p95/p99 and existing profiles. A low hit rate can outweigh the saved
+hashing; do not call work counters an FPS gain. Do not reimplement this lookup.
+The next independent port candidate is broader persistent buffer reuse beyond
+the transfer pool. First audit existing staging/owned-buffer reclamation and
+prove aliases, generations and fence retirement before adapting it. Broad
+resource dirty-generation fast paths and partial GPU updates remain pending.
+
+## Previous proven-uniform-prefix scope and validation
 
 The user selected continuing nxnative ports, specifically the remaining
 uniform update work. Audit found that Metal-style deferred GPU copies are
@@ -77,7 +135,7 @@ fixed-address LDCs whose native `cbuf_max` remains 65536. See
 - Implemented in `tools/patch_scarletnx_zelda_ub_extent.py` and
   `tools/zelda-perf/ub_extent.h`; apply after clear-load, restore before it.
 - Runtime `SNX_VK_UB_EXTENT=1`; UI **Alcance comprovado dos uniformes**.
-  Defaults ON only in the new extent profile; saved preferences override it.
+  Defaults ON in extent/binding profiles; saved preferences override it.
   All previous options remain independent. Each OFF/ON trial needs a fresh
   game process, not a second build.
 - Only canonical scalar uniform access chains with exact constant indices
@@ -111,15 +169,15 @@ fixed-address LDCs whose native `cbuf_max` remains 65536. See
   Failure paths and 512 corrupt-word mutations are also exercised. Four full
   patched C units pass syntax checks. No Android APK/game run on this host.
 
-**Resume:** inspect extent OFF/ON device logs with previous options equal,
+Extent validation remains pending: inspect OFF/ON device logs with previous options equal,
 capture OFF and LEVE. Check that `reduced_bindings` is nonzero, compare uniform
 staging/hash work and frame intervals; do not infer FPS savings from range sums.
 Do not implement this proof twice. General deferred GPU updates, dynamic-index
 interval analysis and partial uniform-write shadows are still unimplemented.
-The next port candidates are broader persistent buffer pools or binding-state
-generation fast paths; first identify work beyond existing descriptor reuse,
-and preserve ownership/lifetime proofs. Android write-watch diagnosis remains
-in the inventory, but it was not the user's selected port for this delivery.
+The first binding lookup adaptation is now delivered above. Broader persistent
+buffer pools and resource dirty-generation fast paths remain candidates;
+preserve ownership/lifetime proofs. Android write-watch diagnosis remains in
+the inventory, but was not the user's selected port for these deliveries.
 
 ## Previous clear-load scope and validation
 
@@ -132,7 +190,7 @@ or restart the nxnative audit. Read [the clear scope](zelda-clear-load.md)
 and check whether device logs/feedback for this delivery have arrived first.
 
 - Option: `SNX_VK_CLEAR_LOAD=1`, **Limpezas completas no inicio do passe**.
-  Default ON in the clear and extent profiles (saved preference respected);
+  Default ON in clear/extent/binding profiles (saved preference respected);
   runtime/ordinary audit default OFF. Roll back this step alone by switching
   it OFF and restarting the game process. Keep approved transfers/uniforms ON.
 - Only immediate, unpredicated full clears of single-layer, equal-extent,
@@ -187,8 +245,8 @@ continues from this checkpoint without rewriting it.
   writes remain immediately guest-visible through the original APIs. Complete
   deferred GPU updates and partial shadows are still potential later work.
 - Runtime option: `SNX_VK_UNIFORM_STREAM=1`; UI:
-  `Uniformes em snapshots reutilizaveis`. Defaults ON in the uniform, clear and
-  extent profiles, OFF in the ordinary audit/transfer variant unless the user has
+  `Uniformes em snapshots reutilizaveis`. Defaults ON in uniform/clear/extent/
+  binding profiles, OFF in the ordinary audit/transfer variant unless the user has
   explicitly saved a preference. Transfer reuse remains enabled in the new
   variant; FSWZADD stays OFF. Every trial uses a fresh game process.
 - `compilar-zelda-uniformes-termux.sh` produces
@@ -223,7 +281,7 @@ Zelda. The existing mechanisms must be preserved and extended, not recreated.
 | Graphics uniform snapshots and small updates | Snapshots positively reviewed on device; proven fixed-index prefixes now delivered with device metrics pending. Full deferred GPU updates/partial shadows and dynamic-index proof remain separate work. |
 | Android dirty-page tracking | Not active in supplied device logs. ScarletNX already implements generation tables and async userfaultfd/PAGEMAP_SCAN. Diagnose support/permissions; a fault fallback needs CPU aliases, host writes and GPU ownership traps. |
 | Broader persistent/shared GPU pools | Only transfer-result pooling adapted. A whole-pool shared-memory path needs Vulkan/driver support, alias and lifetime proofs. |
-| Binding/state fast paths | Descriptor reuse already exists; evaluate skipping repeated reconstruction through validated generations. |
+| Binding/state fast paths | Exact adaptive descriptor lookup now delivered; device metrics pending. Full resource reconstruction remains unchanged. Broader dirty-generation fast paths still need observer proofs. |
 | Texture upload batches / dynamic image versions | Existing staging, image reuse and GPU conversion are present. Profile remaining transitions and dependencies before extending them. |
 | Fold clears into render-pass load actions | First immediate new-pass full-clear adaptation delivered; Android A/B pending. Partial, layered and deferred-clear extensions remain unimplemented. |
 | Attachment load/store elimination | Experimental. Needs complete reads/writes/alias/bindless tracking and CPU observers. |
@@ -247,6 +305,7 @@ Suggested investigation order (expected impact is a hypothesis, not a result):
 
 | Next front | Expected impact / evidence needed | Change risk | Difficulty |
 |---|---|---|---|
+| Validate binding reuse | CPU descriptor hashing only; actual hit rate/frame intervals decide. | Conservative exact state/lifetime scope; device validation pending. | Low comparison; broader generation paths are harder. |
 | Validate uniform-extent option | Unknown; actual reduced bindings, staging/hash work and equal-route frame intervals decide. | Conservative proof/fallback; driver validation pending. | Low: one APK, fresh-process OFF/ON. |
 | Validate clear-load option | Unknown; count actual folds and compare equal-route frame intervals. | Conservative scope; driver validation pending. | Low: one APK, fresh-process OFF/ON. |
 | Diagnose existing Android write-watch | Potentially high if full-content hashing remains expensive; measure availability and hash cost. | Low for diagnostics; high for a new fault-handler fallback. | Medium diagnosis / high implementation. |
@@ -271,7 +330,7 @@ libraries, game binaries, keys or private shader captures into the repository.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_zelda_perf*.py' -v
-bash -n compilar-castlevania-shader-termux.sh compilar-mario-snx-runtime-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh compilar-zelda-uniformes-termux.sh compilar-zelda-clears-termux.sh compilar-zelda-uniformes-alcance-termux.sh
+bash -n compilar-castlevania-shader-termux.sh compilar-mario-snx-runtime-termux.sh compilar-zelda-fps-audit-termux.sh compilar-zelda-nxnative-termux.sh compilar-zelda-uniformes-termux.sh compilar-zelda-clears-termux.sh compilar-zelda-uniformes-alcance-termux.sh compilar-zelda-bindings-termux.sh
 git diff --check
 ```
 
@@ -288,7 +347,7 @@ set -e
 cd "$HOME/LASRecomp-Android"
 git switch experimental/zelda-links-awakening-ryujinx-nativeaot
 git pull --ff-only origin experimental/zelda-links-awakening-ryujinx-nativeaot
-SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-uniformes-alcance-termux.sh
+SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-bindings-termux.sh
 ```
 
 Use a warm cache and the same save, route, camera, resolution, refresh, cooling
@@ -296,9 +355,9 @@ and Stable60 state. Separate processes for OFF/ON; export 90-second logs and
 compare matching complete windows after warmup. Preserve the last good APK.
 Never compare capture+GPU-detailed sessions with LEVE and claim causality.
 
-The latest delivery completed 33 audit tests with zero skips and a real
-`spirv-val`, plus shell syntax, whitespace and the four full patched C-unit
-syntax checks described in the uniform-extent scope. Settings for the C-unit checks
+The latest delivery completed 37 audit tests with zero skips and a real
+`spirv-val`, plus shell syntax, whitespace and the five full patched C-unit
+syntax checks described in the binding scope. Settings for the C-unit checks
 were generated from the pinned specification; LLVM option-table generation
 is unnecessary for those units.
 No full game/AOT rebuild was performed. A future test failure on Termux must

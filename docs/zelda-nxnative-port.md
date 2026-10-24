@@ -282,3 +282,20 @@ All 33 host audit tests pass; 61 synthetic native programs and the real cache
 loader are exercised. Android FPS validation remains pending. The
 [handoff](zelda-performance-handoff.md) records exactly where to resume and
 all remaining adaptation candidates.
+
+## Sixth implementation: exact reuse of resolved binding state
+
+Inspired by nxnative's encoded-argument reuse, an adaptive ten-layout state
+lookup avoids recalculating both descriptor hashes for repeated exact writes.
+The original cache remains the fallback; complete resource resolution,
+strict checks, uploads and barriers still run. Warmup requires two original
+lookups returning the same set, so changing inputs do not repeatedly copy a
+full key. No shader, cache format, AOT ABI or draw-count change is introduced.
+
+`compilar-zelda-bindings-termux.sh` preserves earlier APKs and produces
+`Zelda-SNX-BINDINGS.apk` with a separate ON/OFF option. See
+[scope, validation and comparison](zelda-binding-reuse.md). All 37 host audit
+tests pass; the actual descriptor cache and delayed recorder replay 3,200
+bindings in 50 scenes. Android FPS remains unmeasured for this option. Broad
+resource dirty-generation fast paths and persistent pools beyond transfers
+are still pending; continue from the [handoff](zelda-performance-handoff.md).

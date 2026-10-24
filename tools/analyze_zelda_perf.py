@@ -10,7 +10,7 @@ import math
 import re
 from pathlib import Path
 
-PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
+PATTERN = re.compile(r'(SNX_(?:PERF_META|PERF|FRAMES|STREAM|COST|VK|RYU_CACHE|HASH_SPAN(?:_META)?|TRANSFER(?:_META)?|UNIFORM(?:_META)?|CLEAR_LOAD(?:_META)?|UB_EXTENT(?:_META)?|BIND_REUSE(?:_META)?|GFX(?:_META|_PASS|_BIND|_LIMIT)?)_V1) (\{.*)')
 
 
 def percentile(values, pct):
@@ -54,6 +54,7 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
     uniform_meta = [r for k, r in selected['rows'] if k == 'SNX_UNIFORM_META_V1']
     clear_meta = [r for k, r in selected['rows'] if k == 'SNX_CLEAR_LOAD_META_V1']
     extent_meta = [r for k, r in selected['rows'] if k == 'SNX_UB_EXTENT_META_V1']
+    binding_meta = [r for k, r in selected['rows'] if k == 'SNX_BIND_REUSE_META_V1']
     all_windows = {r['window']: r for k, r in selected['rows'] if k == 'SNX_PERF_V1'}
     # Include only windows wholly inside the requested time range. No mix of
     # startup/warmup with gameplay, no partial-window FPS extrapolation.
@@ -97,6 +98,12 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
                 continue
             if extents[0]['enabled'] != extent_meta[-1]['enabled']:
                 raise ValueError('uniform-extent mode changed within a session')
+        if binding_meta:
+            bindings = [x for k, x in selected['rows'] if k == 'SNX_BIND_REUSE_V1' and x['window'] == w]
+            if len(bindings) != 1:
+                continue
+            if bindings[0]['enabled'] != binding_meta[-1]['enabled']:
+                raise ValueError('binding-reuse mode changed within a session')
         for name, s in streams.items():
             n = sum(len(x['us']) for k, x in selected['rows']
                     if k == 'SNX_FRAMES_V1' and x['window'] == w and x['stream'] == name)
@@ -123,6 +130,8 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
         result['metadata']['clear_load'] = clear_meta[-1]
     if extent_meta:
         result['metadata']['uniform_extent'] = extent_meta[-1]
+    if binding_meta:
+        result['metadata']['binding_reuse'] = binding_meta[-1]
     graphics_meta = [r for k, r in selected['rows'] if k == 'SNX_GFX_META_V1']
     if graphics_meta:
         result['metadata']['graphics_diagnostics'] = graphics_meta[-1]
@@ -184,6 +193,11 @@ def analyze(text, skip_seconds=10, duration_seconds=None, session=None):
             for name, value in r.items():
                 if name not in ('window', 'enabled'):
                     extents[name] = extents.get(name, 0) + value
+        if k == 'SNX_BIND_REUSE_V1':
+            bindings = result.setdefault('binding_reuse', {})
+            for name, value in r.items():
+                if name not in ('window', 'enabled'):
+                    bindings[name] = bindings.get(name, 0) + value
     return result
 
 
@@ -220,6 +234,9 @@ def markdown(report, label):
     if 'uniform_extent' in report:
         lines += ['', 'Proven uniform prefixes: `' + json.dumps(report['uniform_extent'], sort_keys=True) + '`',
                   'Byte totals are requested binding ranges, not measured uploads, bandwidth savings or FPS. All shader instructions remain unchanged.']
+    if 'binding_reuse' in report:
+        lines += ['', 'Exact reuse of resolved bindings: `' + json.dumps(report['binding_reuse'], sort_keys=True) + '`',
+                  'Fast hits bypass descriptor hash lookups; resource checks still run. Mix-call counts are CPU work counts, not GPU time or FPS.']
     return '\n'.join(lines)
 
 
