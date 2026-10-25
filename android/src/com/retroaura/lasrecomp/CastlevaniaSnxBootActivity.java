@@ -624,7 +624,7 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             Intent intent = new Intent(this, MarioSnxGameActivity.class);
             intent.putExtra("snx_game_base", new File(folder, ID).getAbsolutePath());
             intent.putExtra("snx_source_dump", xci.getAbsolutePath());
-            intent.putExtra("snx_shader_captures", getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false));
+            // Light/fog capture wins for this launch only. Keep the user's saved\n            // shader/shadow preferences; never launch concurrent capture writers.\n            boolean effectDepthCapture = hasEffectDepthBuild() &&\n                    getPreferences(MODE_PRIVATE).getBoolean("zelda_effect_depth_v1", false);\n            boolean shaderCaptureRequested = getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false);\n            boolean shadowCaptureRequested = hasPerfBuild() &&\n                    getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false);\n            if (effectDepthCapture && (shaderCaptureRequested || shadowCaptureRequested))\n                message("Luz/nevoa ativa: capturas de sombras e shaders pausadas somente nesta execucao.");\n            intent.putExtra("snx_shader_captures", shaderCaptureRequested && !effectDepthCapture);
             intent.putExtra("snx_ryujinx_native_probe", getPreferences(MODE_PRIVATE).getBoolean("zelda_live_ryujinx", false));
             intent.putExtra("snx_perf_mode", hasPerfBuild() ? getPreferences(MODE_PRIVATE).getInt("zelda_perf_mode", 0) : 0);
             intent.putExtra("snx_known_complete", hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_known_complete", false));
@@ -640,17 +640,14 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             // Version 1 regressed on device. Its saved ON must not enable this
             // bounded integration automatically after an APK update.
             intent.putExtra("snx_d24_copies", hasD24CopiesBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_d24_copies_v2", false));
-            if (hasEffectDepthBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_effect_depth_v1", false)) {
-                if (getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false) ||
-                        getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false))
-                    throw new IOException("Desligue Capturar sombras e Capturar shaders para capturar luz/nevoa.");
+            if (effectDepthCapture) {
                 File captures = new File(folder, "captures/effect-depth-v1");
                 makeDir(captures);
                 File session = new File(captures, String.format(Locale.ROOT, "%016x", System.currentTimeMillis()));
                 if (!session.mkdir()) throw new IOException("Nao criou a sessao de profundidade dos efeitos");
                 intent.putExtra("snx_effect_depth_dir", session.getAbsolutePath());
             }
-            if (hasPerfBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false)) {
+            if (shadowCaptureRequested && !effectDepthCapture) {
                 File captures = new File(folder, "captures/shadow-depth-v1");
                 makeDir(captures);
                 File session = new File(captures, String.format(Locale.ROOT, "%016x", System.currentTimeMillis()));

@@ -59,6 +59,18 @@ class EffectDepthTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(run.stdout.count('"status":"save_failed"'), 3)
 
+    def test_capture_conflicts_never_block_zelda_launch(self):
+        source = (ROOT / 'android/src/com/retroaura/lasrecomp/CastlevaniaSnxBootActivity.java').read_text()
+        launch = source.split('    private void startGame() {', 1)[1].split('    private String readLogs()', 1)[0]
+        self.assertNotIn('throw new IOException("Desligue Capturar sombras', launch)
+        self.assertIn('boolean effectDepthCapture = hasEffectDepthBuild()', launch)
+        self.assertIn('shaderCaptureRequested && !effectDepthCapture', launch)
+        self.assertIn('shadowCaptureRequested && !effectDepthCapture', launch)
+        self.assertIn('if (effectDepthCapture) {', launch)
+        self.assertIn('somente nesta execucao', launch)
+        self.assertNotIn('putBoolean("shader_capture"', launch)
+        self.assertNotIn('putBoolean("zelda_shadow_capture_v1"', launch)
+
     def test_color_probe_startup_serialization_guards(self):
         color = (ROOT / 'tools/zelda-perf/color_probe.h').read_text()
         self.assertIn('g_vk_present < 180', color)
