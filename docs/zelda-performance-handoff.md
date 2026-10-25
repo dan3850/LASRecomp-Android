@@ -1,8 +1,41 @@
 # Zelda Android performance: continuation checkpoint
 
-Updated: 2026-10-24. Read this before continuing the experimental Zelda work.
+Updated: 2026-10-25. Read this before continuing the experimental Zelda work.
 The user requested that every delivery list what remains and leave a durable
 checkpoint for another assistant if the conversation or credits end.
+
+## Current checkpoint: nxnative/Ryujinx buffer compute and cache
+
+The user requested replacing the graphics/cache portion with nxnative's.
+The first implemented backend slice is buffer compute through its real
+Ryujinx translator, independent SPIR-V persistence and an isolated Vulkan
+driver-cache filename. Read [scope, checks and build](zelda-nxnative-compute-cache.md).
+
+The port supplies actual launch/shared/C1 inputs, converts reflected storage
+offsets from words to bytes, preserves driver C0 and existing allocation/
+ordering/writeback, and invalidates in-memory reuse on C1 size/value changes.
+Unsupported resources/facts/features retain native translation; Vulkan
+module/pipeline rejection retries native too. No private captures/game bytes
+are included in the source/tests.
+
+69 audit tests pass, zero skips. Synthetic Vulkan compute on llvmpipe checks
+14,336 list/count/tail values in seven grids. Full patched C syntax, Java
+parsing and shell syntax pass. These are host/component results, not an
+Android APK, Adreno visual fix or FPS comparison.
+
+Build: `SCARLETNX_BUILD_JOBS=2 bash ./compilar-zelda-nxnative-graficos-termux.sh`.
+Output `Download/ZeldaRecomp/Zelda-SNX-NXNATIVE-COMPUTE.apk`; independent
+Compute/cache options default ON only in this profile. Preserve earlier
+depth/performance/D24/Stable60 preferences and APK comparisons. Keep the
+prior fragment Ryujinx experiment OFF when isolating the compute port.
+
+**Next:** Android selection/visual/stability trial, captures OFF and LEVE;
+require `ready=1` and `selected=nxnative`, then warm-run cache hits. Complete
+vertex/fragment interfaces and resource coverage before claiming a full
+graphics-backend replacement. Direct NVN replay, resource/render-pass
+adaptation and residual visual defects remain unresolved. This is a first
+compute slice, not the entire nxnative renderer or confirmed lighting/shadow
+repair. Earlier checkpoints below remain historical.
 
 ## Target and rules
 

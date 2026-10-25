@@ -134,6 +134,10 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             content.addView(perf);
             addPerfOption(content, "zelda_known_complete", "Reutilizar esperas confirmadas");
             addPerfOption(content, "zelda_ryu_persist", "Cache Ryujinx entre execucoes");
+            if (hasNxComputeBuild()) {
+                addPerfOption(content, "zelda_nx_compute_v1", "Compute nxnative/Ryujinx (teste)", true);
+                addPerfOption(content, "zelda_nx_compute_cache_v1", "Cache do compute nxnative", true);
+            }
             addPerfOption(content, "zelda_hash_span", "Verificacao de texturas por faixa");
             addPerfOption(content, "zelda_transfer_reuse_v1", "Reutilizar buffers e agrupar transferencias", hasNxNativeBuild());
             addPerfOption(content, "zelda_uniform_stream_v1", "Uniformes em snapshots reutilizaveis", hasUniformBuild());
@@ -397,6 +401,14 @@ public final class CastlevaniaSnxBootActivity extends Activity {
         } catch (IOException e) { return false; }
     }
 
+    private boolean hasNxComputeBuild() {
+        try (java.io.InputStream in = getAssets().open("licenses/Zelda-NXCompute.txt")) {
+            return in.read() >= 0;
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
     private void addPerfOption(LinearLayout content, String preference, String label, boolean initial) {
         Button option = new Button(this);
         option.setText(label + ": " + (getPreferences(MODE_PRIVATE).getBoolean(preference, initial) ? "ON" : "OFF"));
@@ -640,6 +652,8 @@ public final class CastlevaniaSnxBootActivity extends Activity {
             // Version 1 regressed on device. Its saved ON must not enable this
             // bounded integration automatically after an APK update.
             intent.putExtra("snx_d24_copies", hasD24CopiesBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_d24_copies_v2", false));
+            intent.putExtra("snx_nx_compute", hasNxComputeBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_nx_compute_v1", true));
+            intent.putExtra("snx_nx_compute_cache", hasNxComputeBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_nx_compute_cache_v1", true));
             if (hasEffectDepthBuild() && getPreferences(MODE_PRIVATE).getBoolean("zelda_effect_depth_v1", false)) {
                 if (getPreferences(MODE_PRIVATE).getBoolean("zelda_shadow_capture_v1", false) ||
                         getPreferences(MODE_PRIVATE).getBoolean("shader_capture", false))

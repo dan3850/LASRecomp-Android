@@ -1,0 +1,14 @@
+#version 450
+// Synthetic tiled-light workload, no extracted game instructions or data.
+layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+layout(std140, set=0, binding=0) uniform Support { vec4 unused_scale; } support_buffer;
+layout(std140, set=0, binding=5) uniform Driver { uvec4 data[64]; } driver;
+layout(std140, set=0, binding=7) uniform Lights { uvec4 data[1]; } lights;
+layout(std430, set=0, binding=1) readonly buffer Input { uint data[]; } input_lights;
+layout(std430, set=0, binding=2) buffer List { uint data[]; } tile_list;
+layout(std430, set=0, binding=3) buffer Counts { uint data[]; } tile_count;
+void main() {
+    uint tile = gl_WorkGroupID.y * driver.data[32].x + gl_WorkGroupID.x;
+    tile_list.data[tile] = input_lights.data[tile] + lights.data[0].x;
+    tile_count.data[tile] = tile + 1;
+}

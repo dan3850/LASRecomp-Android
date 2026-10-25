@@ -18,6 +18,12 @@ OUT="$HOME/scarletnx-zelda-shader-build/libscarletnx.so"
 restore_source() {
   local rc="$1" restore_failed=0
   trap - EXIT
+  if [ -f "$SRC/src/nx/gpu/vk/snx_nx_compute.h" ]; then
+    if ! python3 "$ROOT/tools/patch_scarletnx_zelda_nx_compute.py" "$SRC" --revert; then
+      echo "ERRO: falha restaurando compute/cache nxnative" >&2
+      restore_failed=1
+    fi
+  fi
   if [ -f "$SRC/src/nx/gpu/vk/snx_d24_pack.h" ]; then
     if ! python3 "$ROOT/tools/patch_scarletnx_zelda_d24_pack.py" "$SRC" --revert; then
       echo "ERRO: falha restaurando copias D24" >&2
@@ -246,6 +252,7 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda_lighting_diag.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_effect_depth.py" "$SRC"
   python3 "$ROOT/tools/patch_scarletnx_zelda_d24_pack.py" "$SRC"
+  python3 "$ROOT/tools/patch_scarletnx_zelda_nx_compute.py" "$SRC"
 fi
 export SCARLETNX_CASTLEVANIA_FSWZADD=1
 export SCARLETNX_RUNTIME_OUT="$OUT"

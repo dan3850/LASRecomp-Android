@@ -103,6 +103,9 @@ if [ "${SCARLETNX_ZELDA_PERF:-0}" = 1 ]; then
   if [ "${SCARLETNX_ZELDA_D24_COPIES:-0}" = 1 ]; then
     git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-D24Copies.txt"
   fi
+  if [ "${SCARLETNX_ZELDA_NX_COMPUTE:-0}" = 1 ]; then
+    git rev-parse HEAD > "$EXTRA/assets/licenses/Zelda-NXCompute.txt"
+  fi
 fi
 SNLIB="$EXTRA/lib/arm64-v8a"
 # Cross-check against the previous LASRecomp test's native library names.

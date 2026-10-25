@@ -142,6 +142,10 @@ public final class MarioSnxGameActivity extends SDLActivity {
                 zelda && getIntent().getBooleanExtra("snx_known_complete", false) ? "1" : "0");
         SDLActivity.nativeSetenv("SNX_RYU_PERSIST",
                 zelda && getIntent().getBooleanExtra("snx_ryu_persist", false) ? "1" : "0");
+        SDLActivity.nativeSetenv("SNX_NX_COMPUTE",
+                zelda && getIntent().getBooleanExtra("snx_nx_compute", false) ? "1" : "0");
+        SDLActivity.nativeSetenv("SNX_NX_COMPUTE_CACHE",
+                zelda && getIntent().getBooleanExtra("snx_nx_compute_cache", false) ? "1" : "0");
         SDLActivity.nativeSetenv("SNX_VK_HASH_SPAN",
                 zelda && getIntent().getBooleanExtra("snx_hash_span", false) ? "1" : "0");
         SDLActivity.nativeSetenv("SNX_VK_TRANSFER_REUSE",
