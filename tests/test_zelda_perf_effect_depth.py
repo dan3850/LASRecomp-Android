@@ -64,6 +64,9 @@ class EffectDepthTests(unittest.TestCase):
         launch = source.split('    private void startGame() {', 1)[1].split('    private String readLogs()', 1)[0]
         self.assertNotIn('throw new IOException("Desligue Capturar sombras', launch)
         self.assertIn('boolean effectDepthCapture = hasEffectDepthBuild()', launch)
+        self.assertNotIn(chr(92) + 'n            boolean effectDepthCapture', launch)
+        self.assertTrue(any(line.strip().startswith('boolean effectDepthCapture =') for line in launch.splitlines()))
+        self.assertTrue(any(line.strip().startswith('boolean shadowCaptureRequested =') for line in launch.splitlines()))
         self.assertIn('shaderCaptureRequested && !effectDepthCapture', launch)
         self.assertIn('shadowCaptureRequested && !effectDepthCapture', launch)
         self.assertIn('if (effectDepthCapture) {', launch)
