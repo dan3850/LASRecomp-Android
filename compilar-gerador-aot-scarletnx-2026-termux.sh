@@ -28,6 +28,20 @@ p.write_text(s)
 PY
   touch "$NATIVE_SRC/.lasrecomp-termux-aot-ready"
 fi
+# The Android runtime source contains a custom linker block with JNI_OnLoad,
+# NDK libc, and diagnostic map flags. Those must not reach a Termux executable.
+python3 - "$NATIVE_SRC/src/multicall/CMakeLists.txt" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); s=p.read_text()
+begin='    # BEGIN LASRECOMP_ANDROID_2026_LINK\n'
+end='    # END LASRECOMP_ANDROID_2026_LINK\n'
+if begin in s or end in s:
+    if s.count(begin)!=1 or s.count(end)!=1: raise SystemExit('ERRO: bloco de linker invalido')
+    left,rest=s.split(begin,1)
+    _,right=rest.split(end,1)
+    p.write_text(left+right)
+PY
 # Native Termux has ANDROID=true in CMake, but no NDK target/sysroot.
 # Fix only the native AOT copy; preserve Android runtime source untouched.
 python3 - "$NATIVE_SRC/src/common/cpu/recompiler/llvm/CMakeLists.txt" <<'PY'
