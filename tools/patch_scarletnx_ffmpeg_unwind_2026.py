@@ -2,7 +2,6 @@
 """Give FFmpeg's standalone configure the NDK's actual libunwind archive directory."""
 from pathlib import Path
 import subprocess
-import re
 import sys
 if len(sys.argv) != 3:
     raise SystemExit("Usage: patch_scarletnx_ffmpeg_unwind_2026.py SOURCE LIBUNWIND_DIR")
@@ -21,8 +20,13 @@ new = '         "--extra-ldflags=--target=${CMAKE_C_COMPILER_TARGET} -L' + str(l
 if data.count(old) == 1:
     data = data.replace(old, new)
 else:
-    pattern = r'         "--extra-ldflags=--target=\\$\\{CMAKE_C_COMPILER_TARGET\\} -L[^"\\n]+" --enable-pic\\)'
-    data, count = re.subn(pattern, lambda match: new, data)
+    lines = data.splitlines(keepends=True)
+    needle = '"--extra-ldflags=--target=${CMAKE_C_COMPILER_TARGET} -L'
+    matches = [i for i, line in enumerate(lines) if needle in line and '--enable-pic)' in line]
+    count = len(matches)
+    if count == 1:
+        lines[matches[0]] = new + '\\n'
+        data = ''.join(lines)
     if count != 1:
         raise SystemExit("FFmpeg Android linker anchor changed: expected one existing Android ldflags entry")
 path.write_text(data)
