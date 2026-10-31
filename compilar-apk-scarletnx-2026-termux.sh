@@ -154,21 +154,33 @@ if ! "$READELF" -d "$NATIVE" | grep -Eq 'NEEDED.*libc[.]so'; then
   echo "ERRO: libmain.so sem dependencia dinamica de libc.so; build nativa incorreta."
   exit 2
 fi
-# getauxval must come from Android's Bionic, not be defined by libmain.so.
-# A locally defined implementation was the crash site in the supplied tombstone.
+# Audit both full and dynamic symbol tables of the shipped native ELF.
 NM="$NDK/toolchains/llvm/prebuilt/bin/llvm-nm"
 [[ -x "$NM" ]] || { echo "ERRO: llvm-nm ausente"; exit 2; }
-if "$NM" -D --defined-only "$NATIVE" | grep -Eq '[[:space:]][TW][[:space:]]+getauxval(@@?.*)?
-echo "APK_CXX_RUNTIME_OK=$APK"
-echo "=== APKS GERADOS ==="
-find "$OUT/stage/gradle/outputs/apk" -type f -name '*.apk' -print
-echo "NOTA: o APK e o app original. O Zelda AOT permanece no staging privado e deve ser importado para games/ pelo app."
-; then
-  echo "ERRO CRITICO: libmain.so define getauxval localmente; risco de crash SIGSEGV."
-  echo "Corrija a origem da biblioteca Bionic antes de instalar."
+REPORT="$OUT/scarletnx-native-link-audit.txt"
+{
+  echo "SCARLETNX_NATIVE_LINK_AUDIT"
+  echo "UPSTREAM_COMMIT=$(git -C "$SRC" rev-parse HEAD)"
+  sha256sum "$NATIVE"
+  "$READELF" -n "$NATIVE" | grep -A 2 'Build ID' || true
+  echo "--- NEEDED ---"
+  "$READELF" -d "$NATIVE" | grep NEEDED || true
+  echo "--- GETAUXVAL SYMBOLS ---"
+  "$NM" -a "$NATIVE" 2>&1 | grep -i getauxval || true
+  "$NM" -D "$NATIVE" 2>&1 | grep -i getauxval || true
+} > "$REPORT"
+if "$NM" -a --defined-only "$NATIVE" 2>/dev/null | grep -Eq '[[:space:]][TtWw][[:space:]]+getauxval(@@?.*)?$' || \
+   "$NM" -D --defined-only "$NATIVE" 2>/dev/null | grep -Eq '[[:space:]][TtWw][[:space:]]+getauxval(@@?.*)?$'; then
+  echo "ERRO: getauxval definido em libmain.so; veja $REPORT"
   exit 2
 fi
 echo "ANDROID_GETAUXVAL_EXTERNAL_OK"
+if [[ -d "$HOME/storage/downloads" ]]; then
+  cp -f "$REPORT" "$HOME/storage/downloads/ScarletNX-native-link-audit.txt"
+  cp -f "$APK" "$HOME/storage/downloads/ScarletNX-debug.apk"
+  echo "APK_DOWNLOAD=$HOME/storage/downloads/ScarletNX-debug.apk"
+  echo "AUDIT_DOWNLOAD=$HOME/storage/downloads/ScarletNX-native-link-audit.txt"
+fi
 echo "ANDROID_BIONIC_LIBC_LINK_OK"
 echo "APK_CXX_RUNTIME_OK=$APK"
 echo "=== APKS GERADOS ==="
