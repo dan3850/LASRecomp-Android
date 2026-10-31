@@ -39,6 +39,42 @@ if [[ ! -f "$LLVM/arm64-v8a/lib/cmake/llvm/LLVMConfig.cmake" ]]; then
   echo "  ANDROID_NDK_ROOT='$NDK' ANDROID_HOME='$ANDROID_HOME' LLVM_VERSION=23.1.3 scripts/android-llvm.sh arm64-v8a '$LLVM/arm64-v8a'"
   exit 2
 fi
+# Install a Java-only diagnostic launcher without modifying native upstream sources.
+DIAG_SRC="$(cd "$(dirname "$0")" && pwd)/android/scarletnx-diagnostic/DiagnosticActivity.java"
+DIAG_DST="$SRC/dist/android/src/main/java/org/scarletnx/DiagnosticActivity.java"
+MANIFEST="$SRC/dist/android/src/main/AndroidManifest.xml"
+[[ -f "$DIAG_SRC" && -f "$MANIFEST" ]] || { echo "ERRO: arquivos do diagnostico ausentes"; exit 1; }
+cp "$DIAG_SRC" "$DIAG_DST"
+python3 - "$MANIFEST" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+s = p.read_text()
+if 'android:name=".DiagnosticActivity"' not in s:
+    old = '''            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>'''
+    if s.count(old) != 1:
+        raise SystemExit("ERRO: intent-filter launcher original inesperado")
+    s = s.replace(old, '', 1)
+    anchor = '''        <activity
+            android:name=".MainActivity"'''
+    new = '''        <activity
+            android:name=".DiagnosticActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+'''
+    if s.count(anchor) != 1:
+        raise SystemExit("ERRO: MainActivity nao encontrada no manifesto")
+    s = s.replace(anchor, new + anchor, 1)
+    p.write_text(s)
+print("DIAGNOSTIC_LAUNCHER_OK")
+PY
 echo "=== COMPILANDO APK ANDROID SCARLETNX (SEM RECOMPILAR ZELDA) ==="
 mkdir -p "$OUT"
 export SCARLETNX_BUILD_JOBS="${SCARLETNX_BUILD_JOBS:-2}"
