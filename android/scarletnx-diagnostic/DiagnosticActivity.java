@@ -14,6 +14,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.PrintWriter;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import android.util.Base64;
@@ -27,6 +29,7 @@ import java.util.Locale;
 public final class DiagnosticActivity extends Activity {
     private TextView report;
     private String log;
+    private static final int SAVE_LOG_REQUEST = 4301;
     private static final String PREF = "startup_diagnostic";
     private static final String PENDING = "launch_pending";
     private static final int MAX_TOMBSTONE_BYTES = 1048576;
@@ -54,6 +57,9 @@ public final class DiagnosticActivity extends Activity {
         Button copy = new Button(this);
         copy.setText("Copiar log");
         panel.addView(copy);
+        Button save = new Button(this);
+        save.setText("Salvar log TXT");
+        panel.addView(save);
         Button refresh = new Button(this);
         refresh.setText("Atualizar diagnostico");
         panel.addView(refresh);
@@ -80,7 +86,28 @@ public final class DiagnosticActivity extends Activity {
                 .setPrimaryClip(ClipData.newPlainText("ScarletNX diagnostic", log));
             android.widget.Toast.makeText(this, "Log copiado", android.widget.Toast.LENGTH_SHORT).show();
         });
+        save.setOnClickListener(v -> {
+            refresh();
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("text/plain");
+            intent.putExtra(Intent.EXTRA_TITLE, "ScarletNX-diagnostico-" +
+                new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".txt");
+            startActivityForResult(intent, SAVE_LOG_REQUEST);
+        });
         refresh.setOnClickListener(v -> refresh());
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != SAVE_LOG_REQUEST || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        try (OutputStream out = getContentResolver().openOutputStream(data.getData())) {
+            if (out == null) throw new java.io.IOException("Destino indisponivel");
+            out.write(log.getBytes(StandardCharsets.UTF_8));
+            android.widget.Toast.makeText(this, "Log TXT salvo", android.widget.Toast.LENGTH_LONG).show();
+        } catch (Exception error) {
+            android.widget.Toast.makeText(this, "Erro ao salvar TXT: " + error.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override protected void onResume() {
