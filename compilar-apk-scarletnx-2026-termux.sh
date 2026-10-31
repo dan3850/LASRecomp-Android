@@ -88,6 +88,13 @@ CXXLIB="$SYSROOT/usr/lib/aarch64-linux-android"
 # Termux clang may otherwise embed its own Bionic implementation in libmain.so.
 NDK_CLANG="$NDK/toolchains/llvm/prebuilt/bin/clang++"
 NDK_SYSROOT="$NDK/toolchains/llvm/prebuilt/sysroot"
+# Reject NDK wrappers that actually invoke Termux clang and startup objects.
+DRIVER_TRACE="$("$NDK_CLANG" --target=aarch64-none-linux-android24 -shared -### -x c++ /dev/null -o /dev/null 2>&1)"
+if grep -Eq '/data/data/com[.]termux/files/usr/(bin/(clang|ld[.]lld)|lib/crtbegin_so[.]o)' <<< "$DRIVER_TRACE"; then
+  echo "ERRO: NDK clang++ delega ao compilador/linker do Termux; nao gerar APK." >&2
+  echo "$DRIVER_TRACE" | grep -E 'clang-21|ld[.]lld|crtbegin_so[.]o' >&2 || true
+  exit 2
+fi
 DRIVER_TRACE="$("$NDK_CLANG" --target=aarch64-none-linux-android24 -shared -### -x c++ /dev/null -o /dev/null 2>&1)"
 if ! grep -Fq "$NDK_SYSROOT" <<< "$DRIVER_TRACE" || \
    grep -Eq '/data/data/com\\.termux/files/usr/(lib|bin|tmp)' <<< "$DRIVER_TRACE"; then
