@@ -14,5 +14,7 @@ echo "Zelda AOT: $ZELDA_SNX_CODE_SO"
 # Backport official ScarletNX 3692ba68: Link's Awakening needs U+25A1.
 # Keep the original ABI 12 game code; change only the runtime's bundled font.
 export SCARLETNX_ZELDA_DEJAVU_FONT=1
+# Conservative shader-only backport: SHFL to PT must not invalidate predicates.
+export SCARLETNX_ZELDA_SHFL_FIX=1
 python3 -m unittest discover -s tests -p "test_scarletnx_zelda_fonts.py"
 bash "$ROOT/compilar-castlevania-ryujinx-nativo-termux.sh" "$@"
