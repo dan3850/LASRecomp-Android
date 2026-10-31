@@ -16,10 +16,20 @@ for cmd in python3 unzip readelf zipalign apksigner keytool; do command -v "$cmd
 [ -s "$OLD" ] || die "APK original nao encontrada"
 [ -s "$NEW" ] || die "Nucleo novo nao encontrado"
 [ -s "$KEY" ] || die "Keystore ausente: $KEY. Configure SNX_SIGN_KEYSTORE, SNX_SIGN_ALIAS e SNX_SIGN_PASSWORD"
-readelf -h "$NEW" | grep -q AArch64 || die "Nucleo novo nao ARM64"
-readelf -Ws "$NEW" | grep -q 'JNI_OnLoad' || die "Nucleo sem JNI_OnLoad"
-unzip -Z1 "$OLD" | grep -qx 'lib/arm64-v8a/libscarletnx.so' || die "APK sem nucleo antigo"
-unzip -Z1 "$OLD" | grep -qx 'lib/arm64-v8a/libzelda_snx.so' || die "APK sem modulo Zelda"
+# Do not use grep -q on a large producer with pipefail: SIGPIPE produces a false failure.
+python3 - "$NEW" "$OLD" <<'PY'
+import subprocess,sys,zipfile
+new,old=sys.argv[1:]
+header=subprocess.check_output(["readelf","-h",new],text=True)
+if "AArch64" not in header: raise SystemExit("ERRO: Nucleo novo nao ARM64")
+symbols=subprocess.check_output(["readelf","-Ws",new],text=True)
+if not any(line.split()[-1]=="JNI_OnLoad" for line in symbols.splitlines() if line.split()):
+    raise SystemExit("ERRO: Nucleo sem JNI_OnLoad")
+with zipfile.ZipFile(old) as z:
+    for name in ("lib/arm64-v8a/libscarletnx.so","lib/arm64-v8a/libzelda_snx.so"):
+        if name not in z.namelist(): raise SystemExit("ERRO: APK sem "+name)
+print("ELF_JNI_ONLOAD_OK; APK_ZELDA_ORIGINAL_OK")
+PY
 # ABI 12 original versus 15 upstream: an ELF symbol alone cannot prove compatibility.
 # Require an explicit acknowledgement to avoid presenting this as a validated update.
 [ "${SNX_ALLOW_UNVERIFIED_ABI:-0}" = 1 ] || die "ABI 12 -> 15 ainda NAO comprovada. Para um teste experimental, execute: SNX_ALLOW_UNVERIFIED_ABI=1 bash $0"
