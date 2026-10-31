@@ -39,7 +39,7 @@ if [[ ! -f "$LLVM/arm64-v8a/lib/cmake/llvm/LLVMConfig.cmake" ]]; then
   echo "  ANDROID_NDK_ROOT='$NDK' ANDROID_HOME='$ANDROID_HOME' LLVM_VERSION=23.1.3 scripts/android-llvm.sh arm64-v8a '$LLVM/arm64-v8a'"
   exit 2
 fi
-# Install a Java-only diagnostic launcher without modifying native upstream sources.
+# Restore original ScarletNX MainActivity launcher.
 DIAG_SRC="$(cd "$(dirname "$0")" && pwd)/android/scarletnx-diagnostic/DiagnosticActivity.java"
 DIAG_DST="$SRC/dist/android/src/main/java/org/scarletnx/DiagnosticActivity.java"
 MANIFEST="$SRC/dist/android/src/main/AndroidManifest.xml"
@@ -48,32 +48,27 @@ cp "$DIAG_SRC" "$DIAG_DST"
 python3 - "$MANIFEST" <<'PY'
 import sys
 from pathlib import Path
-p = Path(sys.argv[1])
-s = p.read_text()
-if 'android:name=".DiagnosticActivity"' not in s:
-    old = '''            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>'''
-    if s.count(old) != 1:
-        raise SystemExit("ERRO: intent-filter launcher original inesperado")
-    s = s.replace(old, '', 1)
-    anchor = '''        <activity
-            android:name=".MainActivity"'''
-    new = '''        <activity
-            android:name=".DiagnosticActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-'''
-    if s.count(anchor) != 1:
-        raise SystemExit("ERRO: MainActivity nao encontrada no manifesto")
-    s = s.replace(anchor, new + anchor, 1)
-    p.write_text(s)
-print("DIAGNOSTIC_LAUNCHER_OK")
+import xml.etree.ElementTree as ET
+p=Path(sys.argv[1])
+ET.register_namespace("android","http://schemas.android.com/apk/res/android")
+tree=ET.parse(p); root=tree.getroot()
+ns="{http://schemas.android.com/apk/res/android}"
+app=root.find("application")
+if app is None: raise SystemExit("ERRO: application ausente")
+main=next((a for a in app.findall("activity") if a.get(ns+"name")==".MainActivity"),None)
+if main is None: raise SystemExit("ERRO: MainActivity ausente")
+for a in app.findall("activity"):
+    for filt in list(a.findall("intent-filter")):
+        if any(c.get(ns+"name")=="android.intent.category.LAUNCHER" for c in filt.findall("category")):
+            a.remove(filt)
+filt=ET.SubElement(main,"intent-filter")
+ET.SubElement(filt,"action",{ns+"name":"android.intent.action.MAIN"})
+ET.SubElement(filt,"category",{ns+"name":"android.intent.category.LAUNCHER"})
+diag=next((a for a in app.findall("activity") if a.get(ns+"name")==".DiagnosticActivity"),None)
+if diag is None: ET.SubElement(app,"activity",{ns+"name":".DiagnosticActivity",ns+"exported":"false"})
+else: diag.set(ns+"exported","false")
+tree.write(p,encoding="unicode",xml_declaration=True)
+print("ORIGINAL_SCARLETNX_LAUNCHER_OK")
 PY
 echo "=== COMPILANDO APK ANDROID SCARLETNX (SEM RECOMPILAR ZELDA) ==="
 mkdir -p "$OUT"
@@ -145,6 +140,15 @@ APK="$OUT/stage/gradle/outputs/apk/debug/ScarletNX-debug.apk"
 if ! unzip -Z1 "$APK" | grep -qx 'lib/arm64-v8a/libc++_shared.so'; then
   echo "ERRO: APK nao contem libc++_shared.so"; exit 1
 fi
+# Reject broken Bionic linkage before shipping the APK.
+READELF="$NDK/toolchains/llvm/prebuilt/bin/llvm-readelf"
+NATIVE="$OUT/stage/lib/arm64-v8a/libmain.so"
+[[ -s "$NATIVE" && -x "$READELF" ]] || { echo "ERRO: nao foi possivel validar libmain.so"; exit 2; }
+if ! "$READELF" -d "$NATIVE" | grep -Eq 'NEEDED.*libc[.]so'; then
+  echo "ERRO: libmain.so sem dependencia dinamica de libc.so; build nativa incorreta."
+  exit 2
+fi
+echo "ANDROID_BIONIC_LIBC_LINK_OK"
 echo "APK_CXX_RUNTIME_OK=$APK"
 echo "=== APKS GERADOS ==="
 find "$OUT/stage/gradle/outputs/apk" -type f -name '*.apk' -print
