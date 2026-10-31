@@ -14,6 +14,9 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.PrintWriter;
+import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
+import android.util.Base64;
 import java.io.StringWriter;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -100,12 +103,25 @@ public final class DiagnosticActivity extends Activity {
                 ActivityManager am = (ActivityManager)getSystemService(ACTIVITY_SERVICE);
                 List<ApplicationExitInfo> exits = am.getHistoricalProcessExitReasons(null, 0, 8);
                 sb.append("\nHistorico de encerramentos Android:\n");
+                int traces = 0;
                 for (ApplicationExitInfo e : exits) {
                     sb.append("Processo: ").append(e.getProcessName())
                       .append(" | motivo: ").append(e.getReason())
                       .append(" | status: ").append(e.getStatus())
                       .append(" | hora: ").append(new Date(e.getTimestamp()))
                       .append(" | descricao: ").append(e.getDescription()).append("\n");
+                    if (e.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE && traces++ < 2) {
+                        try (InputStream stream = e.getTraceInputStream()) {
+                            if (stream == null) { sb.append("Tombstone: Android nao disponibilizou\n"); continue; }
+                            ByteArrayOutputStream out = new ByteArrayOutputStream();
+                            byte[] buf = new byte[4096];
+                            int n;
+                            while (out.size() < 49152 && (n = stream.read(buf, 0, Math.min(buf.length, 49152 - out.size()))) > 0) out.write(buf, 0, n);
+                            byte[] raw = out.toByteArray();
+                            sb.append("Tombstone bruto (Base64, ate 48 KiB; pode ser protobuf):\n")
+                              .append(Base64.encodeToString(raw, Base64.NO_WRAP)).append("\n");
+                        } catch (Exception err) { sb.append("Tombstone indisponivel: ").append(err).append("\n"); }
+                    }
                 }
             } catch (Exception e) { sb.append("\nHistorico indisponivel: ").append(e).append("\n"); }
         }
