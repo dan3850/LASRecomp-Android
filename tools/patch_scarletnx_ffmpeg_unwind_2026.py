@@ -15,8 +15,9 @@ if any(x in str(libdir) for x in ('"', ';', '$', '\n', '\r', '\\', ' ')):
     raise SystemExit("Unsupported path")
 path = src / "cmake/ffmpeg.cmake"
 data = path.read_text()
-# Repair the literal backslash-n accidentally written by the previous patch version.
-data = data.replace('\\\\nendif()', '\\nendif()')
+# Repair both escaped-newline variants left by earlier experimental patches.
+data = data.replace(chr(92) + 'nendif()', chr(10) + 'endif()')
+data = data.replace(chr(92) + chr(92) + 'nendif()', chr(10) + 'endif()')
 old = '         --extra-ldflags=--target=${CMAKE_C_COMPILER_TARGET} --enable-pic)'
 new = '         "--extra-ldflags=--target=${CMAKE_C_COMPILER_TARGET} -L' + str(libdir) + '" --enable-pic)'
 if data.count(old) == 1:
