@@ -142,6 +142,12 @@ restore_source() {
         restore_failed=1
       fi
     fi
+    if [ "${SCARLETNX_ZELDA_CONDITIONAL_EXIT:-0}" = 1 ]; then
+      if ! python3 "$ROOT/tools/patch_scarletnx_zelda_conditional_exit.py" "$SRC" --revert; then
+        echo "ERRO: falha restaurando conditional EXIT" >&2
+        restore_failed=1
+      fi
+    fi
     if ! python3 "$ROOT/tools/patch_scarletnx_bindless_diag.py" "$SRC" --revert >/dev/null; then
       echo "AVISO: nao foi possivel restaurar o diagnostico bindless no cache." >&2
       restore_failed=1
@@ -230,6 +236,9 @@ if [ "${SCARLETNX_ZELDA_SHFL_FIX:-0}" = 1 ]; then
 fi
 if [ "${SCARLETNX_ZELDA_SHADER_WINDOW:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda_shader_window.py" "$SRC"
+fi
+if [ "${SCARLETNX_ZELDA_CONDITIONAL_EXIT:-0}" = 1 ]; then
+  python3 "$ROOT/tools/patch_scarletnx_zelda_conditional_exit.py" "$SRC"
 fi
 if [ "${SCARLETNX_ZELDA60_TOGGLE:-0}" = 1 ]; then
   python3 "$ROOT/tools/patch_scarletnx_zelda60_toggle.py" "$SRC" --mode runtime
