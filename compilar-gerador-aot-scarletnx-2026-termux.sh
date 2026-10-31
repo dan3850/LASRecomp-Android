@@ -42,6 +42,16 @@ if begin in s or end in s:
     _,right=rest.split(end,1)
     p.write_text(left+right)
 PY
+# Build the multicall CLI as an executable in Termux (not libscarletnx.so).
+python3 - "$NATIVE_SRC/src/multicall/CMakeLists.txt" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); s=p.read_text()
+old='if(ANDROID)\n    # the app (dist/android): its game activity loads libscarletnx.so'
+new='if(ANDROID AND NOT SNX_TERMUX_NATIVE_AOT)\n    # the app (dist/android): its game activity loads libscarletnx.so'
+if old in s: p.write_text(s.replace(old,new,1))
+elif new not in s: raise SystemExit('ERRO: alvo multicall mudou')
+PY
 # Native Termux has ANDROID=true in CMake, but no NDK target/sysroot.
 # Fix only the native AOT copy; preserve Android runtime source untouched.
 python3 - "$NATIVE_SRC/src/common/cpu/recompiler/llvm/CMakeLists.txt" <<'PY'
@@ -53,6 +63,9 @@ new='if(ANDROID AND NOT SNX_TERMUX_NATIVE_AOT)\n    set(snx_rtlib_flags --target
 if old in s: p.write_text(s.replace(old,new,1))
 elif new not in s: raise SystemExit('ERRO: rtlib CMake alterado no upstream')
 PY
+# CMake cannot change an existing target from SHARED to EXECUTABLE in place:
+# use a new native CLI build tree once, leaving previous compiled artifacts safe.
+BUILD="$HOME/.cache/lasrecomp-scarletnx-upgrade/termux-aot-cli-2026"
 mkdir -p "$BUILD"
 echo "=== CONFIGURANDO GERADOR NATIVO TERMUX (SEM NDK) ==="
 cmake -S "$NATIVE_SRC" -B "$BUILD" -G Ninja \
