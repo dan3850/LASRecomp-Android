@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Stage a PRIVATE ScarletNX ABI-12 Zelda AOT module for Android.
+# Stage a PRIVATE ScarletNX ABI-15 Zelda AOT module for Android.
 # This never compiles or publishes game-derived code.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -8,7 +8,7 @@ SOURCE="${1:-${ZELDA_SNX_AOT_SO:-}}"
 if [ -z "$SOURCE" ]; then
   echo "ERRO: informe o caminho do modulo Zelda AOT gerado pelo ScarletNX 2026."
   echo "Uso: bash preparar-modulo-zelda-scarletnx-2026-termux.sh /caminho/libzelda_snx.so"
-  echo "IMPORTANTE: liblasgame.so antiga nao e um modulo ScarletNX ABI 12."
+  echo "IMPORTANTE: liblasgame.so antiga nao e um modulo ScarletNX ABI 15."
   exit 2
 fi
 [ -s "$SOURCE" ] || { echo "ERRO: modulo ausente: $SOURCE"; exit 1; }
