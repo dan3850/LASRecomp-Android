@@ -15,8 +15,22 @@ fi
 [[ "$(git -C "$SRC" rev-parse HEAD)" == "05324b57629d0894506b31beb2c72869138b7ad1" ]] || { echo "ERRO: upstream nao corresponde a versao auditada"; exit 1; }
 export ANDROID_NDK_ROOT="$NDK"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
-export GRADLE="${GRADLE:-gradle}"
-for cmd in cmake ninja "$GRADLE" javac; do command -v "$cmd" >/dev/null || { echo "ERRO: ferramenta ausente: $cmd"; exit 1; }; done
+if [[ -z "${GRADLE:-}" ]]; then
+  if command -v gradle >/dev/null 2>&1; then GRADLE="$(command -v gradle)"
+  else
+    for candidate in "$HOME/gradle/bin/gradle" "$HOME/gradle-9.2.1/bin/gradle" "$HOME/gradle-9.1.0/bin/gradle" "$PREFIX/bin/gradle"; do
+      if [[ -x "$candidate" ]]; then GRADLE="$candidate"; break; fi
+    done
+  fi
+fi
+if [[ -z "${GRADLE:-}" ]]; then
+  echo "ERRO: Gradle nao encontrado. Procure: find \"\$HOME\" -maxdepth 5 -type f -path '*/bin/gradle' 2>/dev/null"
+  echo "Defina GRADLE=/caminho/para/bin/gradle (Gradle 9)."
+  exit 2
+fi
+export GRADLE
+echo "Gradle localizado: $GRADLE"
+for cmd in cmake ninja javac; do command -v "$cmd" >/dev/null || { echo "ERRO: ferramenta ausente: $cmd"; exit 1; }; done
 if [[ ! -f "$LLVM/arm64-v8a/lib/cmake/llvm/LLVMConfig.cmake" ]]; then
   echo "=== LLVM ANDROID AINDA NAO COMPILADO ==="
   echo "O libLLVM.so do Termux nao substitui a toolchain LLVM NDK do APK."
