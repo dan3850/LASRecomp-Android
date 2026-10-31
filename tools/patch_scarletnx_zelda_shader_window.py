@@ -38,6 +38,9 @@ def apply(root: Path, revert: bool = False):
         pairs = [(new, old) for old, new in reversed(pairs)]
     if all(data.count(new) == 1 and data.count(old) == 0 for old, new in pairs):
         return
+    # Revert must be safe even if the build failed before applying this optional patch.
+    if revert and all(data.count(old) == 0 and data.count(new) == 1 for old, new in pairs):
+        return
     # Validate every anchor before modifying any content: partial patches fail closed.
     if not all(data.count(old) == 1 and data.count(new) == 0 for old, new in pairs):
         raise ValueError("Unknown pipeline layout or partial backport; source unchanged")
