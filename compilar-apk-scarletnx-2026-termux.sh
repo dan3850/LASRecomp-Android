@@ -44,7 +44,25 @@ mkdir -p "$OUT"
 export SCARLETNX_BUILD_JOBS="${SCARLETNX_BUILD_JOBS:-2}"
 # The official script chooses the device CPU count; keep build bounded via CMAKE_BUILD_PARALLEL_LEVEL.
 export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
-bash "$SRC/scripts/android-apk.sh" "$OUT" "$LLVM" arm64-v8a
+# LLVM Android was compiled with API 24; the runtime must use the same API.
+export ANDROID_API=24
+LIB="$NDK/toolchains/llvm/prebuilt/lib/clang/21/lib/aarch64-none-linux-android33"
+SYSROOT="$NDK/toolchains/llvm/prebuilt/sysroot"
+CXXLIB="$SYSROOT/usr/lib/aarch64-linux-android"
+[[ -f "$LIB/libatomic.a" && -f "$LIB/libunwind.a" && -f "$CXXLIB/libc++_shared.so" ]] || {
+  echo "ERRO: bibliotecas ARM64 do NDK incompletas"; exit 1;
+}
+LINK_FLAGS="-L$LIB -L$CXXLIB"
+# Remove only CMake configuration from previous failed API 21 attempt.
+if [[ -f "$OUT/arm64-v8a/CMakeCache.txt" ]] && grep -q 'ANDROID_PLATFORM:.*android-21' "$OUT/arm64-v8a/CMakeCache.txt"; then
+  rm -f "$OUT/arm64-v8a/CMakeCache.txt"
+fi
+echo "Android API: $ANDROID_API"
+echo "Bibliotecas NDK: $LINK_FLAGS"
+bash "$SRC/scripts/android-apk.sh" "$OUT" "$LLVM" arm64-v8a -- \
+  "-DCMAKE_EXE_LINKER_FLAGS=$LINK_FLAGS" \
+  "-DCMAKE_SHARED_LINKER_FLAGS=$LINK_FLAGS" \
+  "-DCMAKE_MODULE_LINKER_FLAGS=$LINK_FLAGS"
 echo "=== APKS GERADOS ==="
 find "$OUT/stage/gradle/outputs/apk" -type f -name '*.apk' -print
 echo "NOTA: o APK e o app original. O Zelda AOT permanece no staging privado e deve ser importado para games/ pelo app."
