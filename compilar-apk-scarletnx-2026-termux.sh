@@ -53,6 +53,23 @@ CXXLIB="$SYSROOT/usr/lib/aarch64-linux-android"
   echo "ERRO: bibliotecas ARM64 do NDK incompletas"; exit 1;
 }
 LINK_FLAGS="-L$LIB -L$CXXLIB"
+# OpenSSL invokes the NDK compiler by its standard target-prefixed name.
+# Termux-native NDK adaptations may omit these wrappers. Create them in a
+# private PATH directory, never inside the NDK.
+WRAPPER_DIR="$ROOT/ndk-bin"
+mkdir -p "$WRAPPER_DIR"
+for api in 21 24; do
+  for compiler in clang clang++; do
+    wrapper="$WRAPPER_DIR/aarch64-linux-android${api}-$compiler"
+    printf '#!/data/data/com.termux/files/usr/bin/sh\nexec "%s" --target=aarch64-none-linux-android%s "$@"\n' \
+      "$NDK/toolchains/llvm/prebuilt/bin/$compiler" "$api" > "$wrapper"
+    chmod 755 "$wrapper"
+  done
+done
+# ExternalProject's OpenSSL configure/build receives PATH through cmake -E env.
+export PATH="$WRAPPER_DIR:$PATH"
+echo "OpenSSL compiler: $(command -v aarch64-linux-android24-clang)"
+
 # Remove only CMake configuration from previous failed API 21 attempt.
 if [[ -f "$OUT/arm64-v8a/CMakeCache.txt" ]] && grep -q 'ANDROID_PLATFORM:.*android-21' "$OUT/arm64-v8a/CMakeCache.txt"; then
   rm -f "$OUT/arm64-v8a/CMakeCache.txt"
