@@ -24,6 +24,16 @@ NDK_LIB="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/sysroot/usr/lib/aarch64-linu
 [ -s "$NDK_LIB/libc.so" ] || { echo "ERRO: libc Android26 ausente"; exit 1; }
 [ -s "$PREFIX/lib/libc++_shared.so" ] || { echo "ERRO: libc++_shared.so Termux ausente"; exit 1; }
 [ -x "$PREFIX/bin/llvm-config" ] || { echo "ERRO: llvm-config ausente"; exit 1; }
+# FFmpeg runs its own configure, which does not inherit CMake's linker search directories.
+UNWIND=""
+while IFS= read -r candidate; do
+  case "$candidate" in
+    */aarch64/*|*/aarch64-linux-android/*|*/linux/*) UNWIND="$candidate"; break ;;
+  esac
+done < <(find "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt" -type f -name libunwind.a 2>/dev/null)
+[ -n "$UNWIND" ] || { echo "ERRO: libunwind.a nao encontrada no NDK"; exit 1; }
+python3 "$ROOT/tools/patch_scarletnx_ffmpeg_unwind_2026.py" "$SRC" "$(dirname "$UNWIND")"
+echo "NDK_LIBUNWIND=$UNWIND"
 mkdir -p "$BASE/output" "$BASE/logs"
 LOG="$BASE/logs/build-$(date +%Y%m%d-%H%M%S).log"
 echo "BUILD_LOG=$LOG"
