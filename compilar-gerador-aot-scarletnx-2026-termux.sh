@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 [ "$(git -C "$ROOT" branch --show-current)" = android/scarletnx-full-upgrade ] || { echo "ERRO: branch incorreta"; exit 1; }
 SRC="${SCARLETNX_UPGRADE_SOURCE:-$HOME/.cache/lasrecomp-scarletnx-upgrade/ScarletNX}"
-BUILD="$HOME/.cache/lasrecomp-scarletnx-upgrade/termux-aot-tools-2026"
+BUILD="$HOME/.cache/lasrecomp-scarletnx-upgrade/termux-aot-tools-native-2026"
 [ "$(git -C "$SRC" rev-parse HEAD)" = 05324b57629d0894506b31beb2c72869138b7ad1 ] || { echo "ERRO: upstream inesperado"; exit 1; }
 for t in cmake ninja clang clang++ llvm-config; do command -v "$t" >/dev/null || { echo "ERRO: falta $t"; exit 1; }; done
 # Termux is Android, but it is not an NDK cross-build. Patch only an isolated
