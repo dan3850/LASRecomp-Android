@@ -88,6 +88,19 @@ CXXLIB="$SYSROOT/usr/lib/aarch64-linux-android"
 [[ -f "$LIB/libatomic.a" && -f "$LIB/libunwind.a" && -f "$CXXLIB/libc++_shared.so" ]] || {
   echo "ERRO: bibliotecas ARM64 do NDK incompletas"; exit 1;
 }
+# Reject a Termux-hosted clang masquerading as an NDK toolchain. A proper
+# Android NDK link must use the NDK sysroot, crtbegin_so.o and libc.so.
+# Termux clang may otherwise embed its own Bionic implementation in libmain.so.
+NDK_CLANG="$NDK/toolchains/llvm/prebuilt/bin/clang++"
+NDK_SYSROOT="$NDK/toolchains/llvm/prebuilt/sysroot"
+DRIVER_TRACE="$("$NDK_CLANG" --target=aarch64-none-linux-android24 -shared -### -x c++ /dev/null -o /dev/null 2>&1)"
+if ! grep -Fq "$NDK_SYSROOT" <<< "$DRIVER_TRACE" || \
+   grep -Eq '/data/data/com\\.termux/files/usr/(lib|bin|tmp)' <<< "$DRIVER_TRACE"; then
+  echo "ERRO: clang do NDK usa bibliotecas ou sysroot do Termux." >&2
+  echo "Nao compilar libmain.so: toolchain Android contaminada." >&2
+  echo "$DRIVER_TRACE" | grep -E 'ld\\.lld|crtbegin|crtend|sysroot| -lc' >&2 || true
+  exit 2
+fi
 LINK_FLAGS="-L$LIB -L$CXXLIB"
 # OpenSSL invokes the NDK compiler by its standard target-prefixed name.
 # Termux-native NDK adaptations may omit these wrappers. Create them in a
