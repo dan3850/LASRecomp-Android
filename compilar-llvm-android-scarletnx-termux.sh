@@ -32,12 +32,12 @@ printf 'int main(){return 0;}\n' > "$ROOT/ndk-link-test.cpp"
 "$NDK/toolchains/llvm/prebuilt/bin/clang" --target=aarch64-none-linux-android24 --sysroot="$SYSROOT" $LINK_FLAGS "$ROOT/ndk-link-test.c" -o "$ROOT/ndk-link-test"
 "$NDK/toolchains/llvm/prebuilt/bin/clang++" --target=aarch64-none-linux-android24 --sysroot="$SYSROOT" $LINK_FLAGS "$ROOT/ndk-link-test.cpp" -o "$ROOT/ndk-link-test-cxx"
 file "$ROOT/ndk-link-test-cxx"
-echo "=== TESTANDO FLAGS EXATAS DO CMAKE ==="
+echo "=== TESTANDO LINKER C++ SEM FLAG LEGADA ==="
 if ! "$NDK/toolchains/llvm/prebuilt/bin/clang++" \
  --target=aarch64-none-linux-android21 --sysroot="$SYSROOT" \
- -static-libstdc++ $LINK_FLAGS "$ROOT/ndk-link-test.cpp" \
+ $LINK_FLAGS "$ROOT/ndk-link-test.cpp" \
  -latomic -lm -o "$ROOT/ndk-link-test-cmake"; then
- echo "ERRO: O linker falha com -static-libstdc++ (mesmas flags do CMake)."
+ echo "ERRO: O linker C++ continua falhando sem a flag legada."
  echo "Verificando libc++ e links simbolicos:"
  ls -l "$CXXLIB/libc++_shared.so" "$SYSROOT/usr/lib/aarch64-linux-android/21/libc++_shared.so" 2>&1 || true
  echo "Bibliotecas libc++ existentes:"
