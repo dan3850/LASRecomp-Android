@@ -34,7 +34,7 @@ printf 'int main(){return 0;}\n' > "$ROOT/ndk-link-test.cpp"
 file "$ROOT/ndk-link-test-cxx"
 echo "=== TESTANDO LINKER C++ SEM FLAG LEGADA ==="
 if ! "$NDK/toolchains/llvm/prebuilt/bin/clang++" \
- --target=aarch64-none-linux-android21 --sysroot="$SYSROOT" \
+ --target=aarch64-none-linux-android24 --sysroot="$SYSROOT" \
  $LINK_FLAGS "$ROOT/ndk-link-test.cpp" \
  -latomic -lm -o "$ROOT/ndk-link-test-cmake"; then
  echo "ERRO: O linker C++ continua falhando sem a flag legada."
@@ -46,12 +46,13 @@ if ! "$NDK/toolchains/llvm/prebuilt/bin/clang++" \
  exit 1
 fi
 echo "LINKER_CMAKE_OK"
-echo "=== COMPILANDO LLVM ANDROID ==="
+echo "=== COMPILANDO LLVM ANDROID (API 24) ==="
 echo "Bibliotecas C++: $CXXLIB"
 echo "Log: $LOG"
 (
  cd "$SRC"
  LLVM_VERSION=23.1.3 bash scripts/android-llvm.sh arm64-v8a "$LLVM" -- \
+  "-DANDROID_PLATFORM=android-24" \
   "-DCMAKE_EXE_LINKER_FLAGS=$LINK_FLAGS" \
   "-DCMAKE_SHARED_LINKER_FLAGS=$LINK_FLAGS" \
   "-DCMAKE_MODULE_LINKER_FLAGS=$LINK_FLAGS"
