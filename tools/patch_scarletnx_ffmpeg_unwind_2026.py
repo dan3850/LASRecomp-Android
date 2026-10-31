@@ -15,6 +15,8 @@ if any(x in str(libdir) for x in ('"', ';', '$', '\n', '\r', '\\', ' ')):
     raise SystemExit("Unsupported path")
 path = src / "cmake/ffmpeg.cmake"
 data = path.read_text()
+# Repair the literal backslash-n accidentally written by the previous patch version.
+data = data.replace('\\\\nendif()', '\\nendif()')
 old = '         --extra-ldflags=--target=${CMAKE_C_COMPILER_TARGET} --enable-pic)'
 new = '         "--extra-ldflags=--target=${CMAKE_C_COMPILER_TARGET} -L' + str(libdir) + '" --enable-pic)'
 if data.count(old) == 1:
@@ -25,7 +27,7 @@ else:
     matches = [i for i, line in enumerate(lines) if needle in line and '--enable-pic)' in line]
     count = len(matches)
     if count == 1:
-        lines[matches[0]] = new + '\\n'
+        lines[matches[0]] = new + '\n'
         data = ''.join(lines)
     if count != 1:
         raise SystemExit("FFmpeg Android linker anchor changed: expected one existing Android ldflags entry")
