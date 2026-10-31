@@ -25,13 +25,20 @@ NDK_LIB="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/sysroot/usr/lib/aarch64-linu
 [ -s "$PREFIX/lib/libc++_shared.so" ] || { echo "ERRO: libc++_shared.so Termux ausente"; exit 1; }
 [ -x "$PREFIX/bin/llvm-config" ] || { echo "ERRO: llvm-config ausente"; exit 1; }
 # FFmpeg runs its own configure, which does not inherit CMake's linker search directories.
+# Require an AArch64 runtime archive; reject host x86_64 archives.
 UNWIND=""
 while IFS= read -r candidate; do
   case "$candidate" in
-    */aarch64/*|*/aarch64-linux-android/*|*/linux/*) UNWIND="$candidate"; break ;;
+    */aarch64/*/libunwind.a|*/aarch64-linux-android/*/libunwind.a|*/linux/aarch64/libunwind.a)
+      UNWIND="$candidate"; break ;;
   esac
 done < <(find "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt" -type f -name libunwind.a 2>/dev/null)
-[ -n "$UNWIND" ] || { echo "ERRO: libunwind.a nao encontrada no NDK"; exit 1; }
+if [ -z "$UNWIND" ]; then
+  echo "ERRO: libunwind.a ARM64 nao localizada; nao usarei biblioteca x86_64."
+  echo "Bibliotecas encontradas:"
+  find "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt" -type f -name libunwind.a 2>/dev/null
+  exit 1
+fi
 python3 "$ROOT/tools/patch_scarletnx_ffmpeg_unwind_2026.py" "$SRC" "$(dirname "$UNWIND")"
 echo "NDK_LIBUNWIND=$UNWIND"
 mkdir -p "$BASE/output" "$BASE/logs"
