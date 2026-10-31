@@ -28,6 +28,17 @@ p.write_text(s)
 PY
   touch "$NATIVE_SRC/.lasrecomp-termux-aot-ready"
 fi
+# Native Termux has ANDROID=true in CMake, but no NDK target/sysroot.
+# Fix only the native AOT copy; preserve Android runtime source untouched.
+python3 - "$NATIVE_SRC/src/common/cpu/recompiler/llvm/CMakeLists.txt" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); s=p.read_text()
+old='if(ANDROID)\n    set(snx_rtlib_flags --target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT})'
+new='if(ANDROID AND NOT SNX_TERMUX_NATIVE_AOT)\n    set(snx_rtlib_flags --target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT})'
+if old in s: p.write_text(s.replace(old,new,1))
+elif new not in s: raise SystemExit('ERRO: rtlib CMake alterado no upstream')
+PY
 mkdir -p "$BUILD"
 echo "=== CONFIGURANDO GERADOR NATIVO TERMUX (SEM NDK) ==="
 cmake -S "$NATIVE_SRC" -B "$BUILD" -G Ninja \
