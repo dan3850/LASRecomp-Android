@@ -7,12 +7,33 @@ SRC="${SCARLETNX_UPGRADE_SOURCE:-$HOME/.cache/lasrecomp-scarletnx-upgrade/Scarle
 BUILD="$HOME/.cache/lasrecomp-scarletnx-upgrade/termux-aot-tools-2026"
 [ "$(git -C "$SRC" rev-parse HEAD)" = 05324b57629d0894506b31beb2c72869138b7ad1 ] || { echo "ERRO: upstream inesperado"; exit 1; }
 for t in cmake ninja clang clang++ llvm-config; do command -v "$t" >/dev/null || { echo "ERRO: falta $t"; exit 1; }; done
+# Termux is Android, but it is not an NDK cross-build. Patch only an isolated
+# source copy for the native tool, never the already-built Android runtime.
+NATIVE_SRC="$HOME/.cache/lasrecomp-scarletnx-upgrade/ScarletNX-termux-aot-source"
+if [ ! -f "$NATIVE_SRC/.lasrecomp-termux-aot-ready" ]; then
+  mkdir -p "$NATIVE_SRC"
+  cp -a "$SRC/." "$NATIVE_SRC/"
+  python3 - "$NATIVE_SRC/cmake/openssl.cmake" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1])
+s=p.read_text()
+needle='if(ANDROID)\n    if(ANDROID_ABI STREQUAL "arm64-v8a")'
+assert needle in s, "OpenSSL CMake upstream changed"
+s=s.replace(needle, 'if(ANDROID AND NOT SNX_TERMUX_NATIVE_AOT)\n    if(ANDROID_ABI STREQUAL "arm64-v8a")',1)
+needle2='if(ANDROID)\n    list(APPEND snx_openssl_args -D__ANDROID_API__='
+assert needle2 in s
+s=s.replace(needle2,'if(ANDROID AND NOT SNX_TERMUX_NATIVE_AOT)\n    list(APPEND snx_openssl_args -D__ANDROID_API__=',1)
+p.write_text(s)
+PY
+  touch "$NATIVE_SRC/.lasrecomp-termux-aot-ready"
+fi
 mkdir -p "$BUILD"
 echo "=== CONFIGURANDO GERADOR NATIVO TERMUX (SEM NDK) ==="
-cmake -S "$SRC" -B "$BUILD" -G Ninja \
+cmake -S "$NATIVE_SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_C_COMPILER="$PREFIX/bin/clang" \
   -DCMAKE_CXX_COMPILER="$PREFIX/bin/clang++" \
-  -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_NX=ON \
+  -DSNX_TERMUX_NATIVE_AOT=ON -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_NX=ON \
   -DSNX_BUILD_GNUABI=OFF -DSNX_BUILD_3DS=OFF \
   -DSNX_BUILD_VITA=OFF -DSNX_BUILD_AGB=OFF \
   -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF \
