@@ -32,6 +32,20 @@ printf 'int main(){return 0;}\n' > "$ROOT/ndk-link-test.cpp"
 "$NDK/toolchains/llvm/prebuilt/bin/clang" --target=aarch64-none-linux-android24 --sysroot="$SYSROOT" $LINK_FLAGS "$ROOT/ndk-link-test.c" -o "$ROOT/ndk-link-test"
 "$NDK/toolchains/llvm/prebuilt/bin/clang++" --target=aarch64-none-linux-android24 --sysroot="$SYSROOT" $LINK_FLAGS "$ROOT/ndk-link-test.cpp" -o "$ROOT/ndk-link-test-cxx"
 file "$ROOT/ndk-link-test-cxx"
+echo "=== TESTANDO FLAGS EXATAS DO CMAKE ==="
+if ! "$NDK/toolchains/llvm/prebuilt/bin/clang++" \
+ --target=aarch64-none-linux-android21 --sysroot="$SYSROOT" \
+ -static-libstdc++ $LINK_FLAGS "$ROOT/ndk-link-test.cpp" \
+ -latomic -lm -o "$ROOT/ndk-link-test-cmake"; then
+ echo "ERRO: O linker falha com -static-libstdc++ (mesmas flags do CMake)."
+ echo "Verificando libc++ e links simbolicos:"
+ ls -l "$CXXLIB/libc++_shared.so" "$SYSROOT/usr/lib/aarch64-linux-android/21/libc++_shared.so" 2>&1 || true
+ echo "Bibliotecas libc++ existentes:"
+ find "$NDK/toolchains/llvm/prebuilt" -name 'libc++_shared.so' -o -name 'libc++_static.a' | head -30
+ echo "Nao iniciar LLVM antes de resolver este teste."
+ exit 1
+fi
+echo "LINKER_CMAKE_OK"
 echo "=== COMPILANDO LLVM ANDROID ==="
 echo "Bibliotecas C++: $CXXLIB"
 echo "Log: $LOG"
