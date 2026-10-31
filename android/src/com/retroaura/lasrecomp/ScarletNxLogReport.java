@@ -1,5 +1,11 @@
 package com.retroaura.lasrecomp;
 
+import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
+import android.content.Context;
+import android.os.Build;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -40,9 +46,40 @@ final class ScarletNxLogReport {
         }
     }
 
-    static String build(File appFiles, String gameId) {
+    private static void appendRecentCrashes(StringBuilder out, Context context) {
+        out.append("\\n=== ULTIMOS ENCERRAMENTOS DO ANDROID ===\\n");
+        if (Build.VERSION.SDK_INT < 30) {
+            out.append("Historico de encerramentos indisponivel neste Android.\\n");
+            return;
+        }
+        try {
+            ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+            if (manager == null) return;
+            java.util.List<ApplicationExitInfo> exits = manager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 8);
+            if (exits.isEmpty()) out.append("Nenhum encerramento registrado.\\n");
+            for (ApplicationExitInfo exit : exits) {
+                out.append("Hora: ").append(new Date(exit.getTimestamp()))
+                    .append(" | motivo: ").append(exit.getReason())
+                    .append(" | status: ").append(exit.getStatus())
+                    .append(" | processo: ").append(exit.getProcessName())
+                    .append(" | descricao: ").append(exit.getDescription()).append('\\n');
+                if (exit.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                    out.append("Falha nativa registrada; tombstone binario nao e stacktrace textual.\\n");
+                }
+            }
+        } catch (Exception error) {
+            out.append("Nao foi possivel consultar encerramentos: ").append(error).append('\\n');
+        }
+    }
+
+    static String build(Context context, File appFiles, String gameId) {
         StringBuilder out = new StringBuilder(125000);
-        out.append("Castlevania ScarletNX — diagnostico de renderizacao\n");
+        out.append("ScarletNX - diagnostico do aplicativo e runtime\n");
+        out.append("Gerado: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT).format(new Date())).append("\n");
+        out.append("Pacote: ").append(context.getPackageName()).append("\n");
+        out.append("Android API: ").append(Build.VERSION.SDK_INT).append("\n");
+        out.append("Dispositivo: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL).append("\n");
+        appendRecentCrashes(out, context);
         out.append("Resumo: linhas de shader extraidas de TODO o log, ");
         out.append("com inicio/fim preservados e limites de memoria.\n");
         for (String name : new String[]{"mario-snx-launch.log", "mario-snx-native.log"}) {
