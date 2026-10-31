@@ -80,6 +80,23 @@ bash "$SRC/scripts/android-apk.sh" "$OUT" "$LLVM" arm64-v8a -- \
   "-DCMAKE_EXE_LINKER_FLAGS=$LINK_FLAGS" \
   "-DCMAKE_SHARED_LINKER_FLAGS=$LINK_FLAGS" \
   "-DCMAKE_MODULE_LINKER_FLAGS=$LINK_FLAGS"
+# The Android Gradle project packages native libraries from stage/lib.
+# NDK libc++ is dynamically required by libmain.so; stage it explicitly.
+# The official upstream script has already assembled the APK at this point,
+# so rebuild only Gradle packaging when the C++ runtime was absent.
+CXX_DST="$OUT/stage/lib/arm64-v8a/libc++_shared.so"
+if [[ ! -s "$CXX_DST" ]]; then
+  install -m 644 "$CXXLIB/libc++_shared.so" "$CXX_DST"
+  echo "=== REEMPACOTANDO APK COM libc++_shared.so ==="
+  "$GRADLE" -p "$SRC/dist/android" --project-cache-dir "$OUT/gradle-cache" assembleDebug \
+    "-Pscarletnx.stage=$OUT/stage"
+fi
+APK="$OUT/stage/gradle/outputs/apk/debug/ScarletNX-debug.apk"
+[[ -s "$APK" ]] || { echo "ERRO: APK nao foi gerado"; exit 1; }
+if ! unzip -Z1 "$APK" | grep -qx 'lib/arm64-v8a/libc++_shared.so'; then
+  echo "ERRO: APK nao contem libc++_shared.so"; exit 1
+fi
+echo "APK_CXX_RUNTIME_OK=$APK"
 echo "=== APKS GERADOS ==="
 find "$OUT/stage/gradle/outputs/apk" -type f -name '*.apk' -print
 echo "NOTA: o APK e o app original. O Zelda AOT permanece no staging privado e deve ser importado para games/ pelo app."
