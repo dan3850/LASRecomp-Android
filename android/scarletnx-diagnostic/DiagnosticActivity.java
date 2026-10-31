@@ -29,6 +29,7 @@ public final class DiagnosticActivity extends Activity {
     private String log;
     private static final String PREF = "startup_diagnostic";
     private static final String PENDING = "launch_pending";
+    private static final int MAX_TOMBSTONE_BYTES = 1048576;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -116,9 +117,9 @@ public final class DiagnosticActivity extends Activity {
                             ByteArrayOutputStream out = new ByteArrayOutputStream();
                             byte[] buf = new byte[4096];
                             int n;
-                            while (out.size() < 49152 && (n = stream.read(buf, 0, Math.min(buf.length, 49152 - out.size()))) > 0) out.write(buf, 0, n);
+                            while (out.size() < MAX_TOMBSTONE_BYTES && (n = stream.read(buf, 0, Math.min(buf.length, MAX_TOMBSTONE_BYTES - out.size()))) > 0) out.write(buf, 0, n);
                             byte[] raw = out.toByteArray();
-                            sb.append("Tombstone bruto (Base64, ate 48 KiB; pode ser protobuf):\n")
+                            sb.append("Tombstone bruto (Base64, ate 1 MiB; pode ser protobuf):\n")
                               .append(Base64.encodeToString(raw, Base64.NO_WRAP)).append("\n");
                         } catch (Exception err) { sb.append("Tombstone indisponivel: ").append(err).append("\n"); }
                     }
@@ -126,6 +127,7 @@ public final class DiagnosticActivity extends Activity {
             } catch (Exception e) { sb.append("\nHistorico indisponivel: ").append(e).append("\n"); }
         }
         log = sb.toString();
-        report.setText(log);
+        int first = log.indexOf("Tombstone bruto");
+        report.setText(first < 0 ? log : log.substring(0, first) + "\nTombstone coletado. Use Copiar log para exportar o diagnostico completo (" + log.length() + " caracteres).\n");
     }
 }
