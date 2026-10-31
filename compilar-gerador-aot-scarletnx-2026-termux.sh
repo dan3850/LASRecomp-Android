@@ -52,6 +52,17 @@ new='if(ANDROID AND NOT SNX_TERMUX_NATIVE_AOT)\n    # the app (dist/android): it
 if old in s: p.write_text(s.replace(old,new,1))
 elif new not in s: raise SystemExit('ERRO: alvo multicall mudou')
 PY
+# The XCI automatic path must forward --runtime FILE to the recompilation
+# driver, otherwise it counts as an unexpected second dump.
+python3 - "$NATIVE_SRC/src/nx/runtime/driver/driver.c" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); s=p.read_text()
+old='if (!strcmp(rest[i], "--jit-cache")) {'
+new='if (!strcmp(rest[i], "--jit-cache") || !strcmp(rest[i], "--runtime")) {'
+if old in s: p.write_text(s.replace(old,new,1))
+elif new not in s: raise SystemExit('ERRO: encaminhamento runtime mudou no upstream')
+PY
 # Native Termux has ANDROID=true in CMake, but no NDK target/sysroot.
 # Fix only the native AOT copy; preserve Android runtime source untouched.
 python3 - "$NATIVE_SRC/src/common/cpu/recompiler/llvm/CMakeLists.txt" <<'PY'
