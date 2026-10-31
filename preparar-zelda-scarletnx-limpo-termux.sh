@@ -8,7 +8,16 @@ cd "$ROOT"
 [ "$(git branch --show-current)" = android/scarletnx-full-upgrade ] || {
   echo "ERRO: selecione android/scarletnx-full-upgrade"; exit 1;
 }
-bash "$ROOT/preparar-scarletnx-completo-termux.sh"
+if [ -d "$SRC/.git" ]; then
+  [ "$(git -C "$SRC" rev-parse HEAD)" = "$TARGET" ] || { echo "ERRO: revisao inesperada"; exit 1; }
+  STATUS="$(git -C "$SRC" status --porcelain)"
+  if [ -n "$STATUS" ]; then
+    [ "$STATUS" = " M src/nx/hle/filesystem/fs.c" ] || { echo "ERRO: alteracoes nao reconhecidas: $STATUS"; exit 1; }
+    grep -q 'SNX_EXTERNAL_ROMFS' "$SRC/src/nx/hle/filesystem/fs.c" || { echo "ERRO: fs.c modificado sem RomFS"; exit 1; }
+  fi
+else
+  bash "$ROOT/preparar-scarletnx-completo-termux.sh"
+fi
 python3 "$ROOT/tools/auditar_scarletnx_novo.py" "$SRC"
 python3 "$ROOT/tools/auditar_build_scarletnx_2026.py" "$SRC" || {
   echo "AVISO: existem incompatibilidades de compilacao a adaptar; nao compilando APK.";
