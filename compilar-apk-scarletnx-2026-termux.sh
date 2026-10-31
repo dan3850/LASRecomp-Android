@@ -114,6 +114,12 @@ done
 export PATH="$WRAPPER_DIR:$PATH"
 echo "OpenSSL compiler: $(command -v aarch64-linux-android24-clang)"
 
+# The previous APK crashed inside a getauxval implementation embedded in libmain.so.
+# Never reuse native objects from that build: regenerate the Android native tree.
+if [[ "${SCARLETNX_CLEAN_NATIVE:-1}" == "1" ]]; then
+  echo "=== LIMPANDO BUILD NATIVA ANTERIOR (SEM APAGAR LLVM) ==="
+  rm -rf "$OUT/arm64-v8a"
+fi
 # Remove only CMake configuration from previous failed API 21 attempt.
 if [[ -f "$OUT/arm64-v8a/CMakeCache.txt" ]] && grep -q 'ANDROID_PLATFORM:.*android-21' "$OUT/arm64-v8a/CMakeCache.txt"; then
   rm -f "$OUT/arm64-v8a/CMakeCache.txt"
@@ -148,6 +154,21 @@ if ! "$READELF" -d "$NATIVE" | grep -Eq 'NEEDED.*libc[.]so'; then
   echo "ERRO: libmain.so sem dependencia dinamica de libc.so; build nativa incorreta."
   exit 2
 fi
+# getauxval must come from Android's Bionic, not be defined by libmain.so.
+# A locally defined implementation was the crash site in the supplied tombstone.
+NM="$NDK/toolchains/llvm/prebuilt/bin/llvm-nm"
+[[ -x "$NM" ]] || { echo "ERRO: llvm-nm ausente"; exit 2; }
+if "$NM" -D --defined-only "$NATIVE" | grep -Eq '[[:space:]][TW][[:space:]]+getauxval(@@?.*)?
+echo "APK_CXX_RUNTIME_OK=$APK"
+echo "=== APKS GERADOS ==="
+find "$OUT/stage/gradle/outputs/apk" -type f -name '*.apk' -print
+echo "NOTA: o APK e o app original. O Zelda AOT permanece no staging privado e deve ser importado para games/ pelo app."
+; then
+  echo "ERRO CRITICO: libmain.so define getauxval localmente; risco de crash SIGSEGV."
+  echo "Corrija a origem da biblioteca Bionic antes de instalar."
+  exit 2
+fi
+echo "ANDROID_GETAUXVAL_EXTERNAL_OK"
 echo "ANDROID_BIONIC_LIBC_LINK_OK"
 echo "APK_CXX_RUNTIME_OK=$APK"
 echo "=== APKS GERADOS ==="
